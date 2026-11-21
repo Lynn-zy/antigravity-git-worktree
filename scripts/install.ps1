@@ -62,6 +62,44 @@ function Test-EntryExists {
     }
 }
 
+function Invoke-WithLockRetry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath,
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Action,
+        [switch]$IgnoreNotFound
+    )
+
+    $retryDelaysMs = @(100, 200, 300, 500, 700, 700)
+    for ($attempt = 0; $attempt -le $retryDelaysMs.Count; $attempt++) {
+        try {
+            & $Action
+            return
+        }
+        catch {
+            $inner = if ($null -ne $_.Exception.InnerException) { $_.Exception.InnerException } else { $_.Exception }
+            if ($inner -is [System.IO.FileNotFoundException] -or $inner -is [System.IO.DirectoryNotFoundException]) {
+                if ($IgnoreNotFound) {
+                    return
+                }
+                throw
+            }
+
+            $isLockError = ($inner -is [System.IO.IOException]) -or ($inner -is [System.IO.UnauthorizedAccessException])
+            if (-not $isLockError) {
+                throw
+            }
+
+            if ($attempt -ge $retryDelaysMs.Count) {
+                throw "Cannot modify or remove '$TargetPath' because it is locked by another process. If 'Git Graph' is running in Antigravity, disable it in Antigravity Customizations (or close any terminal using that folder) and retry. Original error: $($inner.Message)"
+            }
+
+            [System.Threading.Thread]::Sleep($retryDelaysMs[$attempt])
+        }
+    }
+}
+
 <#
 .SYNOPSIS
     安全移除目标文件、普通目录或 Junction/Symlink，绝不跟随重解析点删除源目录。
@@ -85,10 +123,14 @@ function Remove-PathSafely {
     if ($isReparsePoint) {
         if ($isDirectory) {
             # 仅删除 Junction / 目录符号链接自身，严禁递归删除源仓库内容
-            [System.IO.Directory]::Delete($Path, $false)
+            Invoke-WithLockRetry -TargetPath $Path -IgnoreNotFound -Action {
+                [System.IO.Directory]::Delete($Path, $false)
+            }
         }
         else {
-            [System.IO.File]::Delete($Path)
+            Invoke-WithLockRetry -TargetPath $Path -IgnoreNotFound -Action {
+                [System.IO.File]::Delete($Path)
+            }
         }
         return
     }
@@ -98,20 +140,103 @@ function Remove-PathSafely {
             $writable = $attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
             [System.IO.File]::SetAttributes($Path, $writable)
         }
-        [System.IO.File]::Delete($Path)
+        Invoke-WithLockRetry -TargetPath $Path -IgnoreNotFound -Action {
+            [System.IO.File]::Delete($Path)
+        }
         return
     }
 
-    # 逐级安全清理普通目录，避免内置递归删除误触潜在嵌套重解析点
+    # 先删文件与重解析点再递归删子目录，确保 plugin.json 先被移除以触发宿主尽快释放 Sidecar 的 CWD 句柄
+    $childDirs = New-Object 'System.Collections.Generic.List[string]'
     foreach ($childPath in [System.IO.Directory]::EnumerateFileSystemEntries($Path)) {
-        Remove-PathSafely -Path $childPath
+        $childAttrs = [System.IO.File]::GetAttributes($childPath)
+        $childIsRealDir = (($childAttrs -band [System.IO.FileAttributes]::Directory) -ne 0) -and (($childAttrs -band [System.IO.FileAttributes]::ReparsePoint) -eq 0)
+        if ($childIsRealDir) {
+            $childDirs.Add($childPath)
+        }
+        else {
+            Remove-PathSafely -Path $childPath
+        }
+    }
+    foreach ($childDir in $childDirs) {
+        Remove-PathSafely -Path $childDir
     }
 
     if (($attributes -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
         $writableDir = $attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
         [System.IO.File]::SetAttributes($Path, $writableDir)
     }
-    [System.IO.Directory]::Delete($Path, $false)
+    Invoke-WithLockRetry -TargetPath $Path -IgnoreNotFound -Action {
+        [System.IO.Directory]::Delete($Path, $false)
+    }
+}
+
+function Ensure-RealDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (Test-EntryExists -Path $Path) {
+        $attributes = [System.IO.File]::GetAttributes($Path)
+        $isReparsePoint = ($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        $isDirectory = ($attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+        if ($isReparsePoint -or (-not $isDirectory)) {
+            Remove-PathSafely -Path $Path
+            [System.IO.Directory]::CreateDirectory($Path) | Out-Null
+        }
+        return
+    }
+
+    [System.IO.Directory]::CreateDirectory($Path) | Out-Null
+}
+
+function Copy-FileSafely {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceFile,
+        [Parameter(Mandatory = $true)]
+        [string]$DestFile
+    )
+
+    if (Test-EntryExists -Path $DestFile) {
+        $destAttrs = [System.IO.File]::GetAttributes($DestFile)
+        $isReparsePoint = ($destAttrs -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+        $isDirectory = ($destAttrs -band [System.IO.FileAttributes]::Directory) -ne 0
+        if ($isReparsePoint -or $isDirectory) {
+            Remove-PathSafely -Path $DestFile
+        }
+        elseif (($destAttrs -band [System.IO.FileAttributes]::ReadOnly) -ne 0) {
+            $writable = $destAttrs -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+            [System.IO.File]::SetAttributes($DestFile, $writable)
+        }
+    }
+
+    Invoke-WithLockRetry -TargetPath $DestFile -Action {
+        [System.IO.File]::Copy($SourceFile, $DestFile, $true)
+    }
+}
+
+function Remove-UnexpectedChildren {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Directory,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [string[]]$AllowedNames
+    )
+
+    $allowedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $AllowedNames) {
+        $null = $allowedSet.Add($name)
+    }
+
+    foreach ($existingPath in [System.IO.Directory]::EnumerateFileSystemEntries($Directory)) {
+        $existingName = [System.IO.Path]::GetFileName($existingPath)
+        if (-not $allowedSet.Contains($existingName)) {
+            Remove-PathSafely -Path $existingPath
+        }
+    }
 }
 
 function Test-ExcludedEntryName {
@@ -145,13 +270,13 @@ function Test-ExcludedEntryName {
 
 <#
 .SYNOPSIS
-    按白名单规则递归复制运行期目录，跳过非运行及临时产物文件。
+    按白名单规则原地递归同步运行期目录，保留既有目录实体并清理已过时残留项。
 .PARAMETER SourceDir
     源目录路径。
 .PARAMETER DestDir
     目标目录路径。
 #>
-function Copy-FilteredTree {
+function Sync-FilteredTree {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SourceDir,
@@ -159,8 +284,9 @@ function Copy-FilteredTree {
         [string]$DestDir
     )
 
-    [System.IO.Directory]::CreateDirectory($DestDir) | Out-Null
+    Ensure-RealDirectory -Path $DestDir
 
+    $expectedNames = New-Object 'System.Collections.Generic.List[string]'
     foreach ($entryPath in [System.IO.Directory]::EnumerateFileSystemEntries($SourceDir)) {
         $entryName = [System.IO.Path]::GetFileName($entryPath)
         if (Test-ExcludedEntryName -EntryName $entryName) {
@@ -172,14 +298,17 @@ function Copy-FilteredTree {
             continue
         }
 
+        $expectedNames.Add($entryName)
         $destEntryPath = Join-Path $DestDir $entryName
         if (($entryAttrs -band [System.IO.FileAttributes]::Directory) -ne 0) {
-            Copy-FilteredTree -SourceDir $entryPath -DestDir $destEntryPath
+            Sync-FilteredTree -SourceDir $entryPath -DestDir $destEntryPath
         }
         else {
-            [System.IO.File]::Copy($entryPath, $destEntryPath, $true)
+            Copy-FileSafely -SourceFile $entryPath -DestFile $destEntryPath
         }
     }
+
+    Remove-UnexpectedChildren -Directory $DestDir -AllowedNames $expectedNames.ToArray()
 }
 
 function Assert-SafeTargetPath {
@@ -223,7 +352,16 @@ function Assert-SourceRuntimeFiles {
 }
 
 function Write-EnablementHint {
-    Write-Output 'Next step: Open Antigravity Customizations and enable "Git Graph" (config.json was not modified).'
+    param(
+        [switch]$IsUpdate
+    )
+
+    if ($IsUpdate) {
+        Write-Output 'Next step: In Antigravity Customizations, toggle "Git Graph" off and back on to reload the updated sidecar (config.json was not modified).'
+    }
+    else {
+        Write-Output 'Next step: Open Antigravity Customizations and enable "Git Graph" (config.json was not modified).'
+    }
 }
 
 if ($Link -and $Uninstall) {
@@ -252,28 +390,40 @@ if (-not [string]::IsNullOrWhiteSpace($parentDir)) {
     [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null
 }
 
-if (Test-EntryExists -Path $normalizedTarget) {
-    Remove-PathSafely -Path $normalizedTarget
-}
-
 if ($Link) {
+    if (Test-EntryExists -Path $normalizedTarget) {
+        Remove-PathSafely -Path $normalizedTarget
+    }
     New-Item -ItemType Junction -Path $normalizedTarget -Target $repoRoot | Out-Null
     Write-Output "Linked 'Git Graph' (antigravity-git-worktree) junction: $normalizedTarget -> $repoRoot"
     Write-EnablementHint
     exit 0
 }
 
-[System.IO.Directory]::CreateDirectory($normalizedTarget) | Out-Null
-[System.IO.File]::Copy(
-    (Join-Path $repoRoot 'plugin.json'),
-    (Join-Path $normalizedTarget 'plugin.json'),
-    $true
-)
-Copy-FilteredTree -SourceDir (Join-Path $repoRoot 'assets') -DestDir (Join-Path $normalizedTarget 'assets')
-Copy-FilteredTree `
+$wasAlreadyInstalled = $false
+if (Test-EntryExists -Path $normalizedTarget) {
+    $targetAttrs = [System.IO.File]::GetAttributes($normalizedTarget)
+    if (($targetAttrs -band [System.IO.FileAttributes]::Directory) -ne 0) {
+        $wasAlreadyInstalled = Test-EntryExists -Path (Join-Path $normalizedTarget 'plugin.json')
+    }
+}
+
+# 默认拷贝模式原地同步目录树：保留既有普通目录实体，避免运行中的 Sidecar 占用 sidecars\panel 为 CWD 导致覆盖安装报 IOException
+Ensure-RealDirectory -Path $normalizedTarget
+$destSidecarsDir = Join-Path $normalizedTarget 'sidecars'
+Ensure-RealDirectory -Path $destSidecarsDir
+
+Sync-FilteredTree -SourceDir (Join-Path $repoRoot 'assets') -DestDir (Join-Path $normalizedTarget 'assets')
+Sync-FilteredTree `
     -SourceDir (Join-Path (Join-Path $repoRoot 'sidecars') 'panel') `
-    -DestDir (Join-Path (Join-Path $normalizedTarget 'sidecars') 'panel')
+    -DestDir (Join-Path $destSidecarsDir 'panel')
+Copy-FileSafely `
+    -SourceFile (Join-Path $repoRoot 'plugin.json') `
+    -DestFile (Join-Path $normalizedTarget 'plugin.json')
+
+Remove-UnexpectedChildren -Directory $destSidecarsDir -AllowedNames @('panel')
+Remove-UnexpectedChildren -Directory $normalizedTarget -AllowedNames @('plugin.json', 'assets', 'sidecars')
 
 Write-Output "Installed 'Git Graph' (antigravity-git-worktree) to: $normalizedTarget"
-Write-EnablementHint
+Write-EnablementHint -IsUpdate:$wasAlreadyInstalled
 exit 0

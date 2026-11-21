@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -446,6 +446,173 @@ test(
       }
     } finally {
       cleanupTempDir(tempRoot, fixtureTargetDir);
+    }
+  }
+);
+
+test(
+  'scripts/install.ps1 handles locked sidecars/panel CWD on Windows (in-place overwrite + transient lock retry on -Uninstall)',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const spawnCwdHolder = (cwd, scriptBody) =>
+      new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, ['-e', scriptBody], {
+          cwd,
+          stdio: ['ignore', 'pipe', 'pipe']
+        });
+        let ready = false;
+        let stderrText = '';
+
+        const stop = () =>
+          new Promise((done) => {
+            if (child.exitCode !== null || child.signalCode !== null) {
+              done();
+              return;
+            }
+            child.once('exit', () => done());
+            child.kill();
+          });
+
+        child.stderr.on('data', (chunk) => {
+          stderrText += String(chunk);
+        });
+        child.stdout.on('data', (chunk) => {
+          if (!ready && String(chunk).includes('READY')) {
+            ready = true;
+            resolve({ child, stop });
+          }
+        });
+        child.once('error', (err) => {
+          if (!ready) reject(err);
+        });
+        child.once('exit', (code) => {
+          if (!ready) {
+            reject(new Error(`CWD holder exited before READY (code=${code}): ${stderrText}`));
+          }
+        });
+      });
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag_gw_ps1_lock_'));
+    const fixtureSrcDir = path.join(tempRoot, 'fixture-src');
+    const targetDir = path.join(tempRoot, 'antigravity-git-worktree');
+    const activeHolders = [];
+
+    try {
+      createFixtureSourceRepo(fixtureSrcDir);
+      const fixturePs1 = path.join(fixtureSrcDir, 'scripts', 'install.ps1');
+
+      // 首次拷贝安装
+      const initialInstall = runPowershellInstaller('powershell.exe', fixturePs1, [
+        '-TargetDir',
+        targetDir
+      ]);
+      assert.equal(initialInstall.status, 0, initialInstall.stderr);
+
+      // 在已安装目录植入多种旧残留文件与目录，并更新源码树
+      const panelDir = path.join(targetDir, 'sidecars', 'panel');
+      fs.writeFileSync(path.join(targetDir, 'stale-root.txt'), 'obsolete', 'utf8');
+      fs.writeFileSync(path.join(panelDir, 'stale-panel.mjs'), 'export {};\n', 'utf8');
+      fs.mkdirSync(path.join(panelDir, 'old-dir'), { recursive: true });
+      fs.writeFileSync(path.join(panelDir, 'old-dir', 'legacy.txt'), 'old', 'utf8');
+      fs.mkdirSync(path.join(targetDir, 'sidecars', 'legacy-sidecar'), { recursive: true });
+      fs.writeFileSync(path.join(targetDir, 'sidecars', 'legacy-sidecar', 'x.txt'), 'old', 'utf8');
+
+      fs.writeFileSync(
+        path.join(fixtureSrcDir, 'sidecars', 'panel', 'main.mjs'),
+        'export const boot = () => "v2";\n',
+        'utf8'
+      );
+      fs.writeFileSync(
+        path.join(fixtureSrcDir, 'sidecars', 'panel', 'backend', 'new-mod.mjs'),
+        'export const added = true;\n',
+        'utf8'
+      );
+
+      // 1. 模拟 Antigravity 正在运行 sidecar（子进程持续占用 sidecars/panel 为 CWD）
+      const persistentHolder = await spawnCwdHolder(
+        panelDir,
+        'process.stdout.write("READY\\n"); setInterval(() => {}, 10000);'
+      );
+      activeHolders.push(persistentHolder);
+
+      // 首次重装必须一次成功，不得抛出目录被占用 IOException
+      const overwriteWhileRunning = runPowershellInstaller('powershell.exe', fixturePs1, [
+        '-TargetDir',
+        targetDir
+      ]);
+      assert.equal(overwriteWhileRunning.status, 0, overwriteWhileRunning.stderr);
+      assert.equal(
+        fs.readFileSync(path.join(panelDir, 'main.mjs'), 'utf8'),
+        'export const boot = () => "v2";\n'
+      );
+      assert.ok(fs.existsSync(path.join(panelDir, 'backend', 'new-mod.mjs')));
+      assert.equal(fs.existsSync(path.join(targetDir, 'stale-root.txt')), false);
+      assert.equal(fs.existsSync(path.join(panelDir, 'stale-panel.mjs')), false);
+      assert.equal(fs.existsSync(path.join(panelDir, 'old-dir')), false);
+      assert.equal(fs.existsSync(path.join(targetDir, 'sidecars', 'legacy-sidecar')), false);
+      assert.equal(persistentHolder.child.exitCode, null, 'sidecar CWD holder should still be alive');
+      assertFixtureSourceIntact(fixtureSrcDir);
+
+      if (hasPwsh()) {
+        fs.writeFileSync(
+          path.join(fixtureSrcDir, 'sidecars', 'panel', 'main.mjs'),
+          'export const boot = () => "v3";\n',
+          'utf8'
+        );
+        const pwshOverwrite = runPowershellInstaller('pwsh', fixturePs1, ['-TargetDir', targetDir]);
+        assert.equal(pwshOverwrite.status, 0, pwshOverwrite.stderr);
+        assert.equal(
+          fs.readFileSync(path.join(panelDir, 'main.mjs'), 'utf8'),
+          'export const boot = () => "v3";\n'
+        );
+      }
+
+      // 3. 持续占用 CWD 时执行 -Uninstall 应给出明确可操作错误，而非裸 Delete 堆栈
+      const blockedUninstall = runPowershellInstaller('powershell.exe', fixturePs1, [
+        '-TargetDir',
+        targetDir,
+        '-Uninstall'
+      ]);
+      assert.notEqual(blockedUninstall.status, 0);
+      assert.match(blockedUninstall.stderr, /Antigravity Customizations/i);
+      assert.match(blockedUninstall.stderr, /locked by another process/i);
+
+      await persistentHolder.stop();
+
+      // 2. 模拟卸载时宿主监听到 plugin.json 消失后约 250ms 退出 sidecar：-Uninstall 应自动重试并一次成功
+      const reinstallBeforeTransient = runPowershellInstaller('powershell.exe', fixturePs1, [
+        '-TargetDir',
+        targetDir
+      ]);
+      assert.equal(reinstallBeforeTransient.status, 0, reinstallBeforeTransient.stderr);
+
+      const pluginJsonPath = path.join(targetDir, 'plugin.json');
+      const transientHolder = await spawnCwdHolder(
+        panelDir,
+        `const fs = require('node:fs');
+         process.stdout.write("READY\\n");
+         const timer = setInterval(() => {
+           if (!fs.existsSync(${JSON.stringify(pluginJsonPath)})) {
+             clearInterval(timer);
+             setTimeout(() => process.exit(0), 250);
+           }
+         }, 40);`
+      );
+      activeHolders.push(transientHolder);
+
+      const transientUninstall = runPowershellInstaller('powershell.exe', fixturePs1, [
+        '-TargetDir',
+        targetDir,
+        '-Uninstall'
+      ]);
+      assert.equal(transientUninstall.status, 0, transientUninstall.stderr);
+      assert.equal(fs.existsSync(targetDir), false, 'targetDir must be fully removed after lock release');
+      assertFixtureSourceIntact(fixtureSrcDir);
+    } finally {
+      for (const holder of activeHolders) {
+        await holder.stop();
+      }
+      cleanupTempDir(tempRoot);
     }
   }
 );
