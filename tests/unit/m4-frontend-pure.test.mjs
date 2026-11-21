@@ -1,5 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+
+import {
+  buildPanelAppBundle,
+  buildPanelPageHtml,
+} from '../../sidecars/panel/public-bundle.mjs';
 
 import {
   GRAPH_ROW_HEIGHT,
@@ -597,4 +605,52 @@ test('i18n: 中英词典键全对称、全错误码覆盖、时间与语言解�
   assert.equal(formatAbsoluteTime(oneDayAgoSec, 'zh-CN'), '2026-11-20 12:00');
   assert.equal(formatRelativeTime(NaN, 'zh-CN', baseMs), '');
   assert.equal(formatAbsoluteTime(NaN, 'zh-CN'), '');
+});
+
+test('public-bundle: 零构建经典脚本可作为 classic JS 编译运行且 HTML 禁止 type="module"', () => {
+  const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sidecars/panel/public');
+  const bundle = buildPanelAppBundle(publicDir);
+  assert.doesNotThrow(() => new vm.Script(bundle, { filename: 'app.classic.js' }));
+  assert.doesNotMatch(bundle, /^\s*(?:import|export)\b/m);
+
+  // 在 document.readyState === 'loading' 环境下作为经典脚本执行时应仅注册一次 DOMContentLoaded 监听器
+  const listeners = [];
+  const sandboxWindow = {};
+  vm.runInNewContext(bundle, {
+    window: sandboxWindow,
+    document: {
+      readyState: 'loading',
+      addEventListener: (...args) => listeners.push(args),
+    },
+    console,
+  });
+  assert.equal(sandboxWindow.__agGitGraphPanelInstalled, undefined);
+  assert.equal(listeners.length, 1);
+  assert.equal(listeners[0][0], 'DOMContentLoaded');
+  assert.equal(listeners[0][2]?.once, true);
+
+  // 缺失主容器时执行也不应抛错或误标已挂载
+  const incompleteWindow = {};
+  assert.doesNotThrow(() => {
+    vm.runInNewContext(bundle, {
+      window: incompleteWindow,
+      document: {
+        readyState: 'complete',
+        getElementById: () => null,
+      },
+      console,
+    });
+  });
+  assert.equal(incompleteWindow.__agGitGraphPanelInstalled, undefined);
+
+  // HTML 必须以 classic script 加载 preload.js 与带内容哈希版本参数的 app.js，严禁 type="module"
+  const html = buildPanelPageHtml(publicDir);
+  assert.doesNotMatch(html, /type=["']module["']/i);
+  const headSection = html.slice(html.indexOf('<head>'), html.indexOf('</head>'));
+  assert.match(headSection, /<script src="\/preload\.js"><\/script>/);
+  assert.match(headSection, /<script defer src="\/app\.js\?v=([a-f0-9]{12})"><\/script>/);
+  assert.match(headSection, /<link rel="stylesheet" href="\/styles\.css\?v=([a-f0-9]{12})"/);
+  const cssVer = headSection.match(/\/styles\.css\?v=([a-f0-9]{12})/)?.[1];
+  const jsVer = headSection.match(/\/app\.js\?v=([a-f0-9]{12})/)?.[1];
+  assert.ok(cssVer && jsVer && cssVer === jsVer, 'styles.css 与 app.js 必须共享同一内容哈希版本');
 });

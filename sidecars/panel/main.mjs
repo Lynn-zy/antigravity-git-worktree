@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import fsPromises from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +10,11 @@ import { AppError, ERROR_CODES } from './backend/git-runner.mjs';
 import { createMockFixtureStore } from './backend/mock-fixture.mjs';
 import { createPreferencesStore } from './backend/preferences.mjs';
 import { createRepositoryWatcher } from './backend/watcher.mjs';
+import {
+  buildPanelAppBundle,
+  buildPanelPageHtml,
+  readPanelStyles,
+} from './public-bundle.mjs';
 import { loadSidecarSdk } from './sdk.mjs';
 
 const INITIAL_CWD = process.cwd();
@@ -34,13 +38,6 @@ export const STATIC_WHITELIST = Object.freeze({
   '/': { file: 'index.html', contentType: 'text/html; charset=utf-8' },
   '/styles.css': { file: 'styles.css', contentType: 'text/css; charset=utf-8' },
   '/app.js': { file: 'app.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/api-client.js': { file: 'modules/api-client.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/theme.js': { file: 'modules/theme.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/i18n.js': { file: 'modules/i18n.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/graph-layout.js': { file: 'modules/graph-layout.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/popover.js': { file: 'modules/popover.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/changes-view.js': { file: 'modules/changes-view.js', contentType: 'text/javascript; charset=utf-8' },
-  '/modules/graph-view.js': { file: 'modules/graph-view.js', contentType: 'text/javascript; charset=utf-8' },
 });
 
 const SECURITY_API_HEADERS = Object.freeze({
@@ -94,24 +91,38 @@ function resolveStandalonePort(rawPort) {
   return parsed;
 }
 
-async function readStaticAsset(routePathname, publicDir = PUBLIC_DIR) {
+function readStaticAsset(routePathname, publicDir = PUBLIC_DIR) {
   const meta = STATIC_WHITELIST[routePathname];
   if (!meta) {
     return null;
   }
-  const filePath = path.join(publicDir, meta.file);
   try {
-    const content = await fsPromises.readFile(filePath);
+    let body;
+    if (routePathname === '/') {
+      body = buildPanelPageHtml(publicDir);
+    } else if (routePathname === '/app.js') {
+      body = buildPanelAppBundle(publicDir);
+    } else {
+      body = readPanelStyles(publicDir);
+    }
     return {
       status: 200,
       contentType: meta.contentType,
-      body: content,
+      body,
     };
-  } catch {
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return {
+        status: 404,
+        contentType: 'text/plain; charset=utf-8',
+        body: 'Not found',
+      };
+    }
+    console.error(`[antigravity-git-worktree] Failed to build static asset ${routePathname}:`, error);
     return {
-      status: 404,
+      status: 500,
       contentType: 'text/plain; charset=utf-8',
-      body: 'Not found',
+      body: 'Internal asset error',
     };
   }
 }
@@ -379,12 +390,15 @@ export async function startSidecarServer(options = {}) {
   const app = new SidecarApp();
 
   for (const routePathname of Object.keys(STATIC_WHITELIST)) {
-    app.page(routePathname, async () => {
-      const asset = await readStaticAsset(routePathname, publicDir);
+    app.page(routePathname, () => {
+      const asset = readStaticAsset(routePathname, publicDir);
       return new SdkResponse(asset.body, {
         status: asset.status,
         contentType: asset.contentType,
-        headers: { 'X-Content-Type-Options': 'nosniff' },
+        headers: {
+          'Cache-Control': 'no-store',
+          'X-Content-Type-Options': 'nosniff',
+        },
       });
     });
   }
@@ -566,9 +580,10 @@ export async function startStandaloneServer(options = {}) {
     }
 
     if (req.method === 'GET' && Object.prototype.hasOwnProperty.call(STATIC_WHITELIST, url.pathname)) {
-      const asset = await readStaticAsset(url.pathname, publicDir);
+      const asset = readStaticAsset(url.pathname, publicDir);
       res.writeHead(asset.status, {
         'Content-Type': asset.contentType,
+        'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
       });
       res.end(asset.body);

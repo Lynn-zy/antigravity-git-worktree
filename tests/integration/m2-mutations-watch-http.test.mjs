@@ -915,9 +915,15 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
   assert.match(preloadSdkText, /window\.sidecar/);
   assert.match(preloadSdkText, /FORCE_SDK = true/);
 
-  const staticModuleRes = await fetch(`${server.url}/modules/i18n.js`);
-  assert.equal(staticModuleRes.status, 200);
-  assert.equal(staticModuleRes.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  const bundledAppRes = await fetch(`${server.url}/app.js`);
+  assert.equal(bundledAppRes.status, 200);
+  assert.equal(bundledAppRes.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  assert.equal(bundledAppRes.headers.get('cache-control'), 'no-store');
+  const bundledAppText = await bundledAppRes.text();
+  assert.doesNotMatch(bundledAppText, /^\s*(?:import|export)\b/m);
+
+  const rawModuleRes = await fetch(`${server.url}/modules/i18n.js`);
+  assert.equal(rawModuleRes.status, 404);
 
   // 6) ?fixture=mock 完整提交流转（多分支 Merge、中文路径、MM、未跟踪、领先上游）
   const mockSnap = await postApi(server.url, '/api/snapshot?fixture=mock', {});
@@ -961,13 +967,7 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
   assert.equal(mockSnapAfter.json.data.activeRepo.ahead, 0);
   assert.equal(mockSnapAfter.json.data.graph.commits[0].sha, mockCommit.json.data.sha);
 
-  // 7) Sidecar 模式注册校验（显式 Content-Type Response 与全 POST /api/*）
-  const fakePublicDir = path.join(root, 'public');
-  fs.mkdirSync(path.join(fakePublicDir, 'modules'), { recursive: true });
-  for (const meta of Object.values(STATIC_WHITELIST)) {
-    fs.writeFileSync(path.join(fakePublicDir, meta.file), `/* ${meta.file} */`, 'utf8');
-  }
-
+  // 7) Sidecar 模式注册校验（显式 Content-Type Response、classic 脚本 HTML 与全 POST /api/*）
   const registeredPages = new Map();
   const registeredApis = new Map();
   class FakeResponse {
@@ -994,7 +994,6 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
   const sidecarInstance = await startSidecarServer({
     loadSdk: async () => ({ SidecarApp: FakeSidecarApp, Response: FakeResponse }),
     preferencesPath: path.join(root, 'sidecar-prefs.json'),
-    publicDir: fakePublicDir,
   });
   t.after(() => sidecarInstance.close());
 
@@ -1004,6 +1003,14 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
     assert.ok(pageResp instanceof FakeResponse);
     assert.equal(pageResp.status, 200);
     assert.equal(pageResp.contentType, STATIC_WHITELIST[staticRoute].contentType);
+    assert.equal(pageResp.headers['Cache-Control'], 'no-store');
+    assert.equal(pageResp.headers['X-Content-Type-Options'], 'nosniff');
+    if (staticRoute === '/') {
+      const htmlText = String(pageResp.body);
+      assert.doesNotMatch(htmlText, /type=["']module["']/i);
+      assert.match(htmlText, /<script src="\/preload\.js"><\/script>/);
+      assert.match(htmlText, /<script defer src="\/app\.js\?v=[a-f0-9]{12}"><\/script>/);
+    }
   }
   for (const apiRoute of API_ROUTES) {
     const entry = registeredApis.get(apiRoute);

@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Git Graph</title>
   <link rel="stylesheet" href="/styles.css" />
+  <script src="/preload.js"></script>
+  <script defer src="/app.js"></script>
 </head>
 <body>
   <main id="app" class="gw-pane" data-testid="app-pane">
@@ -24,7 +26,13 @@
     <!-- 全局状态横幅（如文件监听风暴降级告警） -->
     <div id="global-banners" class="gw-banner-stack hidden" data-testid="global-banners"></div>
 
-    <!-- 零仓库空态与首屏加载态 -->
+    <!-- 首屏加载态：避免脚本初始化与首次快照返回前出现空白面板 -->
+    <section id="loading-state" class="gw-loading-state" data-testid="loading-state" aria-live="polite" aria-busy="true">
+      <div class="gw-loading-spinner" aria-hidden="true"></div>
+      <p id="loading-state-text" class="gw-loading-text">正在加载 Git 仓库…</p>
+    </section>
+
+    <!-- 零仓库空态 -->
     <section id="empty-state" class="gw-empty-state hidden" data-testid="empty-state" aria-live="polite">
       <div id="empty-state-icon" class="gw-empty-icon" aria-hidden="true"></div>
       <h2 id="empty-state-title" class="gw-empty-title"></h2>
@@ -136,8 +144,5 @@
     aria-live="polite"
     aria-atomic="false"
   ></div>
-
-  <script src="/preload.js"></script>
-  <script type="module" src="/app.js"></script>
 </body>
 </html>

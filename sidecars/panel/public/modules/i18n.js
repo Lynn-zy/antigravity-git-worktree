@@ -10,6 +10,8 @@ export const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'en']);
 export const MESSAGES = Object.freeze({
   'zh-CN': Object.freeze({
     // 面板空态与多仓库切换
+    'loading.repository': '正在加载 Git 仓库…',
+    'error.bootFailed': '面板初始化失败',
     'empty.noRepo.title': '当前工作区未发现 Git 仓库',
     'empty.noRepo.description': '请在 Antigravity 中打开包含 Git 仓库的本地目录后自动同步。',
     'repo.switcherLabel': '切换当前仓库',
@@ -162,6 +164,8 @@ export const MESSAGES = Object.freeze({
   }),
   en: Object.freeze({
     // Panel empty state & multi-repository switcher
+    'loading.repository': 'Loading Git repository…',
+    'error.bootFailed': 'Panel initialization failed',
     'empty.noRepo.title': 'No Git Repository Found',
     'empty.noRepo.description': 'Open a local folder containing a Git repository in Antigravity to sync automatically.',
     'repo.switcherLabel': 'Switch Repository',

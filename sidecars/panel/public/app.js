@@ -147,6 +147,12 @@ const areStringArraysEqual = (a, b) => {
 };
 
 const bootstrapPanel = () => {
+  const appEl = document.getElementById('app');
+  if (!appEl || window.__agGitGraphPanelInstalled) {
+    return;
+  }
+  window.__agGitGraphPanelInstalled = true;
+
   const queryTheme = readQueryParam('theme');
   if (queryTheme === 'dark' || queryTheme === 'light') {
     document.documentElement.setAttribute('data-theme-mode', queryTheme);
@@ -162,6 +168,8 @@ const bootstrapPanel = () => {
   const repoSelectEl = document.getElementById('repo-select');
   const repoBranchMetaEl = document.getElementById('repo-branch-meta');
   const globalBannersEl = document.getElementById('global-banners');
+  const loadingStateEl = document.getElementById('loading-state');
+  const loadingStateTextEl = document.getElementById('loading-state-text');
   const emptyStateEl = document.getElementById('empty-state');
   const emptyStateIconEl = document.getElementById('empty-state-icon');
   const emptyStateTitleEl = document.getElementById('empty-state-title');
@@ -904,10 +912,16 @@ const bootstrapPanel = () => {
     applyPaneLayout();
 
     if (!state.hasLoadedInitial) {
+      if (loadingStateTextEl) {
+        loadingStateTextEl.textContent = t('loading.repository');
+      }
+      loadingStateEl?.classList.remove('hidden');
       emptyStateEl.classList.add('hidden');
       dualPaneEl.classList.add('hidden');
       return;
     }
+
+    loadingStateEl?.classList.add('hidden');
 
     if (repositories.length === 0 || !snapshot?.activeRepo) {
       dualPaneEl.classList.add('hidden');
@@ -1122,14 +1136,36 @@ const bootstrapPanel = () => {
     await loadSnapshot({ forceRefresh: false });
   };
 
+  if (loadingStateTextEl) {
+    loadingStateTextEl.textContent = getT()('loading.repository');
+  }
   applyPaneLayout();
   void initWorkspaceAndBoot();
 };
 
+const safeBootstrapPanel = () => {
+  try {
+    bootstrapPanel();
+  } catch (error) {
+    const loadingEl = document.getElementById('loading-state');
+    const emptyEl = document.getElementById('empty-state');
+    const titleEl = document.getElementById('empty-state-title');
+    const descEl = document.getElementById('empty-state-desc');
+    loadingEl?.classList.add('hidden');
+    if (emptyEl && titleEl && descEl) {
+      const t = createTranslator(resolveLocale('auto'));
+      titleEl.textContent = t('error.bootFailed');
+      descEl.textContent = error instanceof Error ? error.message : String(error);
+      emptyEl.classList.remove('hidden');
+    }
+    console.error('[antigravity-git-worktree] Failed to bootstrap panel:', error);
+  }
+};
+
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', bootstrapPanel, { once: true });
+    document.addEventListener('DOMContentLoaded', safeBootstrapPanel, { once: true });
   } else {
-    bootstrapPanel();
+    safeBootstrapPanel();
   }
 }

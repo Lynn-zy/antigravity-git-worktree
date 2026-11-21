@@ -44,6 +44,7 @@
 │       ├── sidecar.json                # Auxiliary Pane Sidecar 清单
 │       ├── main.mjs                    # 双模式入口：释放 cwd、启动 SidecarApp 或 Standalone HTTP
 │       ├── sdk.mjs                     # 延迟加载 sidecar_sdk（import + createRequire 回退）
+│       ├── public-bundle.mjs           # 零构建运行时 classic 脚本装配与资源内容哈希版本化
 │       ├── backend/
 │       │   ├── api-router.mjs          # 全部 POST /api/* 路由、入参白名单校验与错误映射
 │       │   ├── discovery.mjs           # Workspace URI 规范化、Repository 去重与 Worktree 匹配
@@ -103,12 +104,12 @@
 
 | 路由类别 | HTTP 方法 | Sidecar 模式防护 | Standalone 模式防护 |
 | --- | --- | --- | --- |
-| 静态资源（`/`、`/styles.css`、`/app.js`、`/modules/*.js`、`/preload.js`） | `GET` | `SidecarApp.page()` 提供，绑定 `127.0.0.1` | 绑定 `127.0.0.1`，校验 `Host` 匹配 `/^(127\.0\.0\.1\|localhost)(:\d+)?$/` |
+| 静态资源（`/`、`/styles.css`、`/app.js`、`/preload.js`） | `GET` | `SidecarApp.page()` 提供，绑定 `127.0.0.1` | 绑定 `127.0.0.1`，校验 `Host` 匹配 `/^(127\.0\.0\.1\|localhost)(:\d+)?$/` |
 | 全部业务接口（`/api/*`） | 仅允许 `POST` | `SidecarApp.api(..., 'POST')` 强制校验 `X-Sidecar-Token`；前端经 `window.sidecar.fetch` 发送 | 校验 `Host` 白名单 + 强制 `Origin === http://${host}` + `Content-Type` 以 `application/json` 开头 + 请求体上限 `1 MiB` |
 
 补充约束：
 
-- `SidecarApp.page(pathname, handler)` 按精确路径匹配且无目录通配符；此外，若 handler 直接返回字符串，SDK 仅对 `.js` 设 `application/javascript`，其余路径默认标为 `text/html`。因此 `main.mjs` 必须按静态文件白名单逐个注册 `/`、`/styles.css`、`/app.js` 与 `/modules/*.js`，并全部返回带显式 `Content-Type`（`text/html; charset=utf-8`、`text/css; charset=utf-8`、`text/javascript; charset=utf-8`）的 `Response` 实例，避免样式表因 MIME 错误被浏览器拦截。
+- `SidecarApp.page(pathname, handler)` 按精确路径匹配且无目录通配符；此外，若 handler 直接返回字符串，SDK 仅对 `.js` 设 `application/javascript`，其余路径默认标为 `text/html`。同时，Antigravity 2.0 侧栏 iframe 通过自定义协议加载静态资源，Chromium 对 `<script type="module">` 强制执行 CORS 检查会直接拦截加载。因此 `public/modules/*.js` 与 `public/app.js` 在源码层保持原生 ES2022 模块，由 `public-bundle.mjs` 在运行期按显式依赖拓扑零构建装配为单个 classic script 通过 `GET /app.js` 下发，`index.html` 在 `<head>` 中以 `<script src="/preload.js">` 与 `<script defer src="/app.js?v=<hash>">` 加载。`main.mjs` 按白名单注册 `/`、`/styles.css`、`/app.js`，全部返回带显式 `Content-Type`（`text/html; charset=utf-8`、`text/css; charset=utf-8`、`text/javascript; charset=utf-8`）及 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff` 的 `Response` 实例。
 - 所有 `/api/*` 响应统一附带 `Cache-Control: no-store` 与 `X-Content-Type-Options: nosniff`。
 - Standalone 模式在 JSON 解析失败或超长时返回 `400` / `413` JSON 错误；`SidecarApp` 模式下业务层对所有入参字段做类型与路径范围校验，不信任客户端传值。
 - Standalone 模式必须提供 `GET /preload.js`，返回 `200` 与 `Content-Type: text/javascript; charset=utf-8`（默认返回空注释桩；当页面带 `?sdk=1` 时可注入测试用的模拟 `window.sidecar` 桥接对象）。

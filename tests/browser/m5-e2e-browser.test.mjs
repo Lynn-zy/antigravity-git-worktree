@@ -1336,13 +1336,19 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     if (res.destroyed) {
       return;
     }
-    res.writeHead(upstreamRes.status, {
+    const isApiRequest = reqUrl.pathname.startsWith('/api/');
+    const responseHeaders = {
       'Content-Type': upstreamRes.headers.get('content-type') || 'application/octet-stream',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
       'Cache-Control': upstreamRes.headers.get('cache-control') || 'no-store',
-    });
+    };
+    // 仅对跨源 srcdoc 代理的 /api/* 附带 CORS；静态资源与真实 SidecarApp 一致不发 ACAO，
+    // 确保前端通过 classic script（no-cors）加载，若误退回 type="module" 将立即暴露 CORS 拦截导致白屏。
+    if (isApiRequest) {
+      responseHeaders['Access-Control-Allow-Origin'] = '*';
+      responseHeaders['Access-Control-Allow-Methods'] = 'POST, OPTIONS';
+      responseHeaders['Access-Control-Allow-Headers'] = 'Content-Type';
+    }
+    res.writeHead(upstreamRes.status, responseHeaders);
     res.end(payloadBuf);
   });
 
