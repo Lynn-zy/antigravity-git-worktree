@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <title>Git Graph</title>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#161E2E" stroke="#64748B" stroke-opacity="0.45" stroke-width="1.5"/>
+  <path d="M 23 17 L 23 47" stroke="#38BDF8" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M 23 47 C 23 39 41 40 41 32 C 41 24 23 25 23 17" stroke="#FB923C" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="23" cy="47" r="4.5" fill="#161E2E" stroke="#38BDF8" stroke-width="3"/>
+  <circle cx="23" cy="32" r="4.5" fill="#161E2E" stroke="#38BDF8" stroke-width="3"/>
+  <circle cx="41" cy="32" r="4.5" fill="#161E2E" stroke="#FB923C" stroke-width="3"/>
+  <circle cx="23" cy="17" r="5.2" fill="#161E2E" stroke="#34D399" stroke-width="3.2"/>
+  <circle cx="23" cy="17" r="2" fill="#F8FAFC"/>
+</svg>
