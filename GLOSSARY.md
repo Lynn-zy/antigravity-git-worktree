@@ -29,8 +29,12 @@ _Avoid_: Temp Worktree, Agent Folder
 _Avoid_: Active Workspace, Current Branch
 
 **Conversation-Bound Worktree**:
-其检出目录与当前 Antigravity 对话的 Workspace 路径相匹配的 Worktree，可与 Focused Worktree 不同。
-_Avoid_: Focused Worktree, Active Worktree
+检出目录命中当前 Antigravity 对话 Workspace 路径的 Worktree，可与 Focused Worktree 不同。
+_Avoid_: Focused Worktree, Active Worktree, Linked Conversation
+
+**Linked Conversation**:
+与某个 Managed Worktree 一对一关联且仍存在的历史或并行 Antigravity 对话，可从面板直接切换过去。
+_Avoid_: Conversation-Bound Worktree, History Chat
 
 ### 面板与变更视图
 
