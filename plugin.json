@@ -1,0 +1,8 @@
+{
+  "name": "antigravity-git-worktree",
+  "displayName": "Git Graph",
+  "version": "0.1.0",
+  "description": "VS Code-style Source Control and inline SVG Commit Graph in the Antigravity Auxiliary Pane.",
+  "logo": "assets/logo.svg",
+  "repository": "https://github.com/Lynn-zy/antigravity-git-worktree"
+}
