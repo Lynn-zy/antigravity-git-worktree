@@ -1084,3 +1084,181 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
   const exitResult = await exitPromise;
   assert.ok(exitResult.code === 0 || exitResult.signal === 'SIGTERM');
 });
+
+test('集成测试：切分支防吞事件、watcher 合并与目录噪声过滤、SidecarApp 长轮询中止不泄漏', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm2-int-checkout-sync-'));
+  const repoDir = path.join(root, 'repo');
+  await initConfiguredRepo(repoDir, 'main');
+  fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'src', 'index.js'), 'export const v = 1;\n');
+  await execGit(['add', '.'], repoDir);
+  await execGit(['commit', '-m', 'init main'], repoDir);
+  await execGit(['checkout', '-b', 'feat-sync'], repoDir);
+  fs.writeFileSync(path.join(repoDir, 'src', 'index.js'), 'export const v = 2;\n');
+  await execGit(['add', '.'], repoDir);
+  await execGit(['commit', '-m', 'feat commit'], repoDir);
+  await execGit(['checkout', 'main'], repoDir);
+
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // 1) 快照查询期间发生 revision 递增（模拟连续切分支）时，快照不得用查询结束后的新 revision 覆盖，
+  //    必须保留查询前版本号以便后续 /api/events/wait 0ms 立即唤醒拉取最新分支。
+  const server = await startStandaloneServer({
+    port: 0,
+    preferencesPath: path.join(root, 'prefs-race.json'),
+  });
+  t.after(() => server.close());
+
+  const repoUri = toFileUri(repoDir);
+  const s0 = (await postApi(server.url, '/api/snapshot', { workspaceUris: [repoUri] })).json.data;
+  const revBefore = s0.revision;
+
+  const snapPromise = postApi(server.url, '/api/snapshot', { workspaceUris: [repoUri] });
+  // 在快照执行 Git 读命令期间模拟外部切分支触发事件总线递增
+  setTimeout(() => {
+    server.runtime.eventBus.bumpRevision({ watchDegraded: false });
+  }, 15);
+  const s1 = (await snapPromise).json.data;
+  assert.equal(
+    s1.revision,
+    revBefore,
+    '快照返回的版本号应取查询开始前的基准值，避免吞掉查询期间发生的分支切换或文件变更事件',
+  );
+  assert.ok(server.runtime.eventBus.revision > s1.revision);
+
+  const tWait = performance.now();
+  const wakeRes = (await postApi(server.url, '/api/events/wait', {
+    workspaceKey: s1.workspaceKey,
+    sinceRevision: s1.revision,
+    timeoutMs: 3000,
+  })).json.data;
+  assert.equal(wakeRes.changed, true);
+  assert.ok(performance.now() - tWait < 500, '被查询窗口错过的变更应在下一次 events/wait 中立即唤醒');
+
+  // 2) watcher 合并同一 checkout 的 metadata + worktree 双通道，并忽略目录级 change 元数据噪声
+  const emittedChannels = [];
+  let gitEmit = null;
+  let wtEmit = null;
+  const normalizedGitDir = normalizeFsPath(path.join(repoDir, '.git'));
+  const normalizedWtDir = normalizeFsPath(repoDir);
+  const coalescingWatcher = createRepositoryWatcher({
+    metadataDebounceMs: 40,
+    worktreeDebounceMs: 90,
+    existsFn: () => true,
+    statFn: (targetPath) => ({
+      isDirectory: () => normalizeFsPath(targetPath, { resolveRealpath: false })?.endsWith('/src') ?? false,
+    }),
+    watchFn: (dir, _opts, listener) => {
+      const key = normalizeFsPath(dir);
+      if (key === normalizedGitDir) gitEmit = listener;
+      if (key === normalizedWtDir) wtEmit = listener;
+      return { close() {}, on() {} };
+    },
+    onChange: (info) => emittedChannels.push(info.channel),
+  });
+  t.after(() => coalescingWatcher.close());
+
+  coalescingWatcher.setTarget({
+    gitCommonDir: path.join(repoDir, '.git'),
+    gitDir: path.join(repoDir, '.git'),
+    worktreePath: repoDir,
+    isBare: false,
+  });
+
+  // 同一 git checkout 先触发工作区变更，再更新 .git/HEAD：应合并为 1 次 metadata 通知而非连续触发 2 次快照
+  wtEmit('change', 'src/index.js');
+  gitEmit('rename', 'HEAD');
+  await new Promise((resolve) => setTimeout(resolve, 160));
+  assert.deepEqual(emittedChannels, ['metadata'], '同一次切分支应合并 pending worktree 定时器，仅触发 1 次刷新');
+
+  // Windows 下 git status 扫描目录引发的目录级 change 噪声不应触发误刷新，但目录 rename 与文件 change 仍须正常触发
+  emittedChannels.length = 0;
+  wtEmit('change', 'src');
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.deepEqual(emittedChannels, [], '目录级 change 元数据噪声不得触发重复快照');
+
+  wtEmit('rename', 'src');
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.deepEqual(emittedChannels, ['worktree'], '目录 rename 变更仍应正常触发刷新');
+
+  // 3) SidecarApp 模式下客户端中止 /api/events/wait（如切对话重载 iframe）必须立即释放 eventBus 等待者
+  class HttpFakeResponse {
+    constructor(body, opts = {}) {
+      this.body = body;
+      this.contentType = opts.contentType;
+      this.status = opts.status;
+      this.headers = opts.headers;
+    }
+  }
+  class HttpFakeSidecarApp {
+    #apis = new Map();
+    #server = null;
+    page() {}
+    api(routePath, handler, method = 'POST') {
+      this.#apis.set(`${method}:${routePath}`, handler);
+    }
+    async run() {
+      this.#server = http.createServer((req, res) => {
+        const url = new URL(req.url || '/', 'http://127.0.0.1');
+        const handler = this.#apis.get(`${req.method}:${url.pathname}`);
+        if (!handler) {
+          res.writeHead(404);
+          res.end('Not found');
+          return;
+        }
+        let raw = '';
+        req.on('data', (chunk) => { raw += chunk; });
+        req.on('end', async () => {
+          const result = await handler(raw ? JSON.parse(raw) : {});
+          res.writeHead(result.status || 200, { 'Content-Type': result.contentType, ...result.headers });
+          res.end(result.body);
+        });
+      });
+      await new Promise((resolve) => this.#server.listen(0, '127.0.0.1', resolve));
+      return this.#server;
+    }
+    async close() {
+      await new Promise((resolve) => (this.#server ? this.#server.close(() => resolve()) : resolve()));
+    }
+  }
+
+  const sidecarInstance = await startSidecarServer({
+    loadSdk: async () => ({ SidecarApp: HttpFakeSidecarApp, Response: HttpFakeResponse }),
+    preferencesPath: path.join(root, 'prefs-sidecar-abort.json'),
+  });
+  t.after(() => sidecarInstance.close());
+
+  const sidecarBaseUrl = `http://127.0.0.1:${sidecarInstance.server.address().port}`;
+  const sidecarSnapRes = await fetch(`${sidecarBaseUrl}/api/snapshot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspaceUris: [repoUri] }),
+  });
+  const sidecarSnap = (await sidecarSnapRes.json()).data;
+
+  for (let i = 0; i < 3; i += 1) {
+    const ac = new AbortController();
+    const pendingFetch = fetch(`${sidecarBaseUrl}/api/events/wait`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspaceKey: sidecarSnap.workspaceKey,
+        sinceRevision: sidecarSnap.revision,
+        timeoutMs: 20_000,
+      }),
+      signal: ac.signal,
+    });
+    for (let j = 0; j < 40 && sidecarInstance.runtime.eventBus.pendingCount === 0; j += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(sidecarInstance.runtime.eventBus.pendingCount, 1);
+    ac.abort();
+    await assert.rejects(pendingFetch, (err) => err?.name === 'AbortError');
+    for (let j = 0; j < 40 && sidecarInstance.runtime.eventBus.pendingCount > 0; j += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(sidecarInstance.runtime.eventBus.pendingCount, 0, 'SidecarApp 模式中止长轮询后不得泄漏等待者');
+  }
+});

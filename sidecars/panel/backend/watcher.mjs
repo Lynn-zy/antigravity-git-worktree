@@ -97,6 +97,7 @@ function isIgnoredWorktreePath(filename) {
 export class RepositoryWatcher {
   #watchFn;
   #existsFn;
+  #statFn;
   #nowFn;
   #metadataDebounceMs;
   #worktreeDebounceMs;
@@ -139,6 +140,7 @@ export class RepositoryWatcher {
    *   statusDegradeLimit?: number,
    *   watchFn?: typeof fs.watch,
    *   existsFn?: typeof fs.existsSync,
+   *   statFn?: typeof fs.statSync,
    *   nowFn?: () => number
    * }} [options] 回调、防抖阈值与测试注入依赖
    */
@@ -152,6 +154,7 @@ export class RepositoryWatcher {
     this.#statusDegradeLimit = options.statusDegradeLimit ?? STATUS_DEGRADE_LIMIT;
     this.#watchFn = options.watchFn ?? fs.watch;
     this.#existsFn = options.existsFn ?? fs.existsSync;
+    this.#statFn = options.statFn ?? fs.statSync;
     this.#nowFn = options.nowFn ?? Date.now;
   }
 
@@ -214,6 +217,12 @@ export class RepositoryWatcher {
         this.#recentWorktreeEvents = [];
         this.#watchState = { active: false, degraded: false, reason: null };
         this.#ensureWorktreeWatcher();
+      }
+      // 若 .git 监听句柄因临时 EPERM/重命名异常全部关闭，且目录仍存在，自动补挂避免元数据监听失活
+      const hasOpenGitWatcher = this.#gitWatchers.some((item) => !item.closed);
+      if (!hasOpenGitWatcher && this.#existsFn(this.#target.gitCommonDir)) {
+        this.#gitWatchers = [];
+        this.#mountGitWatchers();
       }
       if (!this.#watchState.degraded) {
         this.#ensureWorktreesDirWatcher();
@@ -438,8 +447,11 @@ export class RepositoryWatcher {
     this.#worktreeWatcher = this.#mountSafeWatcher(
       wtDir,
       { recursive: true },
-      (_eventType, filename) => {
+      (eventType, filename) => {
         if (isIgnoredWorktreePath(filename)) {
+          return;
+        }
+        if (this.#isDirectoryOnlyChange(wtDir, eventType, filename)) {
           return;
         }
         this.#recordWorktreeEvent();
@@ -449,6 +461,18 @@ export class RepositoryWatcher {
         this.#recomputeActiveFlag();
       },
     );
+  }
+
+  #isDirectoryOnlyChange(wtDir, eventType, filename) {
+    // Windows NTFS 在 git status 扫描刚切出的目录时会触发目录级 change（非 rename），过滤后可消除二次自激快照
+    if (eventType !== 'change' || typeof filename !== 'string' || filename.length === 0) {
+      return false;
+    }
+    try {
+      return Boolean(this.#statFn(path.join(wtDir, filename))?.isDirectory?.());
+    } catch {
+      return false;
+    }
   }
 
   #recordWorktreeEvent() {
@@ -478,6 +502,11 @@ export class RepositoryWatcher {
     }
     this.#metadataTimer = setTimeout(() => {
       this.#metadataTimer = null;
+      // 同一 git checkout 会先写工作区文件再更新 .git/HEAD；metadata 触发时合并已排队的 worktree 定时器，避免连续触发两次快照
+      if (this.#worktreeTimer) {
+        clearTimeout(this.#worktreeTimer);
+        this.#worktreeTimer = null;
+      }
       if (!this.#disposed) {
         this.#onChange({ channel: 'metadata' });
       }

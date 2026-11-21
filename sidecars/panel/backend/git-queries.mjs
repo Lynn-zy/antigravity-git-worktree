@@ -709,14 +709,26 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
   let branchMeta;
   let changes;
   let remotes;
+  let graph;
+
+  // scope === 'all' 不依赖 upstream，可直接与 status / remote 放入同一 Promise.all 并行执行，减少串行进程启动开销
+  const runAllGraph = () => queryCommitGraph(repoCwd, {
+    scope: 'all',
+    limit,
+    isUnborn: true,
+    timeoutMs,
+    runGitRead: runReadFn,
+  });
 
   if (activeDiscovery.isBare) {
-    const [bareHead, repoRemotes] = await Promise.all([
+    const [bareHead, repoRemotes, allGraph] = await Promise.all([
       queryBareHeadMetadata(repoCwd, runReadFn, timeoutMs),
       queryRemotes(repoCwd, { timeoutMs, runGitRead: runReadFn }),
+      scope === 'all' ? runAllGraph() : Promise.resolve(null),
     ]);
     branchMeta = bareHead;
     remotes = repoRemotes;
+    graph = allGraph;
     changes = {
       conflicted: [],
       staged: [],
@@ -725,27 +737,31 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
       truncated: false,
     };
   } else {
-    const [statusResult, repoRemotes] = await Promise.all([
+    const [statusResult, repoRemotes, allGraph] = await Promise.all([
       queryWorktreeStatus(activeDiscovery.worktreePath, {
         maxEntries: maxStatusEntries,
         timeoutMs,
         runGitRead: runReadFn,
       }),
       queryRemotes(repoCwd, { timeoutMs, runGitRead: runReadFn }),
+      scope === 'all' ? runAllGraph() : Promise.resolve(null),
     ]);
     branchMeta = statusResult.branchInfo;
     changes = statusResult.changes;
     remotes = repoRemotes;
+    graph = allGraph;
   }
 
-  const graph = await queryCommitGraph(repoCwd, {
-    scope,
-    limit,
-    isUnborn: branchMeta.isUnborn,
-    upstream: branchMeta.upstream,
-    timeoutMs,
-    runGitRead: runReadFn,
-  });
+  if (!graph) {
+    graph = await queryCommitGraph(repoCwd, {
+      scope,
+      limit,
+      isUnborn: branchMeta.isUnborn,
+      upstream: branchMeta.upstream,
+      timeoutMs,
+      runGitRead: runReadFn,
+    });
+  }
 
   const activeRepo = {
     id: activeDiscovery.id,

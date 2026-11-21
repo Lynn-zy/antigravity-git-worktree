@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -387,6 +388,7 @@ export async function startSidecarServer(options = {}) {
     eventBusOptions: options.eventBusOptions,
   });
 
+  const requestAbortStorage = new AsyncLocalStorage();
   const app = new SidecarApp();
 
   for (const routePathname of Object.keys(STATIC_WHITELIST)) {
@@ -406,7 +408,8 @@ export async function startSidecarServer(options = {}) {
   for (const apiRoute of API_ROUTES) {
     app.api(apiRoute, async (data) => {
       const activeFixture = options.fixture ?? (process.env.AG_GIT_FIXTURE === 'mock' ? 'mock' : null);
-      const result = await runtime.router.dispatch(apiRoute, data, { fixture: activeFixture });
+      const signal = requestAbortStorage.getStore();
+      const result = await runtime.router.dispatch(apiRoute, data, { fixture: activeFixture, signal });
       return new SdkResponse(JSON.stringify(result.body), {
         status: result.statusCode,
         contentType: 'application/json; charset=utf-8',
@@ -419,6 +422,23 @@ export async function startSidecarServer(options = {}) {
   }
 
   const server = await app.run();
+  // SidecarApp.api 回调不透传 req/res；在原生 http.Server 请求入口绑定 res.close -> AbortSignal，
+  // 并在 req 'end' 触发时注入当前请求上下文，确保客户端中止 /api/events/wait 时立即释放等待者。
+  if (typeof server?.prependListener === 'function') {
+    server.prependListener('request', (req, res) => {
+      const abortController = new AbortController();
+      const onResClose = () => {
+        if (!res.writableEnded) {
+          abortController.abort();
+        }
+      };
+      res.once('close', onResClose);
+      res.once('finish', () => res.removeListener('close', onResClose));
+      req.prependOnceListener('end', () => {
+        requestAbortStorage.enterWith(abortController.signal);
+      });
+    });
+  }
 
   const close = async () => {
     runtime.close();

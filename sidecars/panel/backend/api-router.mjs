@@ -276,12 +276,16 @@ export function createApiRouter(deps) {
 
     lastWorkspaceUris = [...effectiveUris];
 
+    // 在启动只读 Git 查询前锁定基准 revision；若查询期间发生切分支或文件写入导致事件总线递增，
+    // 本次快照保留旧 revision，确保前端下一次 /api/events/wait 0ms 立即唤醒而不会吞掉变更事件。
+    const snapshotStartRevision = eventBus.revision;
     const snapshotBase = await discoverAndBuildSnapshotBase({
       workspaceUris: effectiveUris,
       selectedRepoId,
       graphScope,
       graphLimit,
     });
+    const changedDuringQuery = eventBus.revision !== snapshotStartRevision;
 
     authorizedById.clear();
     authorizedByWorktreeKey.clear();
@@ -302,10 +306,11 @@ export function createApiRouter(deps) {
 
     const watchState = watcher.getWatchState();
     eventBus.setWatchDegraded(watchState.degraded);
+    const snapshotRevision = changedDuringQuery ? snapshotStartRevision : eventBus.revision;
 
     return {
       workspaceKey: snapshotBase.workspaceKey,
-      revision: eventBus.revision,
+      revision: snapshotRevision,
       repositories: snapshotBase.repositories,
       activeRepo: snapshotBase.activeRepo,
       changes: snapshotBase.changes,
