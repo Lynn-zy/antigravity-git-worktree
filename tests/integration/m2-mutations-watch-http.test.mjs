@@ -667,6 +667,37 @@ test('集成测试：events/wait 文件修改即时唤醒、删除目录触发�
   assert.ok(waitRes.json.data.revision > baseRevision);
   assert.equal(waitRes.json.data.watchDegraded, false);
 
+  // 1.5) 客户端提前中止 /api/events/wait 时，res.once('close') 立即释放 eventBus 等待者不泄漏
+  const latestRevSnap = await postApi(server.url, '/api/snapshot', {
+    workspaceUris: [toFileUri(repoDir)],
+  });
+  const abortController = new AbortController();
+  const abortedWaitFetch = fetch(`${server.url}/api/events/wait`, {
+    method: 'POST',
+    headers: {
+      Origin: server.url,
+      'Content-Type': 'application/json; charset=utf-8',
+    },
+    body: JSON.stringify({
+      workspaceKey: latestRevSnap.json.data.workspaceKey,
+      sinceRevision: latestRevSnap.json.data.revision,
+      timeoutMs: 10_000,
+    }),
+    signal: abortController.signal,
+  });
+
+  for (let i = 0; i < 40 && server.runtime.eventBus.pendingCount === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(server.runtime.eventBus.pendingCount, 1);
+
+  abortController.abort();
+  await assert.rejects(abortedWaitFetch, (err) => err?.name === 'AbortError');
+  for (let i = 0; i < 40 && server.runtime.eventBus.pendingCount > 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(server.runtime.eventBus.pendingCount, 0);
+
   // 2) 模拟风暴（超过 200 次有效工作区事件）触发 watchDegraded 并随 forceRefresh 恢复
   const snapBeforeStorm = await postApi(server.url, '/api/snapshot', {
     workspaceUris: [toFileUri(repoDir)],

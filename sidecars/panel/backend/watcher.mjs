@@ -210,18 +210,12 @@ export class RepositoryWatcher {
     ].join('\0');
 
     if (nextKey === this.#targetKey) {
-      if (forceRefresh && this.#watchState.degraded) {
+      if (forceRefresh) {
         this.#recentWorktreeEvents = [];
         this.#watchState = { active: false, degraded: false, reason: null };
         this.#ensureWorktreeWatcher();
-        this.#ensureWorktreesDirWatcher();
-        this.#recomputeActiveFlag();
-      } else if (forceRefresh) {
-        this.#recentWorktreeEvents = [];
-        this.#ensureWorktreeWatcher();
-        this.#ensureWorktreesDirWatcher();
-        this.#recomputeActiveFlag();
-      } else if (!this.#watchState.degraded) {
+      }
+      if (!this.#watchState.degraded) {
         this.#ensureWorktreesDirWatcher();
         this.#recomputeActiveFlag();
       }
@@ -361,7 +355,7 @@ export class RepositoryWatcher {
           if (!isRelevantGitRootEvent(filename)) {
             return;
           }
-          if (isCommonRoot && filename === 'worktrees') {
+          if (isCommonRoot && (!filename || filename.toLowerCase() === 'worktrees')) {
             this.#syncWorktreesDirWatcher();
           }
           this.#scheduleMetadataChange();
