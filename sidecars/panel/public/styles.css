@@ -1461,7 +1461,10 @@ body.is-resizing-panes {
 
 /* 窄幅断点 <= 340px：收紧水平留白、隐藏次要元数据并压缩标签宽度 */
 @container ag-git-pane (max-width: 340px) {
-  .gw-pane {
+  .gw-repo-bar,
+  .gw-banner-stack,
+  .gw-empty-state,
+  .gw-dual-pane {
     --gw-pad-x: 8px;
   }
 

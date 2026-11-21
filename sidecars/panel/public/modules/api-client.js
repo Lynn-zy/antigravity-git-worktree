@@ -74,13 +74,13 @@ const safeParseJson = async (response) => {
  * @returns {{
  *   postJson: (pathname: string, body?: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
  *   fetchSnapshot: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
- *   fetchCommitDetail: (params: { worktreePath: string, sha: string }, signal?: AbortSignal) => Promise<any>,
+ *   fetchCommitDetail: (params: { worktreePath?: string | null, repoId?: string | null, sha: string }, signal?: AbortSignal) => Promise<any>,
  *   waitEvents: (params: { workspaceKey: string, sinceRevision: number, timeoutMs?: number }, signal?: AbortSignal) => Promise<any>,
  *   stageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[] }) => Promise<any>,
  *   unstageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[] }) => Promise<any>,
  *   discardChanges: (params: { worktreePath: string, allTracked?: boolean, paths?: string[], untracked?: boolean }) => Promise<any>,
  *   commitChanges: (params: { worktreePath: string, message: string, autoStageAll?: boolean }) => Promise<any>,
- *   fetchRemotes: (params: { worktreePath: string }) => Promise<any>,
+ *   fetchRemotes: (params: { worktreePath?: string | null, repoId?: string | null }) => Promise<any>,
  *   pullBranch: (params: { worktreePath: string }) => Promise<any>,
  *   pushBranch: (params: { worktreePath: string, remote?: string }) => Promise<any>,
  *   savePreferences: (params: { locale?: string, graphScope?: string, splitRatio?: number }) => Promise<any>
@@ -120,12 +120,17 @@ export const createApiClient = (options = {}) => {
     const payload = await safeParseJson(response);
     if (!response.ok || !payload?.ok) {
       const locale = getLocale();
-      const errorObj = payload?.error ?? {
-        code: response.status === 401 ? 'INVALID_REQUEST' : 'GIT_ERROR',
-        message: `HTTP ${response.status}`,
-      };
+      const rawError = payload?.error;
+      const fallbackCode = response.status === 401 ? 'INVALID_REQUEST' : 'GIT_ERROR';
+      const hasStringError = typeof rawError === 'string' && rawError.trim().length > 0;
+      const errorObj = rawError && typeof rawError === 'object'
+        ? rawError
+        : {
+            code: hasStringError ? '' : fallbackCode,
+            message: hasStringError ? rawError.trim() : `HTTP ${response.status}`,
+          };
       throw new ApiClientError({
-        code: errorObj.code || 'GIT_ERROR',
+        code: (typeof errorObj.code === 'string' && errorObj.code.trim()) || fallbackCode,
         message: translateApiError(errorObj, locale),
         detail: typeof errorObj.detail === 'string' ? errorObj.detail : '',
         status: response.status,

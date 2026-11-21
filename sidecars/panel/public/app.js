@@ -668,7 +668,10 @@ const bootstrapPanel = () => {
       onFetch: async (repo) => {
         const t = getT();
         await runMutation('fetch', async () => {
-          await apiClient.fetchRemotes({ worktreePath: repo.worktreePath });
+          await apiClient.fetchRemotes({
+            worktreePath: repo.worktreePath ?? null,
+            repoId: repo.id ?? null,
+          });
           showToast(t('remote.fetchSuccess'), 'success');
         });
       },
@@ -709,8 +712,8 @@ const bootstrapPanel = () => {
         scheduleSavePreferences({ locale: nextLocale }, 80);
         renderAll();
       },
-      onLoadCommitDetail: async (worktreePath, sha) =>
-        apiClient.fetchCommitDetail({ worktreePath, sha }),
+      onLoadCommitDetail: async (worktreePath, sha, repoId) =>
+        apiClient.fetchCommitDetail({ worktreePath, repoId, sha }),
     },
   );
 
@@ -842,7 +845,8 @@ const bootstrapPanel = () => {
     for (const repo of repositories) {
       const optionEl = document.createElement('option');
       optionEl.value = repo.id;
-      const suffix = formatRepoBranchSuffix(repo, t);
+      const repoForSuffix = repo.id === activeId && snapshot.activeRepo ? snapshot.activeRepo : repo;
+      const suffix = formatRepoBranchSuffix(repoForSuffix, t);
       optionEl.textContent = suffix ? `${repo.name} (${suffix})` : repo.name;
       optionEl.selected = repo.id === activeId;
       fragment.append(optionEl);
@@ -1012,24 +1016,12 @@ const bootstrapPanel = () => {
     try {
       nextSnapshot = await apiClient.fetchSnapshot(payload, snapshotAbortController.signal);
     } catch (err) {
-      // 若首次未指定 graphScope 遭严格校验拒绝，自动以 'auto' 重试一次
-      if (!state.graphScope && err instanceof ApiClientError && err.code === 'INVALID_REQUEST') {
-        state.graphScope = 'auto';
-        payload.graphScope = 'auto';
-        try {
-          nextSnapshot = await apiClient.fetchSnapshot(payload, snapshotAbortController.signal);
-        } catch (retryErr) {
-          if (reqSeq === snapshotRequestSeq) handleApiError(retryErr);
-          return false;
-        }
-      } else {
-        if (reqSeq === snapshotRequestSeq && err?.name !== 'AbortError') {
-          state.hasLoadedInitial = true;
-          renderAll();
-          handleApiError(err);
-        }
-        return false;
+      if (reqSeq === snapshotRequestSeq && err?.name !== 'AbortError') {
+        state.hasLoadedInitial = true;
+        renderAll();
+        handleApiError(err);
       }
+      return false;
     }
 
     if (reqSeq !== snapshotRequestSeq) return false;

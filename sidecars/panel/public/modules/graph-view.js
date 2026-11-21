@@ -296,7 +296,7 @@ const formatFileStatusClass = (status) => {
  *   onRefresh: () => Promise<void>,
  *   onLoadMore: () => Promise<void>,
  *   onSwitchLanguage: () => void,
- *   onLoadCommitDetail: (worktreePath: string, sha: string) => Promise<any>
+ *   onLoadCommitDetail: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<any>
  * }} deps 外部服务与交互回调
  * @returns {{
  *   render: (state: { activeRepo: Record<string, any> | null, graph: Record<string, any> | null, graphScope: 'auto' | 'all', pendingOp: string | null, loadingMore: boolean, locale: 'zh-CN' | 'en', t: (key: string, params?: Record<string, unknown>) => string }) => void,
@@ -512,7 +512,7 @@ export const createGraphView = (elements, deps) => {
 
   const ensureCommitDetail = async (sha) => {
     const activeRepo = latestRenderState?.activeRepo;
-    if (!activeRepo?.worktreePath) return null;
+    if (!activeRepo || (!activeRepo.worktreePath && !activeRepo.id)) return null;
     if (commitDetailCache.has(sha)) {
       return commitDetailCache.get(sha);
     }
@@ -525,7 +525,11 @@ export const createGraphView = (elements, deps) => {
     }
 
     try {
-      const detail = await deps.onLoadCommitDetail(activeRepo.worktreePath, sha);
+      const detail = await deps.onLoadCommitDetail(
+        activeRepo.worktreePath ?? null,
+        sha,
+        activeRepo.id ?? null,
+      );
       if (detail) {
         commitDetailCache.set(sha, detail);
       }
