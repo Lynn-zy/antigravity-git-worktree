@@ -6,9 +6,9 @@
 
 ## Considered Options
 
-- Vite + React/Preact + TypeScript 构建型前端（被拒绝：需要维护编译流水线及提交或安装打包产物，增加插件分发和调试摩擦；对于窄幅辅助栏内的分页式 Git 拓扑图与文件级 Diff 面板属于过度工程）。
+- Vite + React/Preact + TypeScript 构建型前端（被拒绝：需要维护编译流水线及提交或安装打包产物，增加插件分发和调试摩擦；对于窄幅辅助栏内的工作区变更列表与分页式 Git 拓扑图属于过度工程）。
 
 ## Consequences
 
 - 插件目录无需 `npm install` 即可直接通过 `agy plugin install` 或放入 `~/.gemini/config/plugins/` 运行，跨平台安装门槛极低；
-- 前端必须坚持轻量模块化（拆分状态、SVG 拓扑车道、Diff 解析与 i18n 词典模块），并保持主题仅依赖宿主注入 CSS 变量与本地回退变量。
+- 前端必须坚持轻量模块化（拆分状态、SVG 拓扑车道、悬浮详情定位与 i18n 词典模块），并保持主题仅依赖宿主注入 CSS 变量与本地回退变量。
