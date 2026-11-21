@@ -331,7 +331,7 @@ export const computeGraphMetrics = (topologyOrLaneCount, options = {}) => {
 
   const naturalWidth = padX * 2 + (rawLaneCount - 1) * LANE_STEP;
   const width = Math.min(maxWidth, naturalWidth);
-  const effectivePadX = Math.min(padX, Math.floor((width - rawLaneCount) / 2));
+  const effectivePadX = Math.max(2, Math.min(padX, Math.floor((width - rawLaneCount) / 2)));
   const laneStep = (width - effectivePadX * 2) / (rawLaneCount - 1);
 
   return {
