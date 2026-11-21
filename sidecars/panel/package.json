@@ -1,0 +1,10 @@
+{
+  "name": "antigravity-git-worktree-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Antigravity 2.0 Auxiliary Pane Git Worktree & Commit Graph Sidecar backend.",
+  "engines": {
+    "node": ">=20"
+  }
+}
