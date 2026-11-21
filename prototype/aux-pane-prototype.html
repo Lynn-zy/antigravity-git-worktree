@@ -1,0 +1,1646 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PROTOTYPE · Antigravity VS Code 风格双区 Git 面板（更改 + 提交图表）</title>
+  <!--
+    THROWAWAY UI PROTOTYPE (Wayfinder Issue #7 — Final Converged Shape)
+    Plan: Classic VS Code Source Control 2-section vertical split (zero tabs, zero custom Diff drawer):
+      - Top section: Commit input + smart Commit -> Push button + collapsible 暂存的更改 / 更改
+      - Draggable horizontal sash between top & bottom sections
+      - Bottom section: ∨ 图表 (24px compact SVG graph + inline expanded file rows + upward-priority floating hover card)
+      - All file clicks invoke host native fileView; automatically follows Antigravity host workspace/worktree/branch.
+  -->
+  <style>
+    :root {
+      color-scheme: light;
+      --background: #f8f8f9;
+      --card: #ffffff;
+      --secondary: #ededf0;
+      --foreground: #1f2328;
+      --muted-foreground: #656d76;
+      --border: rgba(31, 35, 40, 0.13);
+      --primary: #0969da;
+      --primary-foreground: #ffffff;
+      --ring: #0969da;
+      --error: #cf222e;
+      --warning: #9a6700;
+      --success: #1a7f37;
+      --lane-0: #0969da;
+      --lane-1: #1a7f37;
+      --lane-2: #8250df;
+      --lane-3: #bf8700;
+      --hover-bg: rgba(31, 35, 40, 0.06);
+      --selected-bg: rgba(9, 105, 218, 0.13);
+      --popover-bg: #ffffff;
+      --popover-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+      --ui-font: var(--font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif);
+      --mono-font: var(--editor-font-family, var(--vscode-editor-font-family, ui-monospace, "Cascadia Mono", "Consolas", monospace));
+    }
+
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --background: #18181a;
+      --card: #202024;
+      --secondary: #2a2a30;
+      --foreground: #d4d4d8;
+      --muted-foreground: #8a8f98;
+      --border: rgba(255, 255, 255, 0.10);
+      --primary: #3794ff;
+      --primary-foreground: #ffffff;
+      --ring: #4c9aff;
+      --error: #f87171;
+      --warning: #e2b969;
+      --success: #73c991;
+      --lane-0: #3794ff;
+      --lane-1: #73c991;
+      --lane-2: #c586c0;
+      --lane-3: #e2b969;
+      --hover-bg: rgba(255, 255, 255, 0.06);
+      --selected-bg: rgba(55, 148, 255, 0.18);
+      --popover-bg: #252529;
+      --popover-shadow: 0 10px 28px rgba(0, 0, 0, 0.56);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: var(--ui-font) !important;
+      background: #0d0e11 !important;
+      color: var(--foreground) !important;
+      font-size: 12.5px;
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+    }
+    :root[data-theme="light"] body { background: #e6e8ed !important; }
+    :focus { outline: none; }
+    :focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+    /* Prototype Harness Stage */
+    .stage {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 14px 16px 24px;
+      gap: 10px;
+    }
+    .harness {
+      width: 100%;
+      max-width: 780px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 11px;
+      border-radius: 9px;
+      background: var(--card);
+      border: 1px dashed color-mix(in srgb, var(--primary) 45%, var(--border));
+      font-size: 11.5px;
+    }
+    .harness-left { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+    .h-tag {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--primary) 18%, transparent);
+      color: var(--primary);
+      border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+    }
+    .harness-right { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .h-seg {
+      display: inline-flex;
+      background: var(--secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .h-seg button, .h-sim {
+      border: none;
+      background: transparent;
+      color: var(--muted-foreground);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .h-seg button.active { background: var(--primary); color: var(--primary-foreground); font-weight: 600; }
+    .h-sim {
+      border: 1px solid var(--border);
+      background: var(--background);
+      color: var(--foreground);
+    }
+    .h-sim:hover { background: var(--hover-bg); }
+
+    /* Auxiliary Pane Shell (360px - 560px) */
+    .aux-pane {
+      width: var(--pane-width, 360px);
+      max-width: 100%;
+      height: min(760px, calc(100vh - 96px));
+      min-height: 540px;
+      background: var(--background);
+      color: var(--foreground);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 18px 46px rgba(0, 0, 0, 0.42);
+      overflow: hidden;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      transition: width 160ms ease;
+    }
+
+    /* Scroll Areas */
+    .pane-scroll {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--foreground) 20%, transparent) transparent;
+    }
+    .pane-scroll::-webkit-scrollbar { width: 7px; }
+    .pane-scroll::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--foreground) 18%, transparent);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+
+    /* Section Containers & Draggable Divider */
+    .top-section {
+      display: flex;
+      flex-direction: column;
+      min-height: 30px;
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+    .sash {
+      height: 5px;
+      flex-shrink: 0;
+      cursor: row-resize;
+      position: relative;
+      background: transparent;
+    }
+    .sash::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 2px;
+      height: 1px;
+      background: var(--border);
+      transition: background 120ms, height 120ms;
+    }
+    .sash:hover::after, .sash.dragging::after {
+      background: var(--primary);
+      height: 2px;
+      top: 1px;
+    }
+    .bottom-section {
+      flex: 1 1 auto;
+      min-height: 32px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Section Header Bar (VS Code ∨ 源代码管理 / ∨ 图表) */
+    .sec-hdr {
+      height: 28px;
+      padding: 0 6px 0 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      background: var(--background);
+      flex-shrink: 0;
+      user-select: none;
+    }
+    .sec-hdr-title {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--foreground);
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .sec-hdr-title:hover { background: var(--hover-bg); }
+    .sec-hdr-title svg { transition: transform 120ms; }
+    .sec-hdr-title.collapsed svg { transform: rotate(-90deg); }
+    .hdr-tools {
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+      flex-shrink: 0;
+    }
+    .hdr-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 22px;
+      min-width: 22px;
+      padding: 0 4px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted-foreground);
+      font-family: inherit;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    .hdr-btn:hover:not(:disabled) { background: var(--hover-bg); color: var(--foreground); }
+    .hdr-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .hdr-btn.scope-btn { padding: 0 5px; color: var(--foreground); font-weight: 500; }
+    .hdr-btn.scope-btn.all-mode { color: var(--primary); }
+
+    /* Top Commit Input & Smart Action Button (Commit -> Push) */
+    .commit-box {
+      padding: 4px 10px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .commit-input {
+      width: 100%;
+      min-height: 30px;
+      max-height: 92px;
+      resize: vertical;
+      background: var(--card);
+      color: var(--foreground);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .commit-input:focus { border-color: var(--ring); outline: none; }
+    .primary-action-btn {
+      width: 100%;
+      height: 28px;
+      border: none;
+      border-radius: 4px;
+      background: var(--primary);
+      color: var(--primary-foreground);
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: filter 110ms, opacity 110ms;
+    }
+    .primary-action-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .primary-action-btn:disabled { opacity: 0.42; cursor: not-allowed; }
+    .primary-action-btn.sync-mode {
+      background: color-mix(in srgb, var(--primary) 88%, var(--success) 12%);
+    }
+
+    .warn-strip {
+      padding: 5px 8px;
+      border-radius: 4px;
+      background: color-mix(in srgb, var(--warning) 14%, transparent);
+      border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+      color: var(--warning);
+      font-size: 11px;
+    }
+
+    /* VS Code Collapsible Change Group (暂存的更改 / 更改) */
+    .chg-group-hdr {
+      height: 24px;
+      padding: 0 8px 0 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--foreground);
+    }
+    .chg-group-hdr:hover { background: var(--hover-bg); }
+    .chg-group-left { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+    .chg-group-left svg { transition: transform 120ms; }
+    .chg-group-left.collapsed svg { transform: rotate(-90deg); }
+    .chg-group-right { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+    .chg-group-acts {
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+      opacity: 0;
+      transition: opacity 90ms;
+    }
+    .chg-group-hdr:hover .chg-group-acts { opacity: 1; }
+    .count-pill {
+      min-width: 18px;
+      height: 17px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--secondary);
+      color: var(--foreground);
+      font-size: 10.5px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* File Rows (Shared visual feel between Changes & Expanded Graph Commit Files) */
+    .c-file-row {
+      height: 23px;
+      padding: 0 8px 0 18px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .c-file-row:hover { background: var(--hover-bg); }
+    .c-file-acts {
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+      flex-shrink: 0;
+      opacity: 0;
+      transition: opacity 80ms;
+    }
+    .c-file-row:hover .c-file-acts,
+    .c-file-row:focus-within .c-file-acts { opacity: 1; }
+
+    .f-icon {
+      width: 15px;
+      height: 15px;
+      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono-font);
+      font-size: 8.5px;
+      font-weight: 800;
+      flex-shrink: 0;
+    }
+    .f-icon.py { background: rgba(55, 148, 255, 0.16); color: #5aa9ff; }
+    .f-icon.md { background: rgba(138, 143, 152, 0.2); color: #a1a7b3; }
+    .f-icon.js { background: rgba(226, 185, 105, 0.18); color: #e2b969; }
+    .f-icon.json { background: rgba(115, 201, 145, 0.18); color: #73c991; }
+    .f-label {
+      flex: 1 1 auto;
+      min-width: 0;
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      overflow: hidden;
+    }
+    .f-name {
+      font-size: 12px;
+      color: var(--foreground);
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .f-dir {
+      font-size: 11px;
+      color: var(--muted-foreground);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .f-status {
+      font-family: var(--mono-font);
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+      width: 14px;
+      text-align: center;
+    }
+    .f-status.M { color: var(--warning); }
+    .f-status.A, .f-status.U { color: var(--success); }
+    .f-status.D { color: var(--error); }
+    .f-status.R { color: var(--primary); }
+
+    /* Bottom Graph Rows (Exact VS Code 24px Compact Tree) */
+    .g-row {
+      display: flex;
+      align-items: center;
+      height: 24px;
+      padding-right: 6px;
+      gap: 5px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .g-row:hover { background: var(--hover-bg); }
+    .g-row.expanded { background: var(--selected-bg); }
+    .g-subj {
+      flex: 1 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12.5px;
+      color: var(--foreground);
+    }
+    .g-refs { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
+    .g-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      height: 18px;
+      padding: 0 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+      max-width: 108px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .g-pill.head {
+      background: color-mix(in srgb, var(--lane-0) 28%, var(--background));
+      color: var(--foreground);
+      border: 1px solid color-mix(in srgb, var(--lane-0) 65%, transparent);
+    }
+    .g-pill.local {
+      background: color-mix(in srgb, var(--lane-1) 20%, var(--background));
+      color: var(--foreground);
+      border: 1px solid color-mix(in srgb, var(--lane-1) 45%, transparent);
+    }
+    .g-pill.remote, .g-pill.more {
+      background: var(--secondary);
+      color: var(--muted-foreground);
+      border: 1px solid var(--border);
+    }
+    .g-pill.more { padding: 0 4px; font-size: 10px; }
+    .row-info-btn {
+      width: 20px;
+      height: 20px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted-foreground);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      flex-shrink: 0;
+      opacity: 0;
+    }
+    .g-row:hover .row-info-btn, .g-row.expanded .row-info-btn { opacity: 1; }
+    .row-info-btn:hover { background: var(--hover-bg); color: var(--foreground); }
+
+    .g-file-row {
+      display: flex;
+      align-items: center;
+      height: 23px;
+      padding-right: 8px;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .g-file-row:hover { background: var(--hover-bg); }
+
+    /* VS Code Style Hover Commit Detail Card (Upward-Priority Positioning) */
+    .hover-card {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      z-index: 30;
+      overflow-y: auto;
+      background: var(--popover-bg);
+      color: var(--foreground);
+      border: 1px solid color-mix(in srgb, var(--foreground) 18%, transparent);
+      border-radius: 6px;
+      padding: 9px 11px;
+      box-shadow: var(--popover-shadow);
+      font-size: 12px;
+      line-height: 1.5;
+      scrollbar-width: thin;
+    }
+    .hc-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      font-size: 11.5px;
+      color: var(--muted-foreground);
+      margin-bottom: 3px;
+    }
+    .hc-author { color: var(--primary); font-weight: 600; }
+    .hc-coauthor { font-size: 11px; color: var(--muted-foreground); margin-bottom: 5px; }
+    .hc-body {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      color: var(--foreground);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+      padding-top: 6px;
+      margin-top: 4px;
+    }
+
+    /* Confirm Modal & More Menu & Toast */
+    .modal-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 38;
+      background: rgba(0, 0, 0, 0.52);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 14px;
+    }
+    .modal-box {
+      width: 100%;
+      max-width: 310px;
+      background: var(--popover-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: var(--popover-shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .modal-title { font-size: 13px; font-weight: 700; }
+    .modal-body { font-size: 12px; color: var(--muted-foreground); }
+    .modal-foot { display: flex; justify-content: flex-end; gap: 6px; }
+    .m-btn {
+      height: 26px;
+      padding: 0 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--secondary);
+      color: var(--foreground);
+      font-family: inherit;
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+    .m-btn.danger { background: var(--error); border-color: var(--error); color: #fff; font-weight: 600; }
+
+    .more-menu {
+      position: absolute;
+      right: 6px;
+      z-index: 35;
+      min-width: 156px;
+      background: var(--popover-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px;
+      box-shadow: var(--popover-shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .more-menu button {
+      border: none;
+      background: transparent;
+      color: var(--foreground);
+      font-family: inherit;
+      font-size: 12px;
+      text-align: left;
+      padding: 5px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .more-menu button:hover { background: var(--hover-bg); }
+
+    .load-more-row { padding: 8px 10px 10px; text-align: center; }
+    .load-more-btn {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted-foreground);
+      font-family: inherit;
+      font-size: 11px;
+      padding: 3px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .load-more-btn:hover { background: var(--hover-bg); color: var(--foreground); }
+
+    .toast-bar {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      z-index: 42;
+      padding: 6px 10px;
+      border-radius: 6px;
+      background: var(--card);
+      color: var(--foreground);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--primary);
+      box-shadow: var(--popover-shadow);
+      font-size: 11.5px;
+    }
+    .toast-bar.err { border-left-color: var(--error); color: var(--error); }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="harness">
+      <div class="harness-left">
+        <span class="h-tag">PROTOTYPE · #7 终版预览</span>
+        <span>VS Code 风格双区面板（上：更改/暂存/提交→推送 · 下：提交图表）</span>
+      </div>
+      <div class="harness-right">
+        <div class="h-seg">
+          <button class="active" data-width="360">360px</button>
+          <button data-width="420">420px</button>
+          <button data-width="520">520px</button>
+        </div>
+        <div class="h-seg">
+          <button class="active" data-theme-set="dark">Dark</button>
+          <button data-theme-set="light">Light</button>
+        </div>
+        <button class="h-sim" id="btnSimHostSwitch">模拟宿主切 Worktree</button>
+      </div>
+    </div>
+
+    <main class="aux-pane" id="auxPane" aria-label="Antigravity Git Auxiliary Pane"></main>
+  </div>
+
+  <script type="module">
+    const ICONS = {
+      chevDown: `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 6.2L8 10l3.8-3.8"/></svg>`,
+      branch: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="4.5" cy="3.5" r="1.6"/><circle cx="4.5" cy="12.5" r="1.6"/><circle cx="11.5" cy="6" r="1.6"/><path d="M4.5 5.1v5.8M11.5 7.6c0 2.4-7 1.5-7 3.1"/></svg>`,
+      fetch: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v8M5 7.8l3 3 3-3M3.5 13h9"/></svg>`,
+      pull: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v9M4.8 8.3L8 11.5l3.2-3.2"/></svg>`,
+      push: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.5v-9M4.8 7.7L8 4.5l3.2 3.2"/></svg>`,
+      refresh: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 8a5 5 0 1 1-1.5-3.5M13 2.8v2.7h-2.7"/></svg>`,
+      more: `<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12.5" cy="8" r="1.2"/></svg>`,
+      doc: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2.5" width="10" height="11" rx="1.4"/><path d="M5.5 6h5M5.5 8.5h5M5.5 11h3"/></svg>`,
+      fileOpen: `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2.5h5.2L12.5 5.8V13.5H4z"/><path d="M9.2 2.5v3.3h3.3"/></svg>`,
+      plus: `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3.2v9.6M3.2 8h9.6"/></svg>`,
+      minus: `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.5 8h9"/></svg>`,
+      undo: `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 6.5h5.2a3.2 3.2 0 1 1 0 6.4H7.2M6.8 4L4.2 6.5 6.8 9"/></svg>`,
+      check: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 8.3l3.1 3.2 6.5-7"/></svg>`,
+      copy: `<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="7.5" height="8" rx="1.2"/><path d="M10.5 5.5V3.8A1.2 1.2 0 0 0 9.3 2.5H4.2A1.2 1.2 0 0 0 3 3.8v6.4a1.2 1.2 0 0 0 1.2 1.3h1.3"/></svg>`,
+      target: `<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>`,
+      cloudUp: `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 11.8h7.2a2.6 2.6 0 0 0 .5-5.1A3.7 3.7 0 0 0 5 5.8a2.5 2.5 0 0 0-.5 6z"/><path d="M8 12.8V7.6M6.2 9.3L8 7.5l1.8 1.8"/></svg>`,
+    };
+
+    const HOST_WORKSPACES = [
+      {
+        label: '主工作区 · master',
+        branch: 'master',
+        detached: false,
+        ahead: 0,
+        behind: 0,
+        hasUpstream: true,
+        staged: [
+          { path: 'docs/maibot_brain_status_viz_spec.md', status: 'A' },
+        ],
+        changes: [
+          { path: 'bionic_emotion_brain/coordinator.py', status: 'M' },
+          { path: 'sidecars/panel/git-graph.mjs', status: 'U' },
+        ],
+        commits: [
+          {
+            sha: 'e8a12f4', fullSha: 'e8a12f49102cd8a173b012ff492018cb7e1029a1',
+            lane: 0, parents: ['9d40b11'], parentLanes: [0],
+            refs: [{ type: 'head', label: 'master' }, { type: 'remote', label: 'origin/master' }],
+            subject: 'perf(bionic-emotion-brain): 冷却读取与缓存策略优化',
+            author: 'Lynn-zy', coAuthor: 'Claude Opus 5.5',
+            relTime: '2 小时前', absTime: '2026年11月21日 14:40',
+            body: 'perf(bionic-emotion-brain): 冷却读取与缓存策略优化\n\n- 减少高频轮询下的磁盘重复解析\n- 仅在 mtime 变化时重建状态快照',
+            files: [
+              { path: '.scratch/bionic-emotion-brain/spec.md', status: 'M' },
+              { path: 'bionic_emotion_brain/CHANGELOG.md', status: 'M' },
+              { path: 'bionic_emotion_brain/coordinator.py', status: 'M' },
+              { path: 'bionic_emotion_brain/plugin.py', status: 'M' },
+              { path: 'bionic_emotion_brain/test_grudge_wears_off.py', status: 'M' },
+            ],
+          },
+          {
+            sha: '9d40b11', fullSha: '9d40b11aa28b773c01e4902ab1847cd09f11a20e',
+            lane: 0, parents: ['4b71e09', 'f10c832'], parentLanes: [0, 1],
+            isMerge: true,
+            refs: [],
+            subject: 'feat(bionic-emotion-brain): WebUI 与状态图的心跳联动',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '5 小时前', absTime: '2026年11月21日 11:22',
+            body: 'feat(bionic-emotion-brain): WebUI 与状态图的心跳联动\n\n合并前端状态面板实时刷新分支。',
+            files: [
+              { path: 'bionic_emotion_brain/webui/app.js', status: 'M' },
+              { path: 'bionic_emotion_brain/status_image.py', status: 'M' },
+            ],
+          },
+          {
+            sha: 'f10c832', fullSha: 'f10c832c44019ab8021de94f102aa87c6510b923',
+            lane: 1, parents: ['4b71e09'], parentLanes: [0],
+            refs: [{ type: 'local', label: 'feat/status-card' }],
+            subject: 'docs(bionic-emotion-brain): 补上记仇回响偶尔提前衰减说明',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '1 天前', absTime: '2026年11月20日 18:05',
+            body: 'docs(bionic-emotion-brain): 补上记仇回响偶尔提前衰减说明\n\n补充边界条件与衰减参数对照表。',
+            files: [{ path: 'docs/bionic-emotion-brain.md', status: 'M' }],
+          },
+          {
+            sha: '4b71e09', fullSha: '4b71e098129af701c3481a920bc47e1290f45a88',
+            lane: 0, parents: ['2c89d15'], parentLanes: [0],
+            refs: [],
+            subject: 'feat(bionic-emotion-brain): 此刻的记仇各处一致化处理',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '1 天前', absTime: '2026年11月20日 15:40',
+            body: 'feat(bionic-emotion-brain): 此刻的记仇各处一致化处理\n\n收口 3 处重复的状态判定。',
+            files: [
+              { path: 'bionic_emotion_brain/coordinator.py', status: 'M' },
+              { path: 'bionic_emotion_brain/test_grudge_wears_off.py', status: 'A' },
+            ],
+          },
+          {
+            sha: '2c89d15', fullSha: '2c89d154f90a21c7e89b1033a440d2109e8f1130',
+            lane: 0, parents: ['7a12b04'], parentLanes: [0],
+            refs: [],
+            subject: 'fix(bionic-emotion-brain): 记仇只靠非主人挑衅触发',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '1 天前', absTime: '2026年11月20日 13:10',
+            body: 'fix(bionic-emotion-brain): 记仇只靠非主人挑衅触发\n\n修复主人指令被误计入挑衅次数的问题。',
+            files: [{ path: 'bionic_emotion_brain/plugin.py', status: 'M' }],
+          },
+          {
+            sha: '7a12b04', fullSha: '7a12b04192837465ab9102cd481029ef10293847',
+            lane: 0, parents: ['55c9e10'], parentLanes: [0],
+            refs: [],
+            subject: 'feat(bionic-emotion-brain): 状态图改由插件用 Pillow 直接画',
+            author: 'Lynn-zy', coAuthor: 'Claude Opus 5.5',
+            relTime: '1 天前', absTime: '2026年11月20日 11:17',
+            body: 'feat(bionic-emotion-brain): 状态图改由插件用 Pillow 直接画，7 条曲线画在同一张图里\n\n画图\n• 新模块 status_image.py：layout_status_card 按字体度量排版（纯函数），render_status_card_png 交给 Pillow 画，按 4 倍尺寸画再缩到 960 像素宽，线条边缘平滑；在线绘制，一张约 0.1 秒\n• 不再请求宿主浏览器截图：删掉 HTML 生成与 render.html2png 能力\n• 曲线和 WebUI 一样画在一张折线图里：虚线网格、纵轴标 Hz、2.2 粗的线、末端圆点\n\n字体\n• 随插件带精简 Noto Sans SC 常规与粗体（assets/fonts/，共 3.1 MB）',
+            files: [
+              { path: 'bionic_emotion_brain/status_image.py', status: 'A' },
+              { path: 'bionic_emotion_brain/plugin.py', status: 'M' },
+              { path: 'bionic_emotion_brain/manifest.json', status: 'M' },
+            ],
+          },
+          {
+            sha: '55c9e10', fullSha: '55c9e107721ac980f214b8890123cd4410ab92e1',
+            lane: 0, parents: ['10a4c89'], parentLanes: [0],
+            refs: [],
+            subject: 'feat(bionic-emotion-brain): 脑区曲线改取各核团峰值',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '2 天前', absTime: '2026年11月19日 20:14',
+            body: 'feat(bionic-emotion-brain): 脑区曲线改取各核团峰值',
+            files: [{ path: 'bionic_emotion_brain/metrics.py', status: 'M' }],
+          },
+          {
+            sha: '10a4c89', fullSha: '10a4c892019ab72100f8831029ab11c82019aa02',
+            lane: 0, parents: [], parentLanes: [],
+            refs: [{ type: 'local', label: 'v0.1.0' }],
+            subject: 'chore: 初始化插件骨架与基础配置',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '3 天前', absTime: '2026年11月18日 16:00',
+            body: 'chore: 初始化插件骨架与基础配置',
+            files: [{ path: 'README.md', status: 'A' }],
+          },
+        ],
+      },
+      {
+        label: '隔离 Worktree · feat/svg-lanes',
+        branch: 'feat/svg-lanes',
+        detached: false,
+        ahead: 1,
+        behind: 0,
+        hasUpstream: false,
+        staged: [],
+        changes: [],
+        commits: [
+          {
+            sha: 'a91d4f2', fullSha: 'a91d4f29b1c8071f0e93a21048d9e41b60f2c112',
+            lane: 1, parents: ['e8a12f4'], parentLanes: [0],
+            refs: [{ type: 'head', label: 'feat/svg-lanes' }],
+            subject: 'feat(graph): 新增多分支 SVG 曲线与原地文件展开',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '15 分钟前', absTime: '2026年11月21日 16:50',
+            body: 'feat(graph): 新增多分支 SVG 曲线与原地文件展开',
+            files: [
+              { path: 'sidecars/panel/ui/svg-graph.mjs', status: 'A' },
+              { path: 'sidecars/panel/ui/styles.css', status: 'M' },
+            ],
+          },
+          {
+            sha: 'e8a12f4', fullSha: 'e8a12f49102cd8a173b012ff492018cb7e1029a1',
+            lane: 0, parents: [], parentLanes: [],
+            refs: [{ type: 'local', label: 'master' }],
+            subject: 'perf(bionic-emotion-brain): 冷却读取与缓存策略优化',
+            author: 'Lynn-zy', coAuthor: '',
+            relTime: '2 小时前', absTime: '2026年11月21日 14:40',
+            body: 'perf(bionic-emotion-brain): 冷却读取与缓存策略优化',
+            files: [{ path: 'bionic_emotion_brain/coordinator.py', status: 'M' }],
+          },
+        ],
+      },
+    ];
+
+    const state = {
+      paneWidth: 360,
+      theme: 'dark',
+      hostIdx: 0,
+      topHeightPx: 270,
+      changesCollapsed: false,
+      stagedOpen: true,
+      unstagedOpen: true,
+      graphCollapsed: false,
+      scope: 'auto', // 'auto' | 'all'
+      commitDrafts: {},
+      expandedCommits: new Set(),
+      hoverCommitSha: null,
+      pinnedPopoverSha: null,
+      hoverStyle: '',
+      moreMenuOpen: false,
+      modal: null,
+      graphLimit: 150,
+      toast: null,
+    };
+
+    const escapeHtml = (s) => String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    const getWs = () => HOST_WORKSPACES[state.hostIdx];
+
+    const fileBadge = (filePath) => {
+      if (filePath.endsWith('.py')) return { cls: 'py', txt: 'PY' };
+      if (filePath.endsWith('.md')) return { cls: 'md', txt: 'M↓' };
+      if (filePath.endsWith('.json')) return { cls: 'json', txt: '{}' };
+      return { cls: 'js', txt: 'JS' };
+    };
+
+    const splitPath = (p) => {
+      const i = p.lastIndexOf('/');
+      return i === -1 ? { name: p, dir: '' } : { name: p.slice(i + 1), dir: p.slice(0, i).replace(/\//g, '\\') };
+    };
+
+    const LANE_COLORS = ['var(--lane-0)', 'var(--lane-1)', 'var(--lane-2)', 'var(--lane-3)'];
+
+    /**
+     * 基于当前可见提交列表计算真实拓扑车道（杜绝分支/Merge 线断裂或悬空线头）。
+     * 为每行返回 incomingOnOwnLane（顶部连入本节点）、passThroughLanes（贯穿本行的其他车道）、
+     * outgoingEdges（从本节点连向父节点的车道）及 exitingLanes（下方展开文件行应延续的车道）。
+     */
+    const computeGraphTopology = (commits) => {
+      const visibleMap = new Map(commits.map((c) => [c.sha, c]));
+      const activeBySha = new Map(); // sha -> Set<lane>
+      return commits.map((c) => {
+        const incomingSet = activeBySha.get(c.sha);
+        const incomingOnOwnLane = Boolean(incomingSet && incomingSet.has(c.lane));
+        activeBySha.delete(c.sha);
+
+        const passThroughSet = new Set();
+        for (const lanes of activeBySha.values()) {
+          for (const l of lanes) {
+            if (l !== c.lane) passThroughSet.add(l);
+          }
+        }
+
+        const outgoingEdges = [];
+        c.parents.forEach((pSha, i) => {
+          const parentCommit = visibleMap.get(pSha);
+          if (!parentCommit) return;
+          const pLane = parentCommit.lane ?? c.parentLanes[i] ?? 0;
+          outgoingEdges.push({ fromLane: c.lane, toLane: pLane });
+          if (!activeBySha.has(pSha)) activeBySha.set(pSha, new Set());
+          activeBySha.get(pSha).add(pLane);
+        });
+
+        const exitingSet = new Set();
+        for (const lanes of activeBySha.values()) {
+          for (const l of lanes) exitingSet.add(l);
+        }
+
+        return {
+          incomingOnOwnLane,
+          passThroughLanes: [...passThroughSet],
+          outgoingEdges,
+          exitingLanes: [...exitingSet],
+        };
+      });
+    };
+
+    const renderRailSvg = ({ height, lane, maxLanes, kind, isHead, isMerge, topo, activeLanes = [] }) => {
+      const colW = 13;
+      const padX = 11;
+      const cols = Math.min(Math.max(maxLanes, 1), 4);
+      const width = padX * 2 + (cols - 1) * colW;
+      const cx = padX + Math.min(lane, cols - 1) * colW;
+      const cy = height / 2;
+      const color = LANE_COLORS[lane % LANE_COLORS.length];
+
+      let svg = '';
+      if (kind === 'file') {
+        for (const al of activeLanes) {
+          const ax = padX + Math.min(al, cols - 1) * colW;
+          const ac = LANE_COLORS[al % LANE_COLORS.length];
+          svg += `<line x1="${ax}" y1="0" x2="${ax}" y2="${height}" stroke="${ac}" stroke-width="1.8" stroke-opacity="0.92"/>`;
+        }
+        return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="flex-shrink:0;display:block">${svg}</svg>`;
+      }
+
+      // 1. 贯穿本行的其他活跃分支轨道
+      for (const al of topo.passThroughLanes) {
+        const ax = padX + Math.min(al, cols - 1) * colW;
+        const ac = LANE_COLORS[al % LANE_COLORS.length];
+        svg += `<line x1="${ax}" y1="0" x2="${ax}" y2="${height}" stroke="${ac}" stroke-width="1.8" stroke-opacity="0.92"/>`;
+      }
+      // 2. 本车道从上方连入当前提交圆点的线段（确保 Merge 分叉与子节点 100% 闭合连接）
+      if (topo.incomingOnOwnLane) {
+        svg += `<line x1="${cx}" y1="0" x2="${cx}" y2="${cy}" stroke="${color}" stroke-width="1.8"/>`;
+      }
+      // 3. 从当前节点向下连往各父节点的直线或贝塞尔曲线（分支与合并曲线统一使用分支色）
+      for (const edge of topo.outgoingEdges) {
+        const px = padX + Math.min(edge.toLane, cols - 1) * colW;
+        const edgeColor = LANE_COLORS[Math.max(edge.fromLane, edge.toLane) % LANE_COLORS.length];
+        if (px === cx) {
+          svg += `<line x1="${cx}" y1="${cy}" x2="${px}" y2="${height}" stroke="${edgeColor}" stroke-width="1.8"/>`;
+        } else {
+          const midY = (cy + height) / 2;
+          svg += `<path d="M ${cx} ${cy} C ${cx} ${midY + 3}, ${px} ${midY - 3}, ${px} ${height}" fill="none" stroke="${edgeColor}" stroke-width="1.8"/>`;
+        }
+      }
+      // 4. 提交圆点绘制在最顶层
+      if (isHead) {
+        svg += `<circle cx="${cx}" cy="${cy}" r="5.1" fill="var(--background)" stroke="${color}" stroke-width="1.8"/>`;
+        svg += `<circle cx="${cx}" cy="${cy}" r="2.1" fill="${color}"/>`;
+      } else if (isMerge) {
+        svg += `<circle cx="${cx}" cy="${cy}" r="4" fill="var(--background)" stroke="${color}" stroke-width="1.8"/>`;
+      } else {
+        svg += `<circle cx="${cx}" cy="${cy}" r="3.2" fill="${color}"/>`;
+      }
+      return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="flex-shrink:0;display:block">${svg}</svg>`;
+    };
+
+    const showToast = (msg, isErr = false) => {
+      state.toast = { msg, isErr };
+      render();
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => { state.toast = null; render(); }, 2800);
+    };
+
+    /**
+     * 最小图表遮挡算法：
+     * 分别计算详情卡置于行上方与行下方时会覆盖多少像素的「可见图表行区域」。
+     * - 靠上（如第 1、2 项）：上方遮挡更少（第 1 项遮挡 0px，借用上方更改区），故弹上方；
+     * - 居中（上下遮挡相等）：默认弹下方；
+     * - 靠底：若下方有空白且能放下则弹下方；若贴近面板底边放不下则自动翻转至上方。
+     */
+    const computeMinOcclusionPopoverStyle = (row, commitBody = '') => {
+      const paneRect = auxPane.getBoundingClientRect();
+      const graphEl = document.getElementById('graphScroll');
+      const graphRect = graphEl ? graphEl.getBoundingClientRect() : paneRect;
+      const rows = graphEl ? graphEl.querySelectorAll('.g-row, .g-file-row') : [];
+      const lastRowBottom = rows.length ? rows[rows.length - 1].getBoundingClientRect().bottom : graphRect.bottom;
+      const contentTop = graphRect.top;
+      const contentBottom = Math.min(graphRect.bottom, lastRowBottom);
+
+      const rowRect = row.getBoundingClientRect();
+      const availAbove = Math.floor(rowRect.top - paneRect.top - 12);
+      const availBelow = Math.floor(paneRect.bottom - rowRect.bottom - 12);
+      const lineEst = Math.max(2, commitBody.split('\n').length + Math.ceil(commitBody.length / 36));
+      const estH = Math.min(240, Math.max(115, lineEst * 18 + 64));
+
+      const aboveBottom = rowRect.top - 4;
+      const aboveTop = Math.max(paneRect.top + 8, aboveBottom - estH);
+      const occAbove = Math.max(0, Math.min(aboveBottom, contentBottom) - Math.max(aboveTop, contentTop));
+
+      const belowTop = rowRect.bottom + 4;
+      const belowBottom = Math.min(paneRect.bottom - 8, belowTop + estH);
+      const occBelow = Math.max(0, Math.min(belowBottom, contentBottom) - Math.max(belowTop, contentTop));
+
+      let placeAbove = false;
+      if (availBelow < 110 && availAbove >= availBelow) {
+        placeAbove = true;
+      } else if (availAbove < 110 && availBelow >= availAbove) {
+        placeAbove = false;
+      } else {
+        // 严格遮挡更少才向上；相等（中间位置）按默认放下方
+        placeAbove = occAbove < occBelow;
+      }
+
+      if (placeAbove) {
+        const bottom = Math.max(10, Math.floor(paneRect.bottom - rowRect.top + 4));
+        const maxH = Math.max(100, Math.min(280, Math.floor(paneRect.height - bottom - 10)));
+        return `bottom:${bottom}px;max-height:${maxH}px`;
+      }
+      const top = Math.max(10, Math.floor(rowRect.bottom - paneRect.top + 4));
+      const maxH = Math.max(100, Math.min(280, Math.floor(paneRect.height - top - 10)));
+      return `top:${top}px;max-height:${maxH}px`;
+    };
+
+    const auxPane = document.getElementById('auxPane');
+
+    const getPrimaryButtonState = (ws) => {
+      const hasAnyChanges = ws.staged.length + ws.changes.length > 0;
+      if (hasAnyChanges) {
+        return {
+          mode: 'commit',
+          label: '提交',
+          icon: ICONS.check,
+          disabled: false,
+          title: ws.staged.length > 0
+            ? '提交已暂存更改 (Ctrl/Cmd+Enter)'
+            : '当前无已暂存更改，点击可选择自动暂存全部更改并提交',
+        };
+      }
+      if (!ws.hasUpstream && !ws.detached) {
+        return { mode: 'publish', label: `发布分支 (${ws.branch})`, icon: ICONS.cloudUp, disabled: false, title: `git push -u origin ${ws.branch}` };
+      }
+      if (ws.ahead > 0) {
+        return { mode: 'push', label: `推送更改 ${ws.ahead}↑`, icon: ICONS.cloudUp, disabled: false, title: `git push origin ${ws.branch}` };
+      }
+      if (ws.behind > 0) {
+        return { mode: 'pull', label: `拉取更改 ${ws.behind}↓`, icon: ICONS.pull, disabled: false, title: 'git pull --ff-only' };
+      }
+      return { mode: 'commit', label: '提交', icon: ICONS.check, disabled: true, title: '工作区没有待提交或待推送更改' };
+    };
+
+    const renderChangeFileRow = (f, group) => {
+      const { name, dir } = splitPath(f.path);
+      const fb = fileBadge(f.path);
+      const acts = group === 'staged'
+        ? `<button class="hdr-btn" data-action="open-file" data-path="${escapeHtml(f.path)}" title="在宿主打开文件 (fileView)">${ICONS.fileOpen}</button>
+           <button class="hdr-btn" data-action="unstage-file" data-path="${escapeHtml(f.path)}" title="取消暂存更改">${ICONS.minus}</button>`
+        : `<button class="hdr-btn" data-action="open-file" data-path="${escapeHtml(f.path)}" title="在宿主打开文件 (fileView)">${ICONS.fileOpen}</button>
+           <button class="hdr-btn" data-action="discard-file" data-status="${f.status}" data-path="${escapeHtml(f.path)}" title="${f.status === 'U' ? '永久删除未跟踪文件' : '放弃更改'}">${ICONS.undo}</button>
+           <button class="hdr-btn" data-action="stage-file" data-path="${escapeHtml(f.path)}" title="暂存更改">${ICONS.plus}</button>`;
+
+      return `
+        <div class="c-file-row" data-action="open-file" data-path="${escapeHtml(f.path)}">
+          <span class="f-icon ${fb.cls}">${fb.txt}</span>
+          <span class="f-label">
+            <span class="f-name">${escapeHtml(name)}</span>
+            ${dir ? `<span class="f-dir">${escapeHtml(dir)}</span>` : ''}
+          </span>
+          <span class="c-file-acts">${acts}</span>
+          <span class="f-status ${f.status}">${f.status}</span>
+        </div>`;
+    };
+
+    const render = () => {
+      document.documentElement.dataset.theme = state.theme;
+      auxPane.style.setProperty('--pane-width', `${state.paneWidth}px`);
+
+      const ws = getWs();
+      const activeEl = document.activeElement;
+      const keepId = activeEl && auxPane.contains(activeEl) && activeEl.id ? activeEl.id : null;
+      const selStart = activeEl && typeof activeEl.selectionStart === 'number' ? activeEl.selectionStart : null;
+
+      // Top section: Commit box + 暂存的更改 + 更改
+      const btnState = getPrimaryButtonState(ws);
+      const draft = state.commitDrafts[ws.branch] || '';
+      const totalChanges = ws.staged.length + ws.changes.length;
+      const topStyle = state.changesCollapsed ? 'height:28px' : state.graphCollapsed ? 'flex:1 1 auto' : `height:${state.topHeightPx}px`;
+
+      const topSectionHtml = `
+        <section class="top-section" style="${topStyle}">
+          <header class="sec-hdr">
+            <span class="sec-hdr-title ${state.changesCollapsed ? 'collapsed' : ''}" data-action="toggle-changes-sec">
+              ${ICONS.chevDown}
+              <span>源代码管理</span>
+              ${totalChanges > 0 ? `<span class="count-pill">${totalChanges}</span>` : ''}
+            </span>
+            <div class="hdr-tools">
+              <button class="hdr-btn" data-action="remote" data-op="refresh" title="刷新">${ICONS.refresh}</button>
+            </div>
+          </header>
+          ${state.changesCollapsed ? '' : `
+            <div class="commit-box">
+              ${ws.detached ? `<div class="warn-strip">当前处于 Detached HEAD，提交后建议立即新建分支。</div>` : ''}
+              <textarea class="commit-input" id="commitMsgInput" rows="1" placeholder="消息（Ctrl+Enter 在“${escapeHtml(ws.branch)}”上提交）">${escapeHtml(draft)}</textarea>
+              <button class="primary-action-btn ${btnState.mode !== 'commit' ? 'sync-mode' : ''}"
+                      data-action="primary-btn" data-mode="${btnState.mode}"
+                      title="${escapeHtml(btnState.title)}" ${btnState.disabled ? 'disabled' : ''}>
+                ${btnState.icon}<span>${escapeHtml(btnState.label)}</span>
+              </button>
+            </div>
+            <div class="pane-scroll" tabindex="0">
+              ${ws.staged.length > 0 ? `
+                <div class="chg-group-hdr" data-action="toggle-staged-grp">
+                  <span class="chg-group-left ${state.stagedOpen ? '' : 'collapsed'}">${ICONS.chevDown}<span>暂存的更改</span></span>
+                  <span class="chg-group-right">
+                    <span class="chg-group-acts">
+                      <button class="hdr-btn" data-action="unstage-all" title="取消暂存所有更改">${ICONS.minus}</button>
+                    </span>
+                    <span class="count-pill">${ws.staged.length}</span>
+                  </span>
+                </div>
+                ${state.stagedOpen ? ws.staged.map((f) => renderChangeFileRow(f, 'staged')).join('') : ''}
+              ` : ''}
+              <div class="chg-group-hdr" data-action="toggle-unstaged-grp">
+                <span class="chg-group-left ${state.unstagedOpen ? '' : 'collapsed'}">${ICONS.chevDown}<span>更改</span></span>
+                <span class="chg-group-right">
+                  ${ws.changes.length > 0 ? `
+                    <span class="chg-group-acts">
+                      <button class="hdr-btn" data-action="discard-all" title="放弃所有更改（保留未跟踪文件）">${ICONS.undo}</button>
+                      <button class="hdr-btn" data-action="stage-all" title="暂存所有更改">${ICONS.plus}</button>
+                    </span>` : ''}
+                  ${ws.changes.length > 0 ? `<span class="count-pill">${ws.changes.length}</span>` : ''}
+                </span>
+              </div>
+              ${state.unstagedOpen ? (ws.changes.length > 0
+                ? ws.changes.map((f) => renderChangeFileRow(f, 'changes')).join('')
+                : `<div style="padding:10px 18px;font-size:11.5px;color:var(--muted-foreground)">没有未暂存的更改</div>`) : ''}
+            </div>
+          `}
+        </section>`;
+
+      // Bottom section: ∨ 图表
+      const commits = state.scope === 'all'
+        ? ws.commits
+        : ws.commits.filter((c) => c.lane === 0 || c.refs.some((r) => r.type === 'head'));
+      const maxLanes = Math.max(1, ...commits.map((c) => c.lane + 1));
+      const topologies = computeGraphTopology(commits);
+
+      let graphRowsHtml = '';
+      commits.forEach((c, idx) => {
+        const topo = topologies[idx];
+        const isHead = c.refs.some((r) => r.type === 'head');
+        const isOpen = state.expandedCommits.has(c.sha);
+        const visibleRefs = c.refs.slice(0, 1);
+        const overflow = c.refs.length - visibleRefs.length;
+
+        graphRowsHtml += `
+          <div class="g-row ${isOpen ? 'expanded' : ''}" data-action="toggle-commit" data-sha="${c.sha}" data-commit-sha="${c.sha}">
+            ${renderRailSvg({
+              height: 24, lane: c.lane, maxLanes, kind: 'commit',
+              isHead, isMerge: !!c.isMerge, topo,
+            })}
+            <span class="g-subj" title="${escapeHtml(c.subject)}">${escapeHtml(c.subject)}</span>
+            ${visibleRefs.length ? `
+              <span class="g-refs">
+                ${visibleRefs.map((r) => `<span class="g-pill ${r.type}">${r.type === 'head' ? ICONS.target : ''}${escapeHtml(r.label)}</span>`).join('')}
+                ${overflow > 0 ? `<span class="g-pill more">+${overflow}</span>` : ''}
+              </span>` : ''}
+            <button class="row-info-btn" data-action="pin-popover" data-sha="${c.sha}" title="固定查看提交详情">${ICONS.doc}</button>
+          </div>`;
+
+        if (isOpen) {
+          for (const f of c.files) {
+            const { name, dir } = splitPath(f.path);
+            const fb = fileBadge(f.path);
+            graphRowsHtml += `
+              <div class="g-file-row" data-action="open-file" data-path="${escapeHtml(f.path)}">
+                ${renderRailSvg({ height: 23, lane: c.lane, maxLanes, kind: 'file', activeLanes: topo.exitingLanes })}
+                <span class="f-icon ${fb.cls}">${fb.txt}</span>
+                <span class="f-label">
+                  <span class="f-name">${escapeHtml(name)}</span>
+                  ${dir ? `<span class="f-dir">${escapeHtml(dir)}</span>` : ''}
+                </span>
+                <span class="f-status ${f.status}">${f.status}</span>
+              </div>`;
+          }
+        }
+      });
+
+      const bottomSectionHtml = `
+        <section class="bottom-section" style="${state.graphCollapsed ? 'flex:0 0 28px' : ''}">
+          <header class="sec-hdr">
+            <span class="sec-hdr-title ${state.graphCollapsed ? 'collapsed' : ''}" data-action="toggle-graph-sec">
+              ${ICONS.chevDown}
+              <span>图表</span>
+            </span>
+            <div class="hdr-tools">
+              <button class="hdr-btn scope-btn ${state.scope === 'all' ? 'all-mode' : ''}" data-action="toggle-scope" title="分支筛选：自动 / 全部">
+                ${ICONS.branch}<span>${state.scope === 'auto' ? '自动' : '全部'}</span>
+              </button>
+              <button class="hdr-btn" data-action="remote" data-op="fetch" title="提取 (git fetch --all --prune)">${ICONS.fetch}</button>
+              <button class="hdr-btn" data-action="remote" data-op="pull" title="拉取 (git pull --ff-only)" ${ws.hasUpstream ? '' : 'disabled'}>${ICONS.pull}</button>
+              <button class="hdr-btn" data-action="remote" data-op="push" title="${ws.hasUpstream ? '推送 (git push)' : '发布分支 (git push -u)'}">${ICONS.cloudUp}</button>
+              <button class="hdr-btn" data-action="remote" data-op="refresh" title="刷新">${ICONS.refresh}</button>
+              <button class="hdr-btn" data-action="toggle-more" title="更多操作">${ICONS.more}</button>
+            </div>
+          </header>
+          ${state.graphCollapsed ? '' : `
+            <div class="pane-scroll" id="graphScroll" tabindex="0">
+              ${graphRowsHtml}
+              <div class="load-more-row">
+                <button class="load-more-btn" data-action="load-more">加载更多 (+200)</button>
+              </div>
+            </div>
+          `}
+        </section>`;
+
+      // Upward-priority Hover Detail Card
+      const popSha = state.pinnedPopoverSha || state.hoverCommitSha;
+      const popCommit = popSha ? ws.commits.find((c) => c.sha === popSha) : null;
+      const popoverHtml = popCommit ? `
+        <div class="hover-card" id="hoverCard" style="${state.hoverStyle}">
+          <div class="hc-meta">
+            <span><span class="hc-author">${escapeHtml(popCommit.author)}</span> · ${popCommit.relTime} (${popCommit.absTime})</span>
+            <button class="hdr-btn" data-action="copy-sha" data-sha="${popCommit.fullSha}" title="复制 SHA">${ICONS.copy} <span style="font-family:var(--mono-font);font-size:10.5px">${popCommit.sha}</span></button>
+          </div>
+          ${popCommit.coAuthor ? `<div class="hc-coauthor"><span class="hc-author">${escapeHtml(popCommit.coAuthor)}</span> (共同创作者)</div>` : ''}
+          <div class="hc-body">${escapeHtml(popCommit.body)}</div>
+        </div>` : '';
+
+      const moreMenuTop = (state.changesCollapsed ? 28 : state.topHeightPx) + 33;
+      const moreMenuHtml = state.moreMenuOpen ? `
+        <div class="more-menu" style="top:${moreMenuTop}px">
+          <button data-action="collapse-all">折叠所有提交</button>
+          <button data-action="copy-branch">复制当前分支 (${escapeHtml(ws.branch)})</button>
+        </div>` : '';
+
+      const modalHtml = state.modal ? `
+        <div class="modal-overlay" data-action="modal-backdrop">
+          <div class="modal-box">
+            <div class="modal-title">${escapeHtml(state.modal.title)}</div>
+            <div class="modal-body">${escapeHtml(state.modal.body)}</div>
+            <div class="modal-foot">
+              <button class="m-btn" data-action="close-modal">取消</button>
+              <button class="m-btn ${state.modal.primaryStyle ? '' : 'danger'}" style="${state.modal.primaryStyle ? 'background:var(--primary);border-color:var(--primary);color:var(--primary-foreground);font-weight:600' : ''}" data-action="confirm-modal">${escapeHtml(state.modal.confirmText)}</button>
+            </div>
+          </div>
+        </div>` : '';
+
+      auxPane.innerHTML = `
+        ${topSectionHtml}
+        <div class="sash" id="splitSash" title="拖动调整上下区域高度"></div>
+        ${bottomSectionHtml}
+        ${popoverHtml}
+        ${moreMenuHtml}
+        ${modalHtml}
+        ${state.toast ? `<div class="toast-bar ${state.toast.isErr ? 'err' : ''}">${escapeHtml(state.toast.msg)}</div>` : ''}
+      `;
+
+      if (keepId) {
+        const el = document.getElementById(keepId);
+        if (el) {
+          el.focus({ preventScroll: true });
+          if (selStart !== null && typeof el.setSelectionRange === 'function') {
+            el.setSelectionRange(selStart, selStart);
+          }
+        }
+      }
+    };
+
+    const commitStagedNow = () => {
+      const ws = getWs();
+      const msg = (state.commitDrafts[ws.branch] || '').trim();
+      if (!msg || ws.staged.length === 0) return;
+      const newSha = Math.random().toString(16).slice(2, 9);
+      const prevHead = ws.commits[0];
+      if (prevHead) prevHead.refs = prevHead.refs.filter((r) => r.type !== 'head');
+      ws.commits.unshift({
+        sha: newSha,
+        fullSha: newSha + '9102ab8471cd0029ef8123aa9012bc771',
+        lane: prevHead ? prevHead.lane : 0,
+        parents: prevHead ? [prevHead.sha] : [],
+        parentLanes: prevHead ? [prevHead.lane] : [],
+        refs: [{ type: 'head', label: ws.branch }],
+        subject: msg.split('\n')[0],
+        author: 'Lynn-zy',
+        coAuthor: '',
+        relTime: '刚刚',
+        absTime: '2026年11月21日 刚刚',
+        body: msg,
+        files: ws.staged.map((f) => ({ ...f })),
+      });
+      ws.staged = [];
+      ws.ahead += 1;
+      state.commitDrafts[ws.branch] = '';
+      showToast(`已提交 ${newSha} ✓${ws.changes.length === 0 ? '（按钮已切换为“推送更改”）' : ''}`);
+    };
+
+    const doCommit = () => {
+      const ws = getWs();
+      const msg = (state.commitDrafts[ws.branch] || '').trim();
+      if (!msg) {
+        document.getElementById('commitMsgInput')?.focus();
+        showToast('请先输入提交说明', true);
+        return;
+      }
+      if (ws.staged.length === 0 && ws.changes.length > 0) {
+        // 对齐 VS Code：未暂存时点击提交弹窗确认是否自动暂存全部并直接提交
+        state.modal = {
+          kind: 'stage-and-commit',
+          primaryStyle: true,
+          title: '没有要提交的暂存更改',
+          body: `是否要自动暂存全部 ${ws.changes.length} 个更改并直接提交？`,
+          confirmText: '暂存全部并提交',
+        };
+        render();
+        return;
+      }
+      commitStagedNow();
+    };
+
+    // Draggable horizontal sash
+    let draggingSash = false;
+    auxPane.addEventListener('mousedown', (e) => {
+      if (e.target.id === 'splitSash' && !state.changesCollapsed && !state.graphCollapsed) {
+        draggingSash = true;
+        e.target.classList.add('dragging');
+        e.preventDefault();
+      }
+    });
+    window.addEventListener('mousemove', (e) => {
+      if (!draggingSash) return;
+      const rect = auxPane.getBoundingClientRect();
+      const next = Math.max(120, Math.min(rect.height - 140, Math.floor(e.clientY - rect.top)));
+      state.topHeightPx = next;
+      const topSec = auxPane.querySelector('.top-section');
+      if (topSec) topSec.style.height = `${next}px`;
+    });
+    window.addEventListener('mouseup', () => {
+      if (!draggingSash) return;
+      draggingSash = false;
+      auxPane.querySelector('#splitSash')?.classList.remove('dragging');
+    });
+
+    // Hover Commit Detail Popover (Upward Priority)
+    let hoverTimer = null;
+    auxPane.addEventListener('mouseover', (e) => {
+      if (state.pinnedPopoverSha || state.modal) return;
+      if (e.target.closest('#hoverCard')) {
+        clearTimeout(hoverTimer);
+        return;
+      }
+      const row = e.target.closest('[data-commit-sha]');
+      if (!row) {
+        if (state.hoverCommitSha && !e.target.closest('#hoverCard')) {
+          clearTimeout(hoverTimer);
+          hoverTimer = setTimeout(() => { state.hoverCommitSha = null; render(); }, 180);
+        }
+        return;
+      }
+      const sha = row.dataset.commitSha;
+      if (sha === state.hoverCommitSha) {
+        clearTimeout(hoverTimer);
+        return;
+      }
+      clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(() => {
+        const c = getWs().commits.find((x) => x.sha === sha);
+        state.hoverStyle = computeMinOcclusionPopoverStyle(row, c?.body || '');
+        state.hoverCommitSha = sha;
+        render();
+      }, 360);
+    });
+
+    auxPane.addEventListener('mouseleave', () => {
+      clearTimeout(hoverTimer);
+      if (state.hoverCommitSha && !state.pinnedPopoverSha) {
+        state.hoverCommitSha = null;
+        render();
+      }
+    });
+
+    auxPane.addEventListener('input', (e) => {
+      if (e.target.id === 'commitMsgInput') {
+        const ws = getWs();
+        state.commitDrafts[ws.branch] = e.target.value;
+      }
+    });
+
+    auxPane.addEventListener('keydown', (e) => {
+      if (e.target.id === 'commitMsgInput' && (e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        doCommit();
+      }
+    });
+
+    auxPane.addEventListener('click', (e) => {
+      const target = e.target.closest('[data-action]');
+      if (!target) {
+        if (state.moreMenuOpen || state.pinnedPopoverSha) {
+          state.moreMenuOpen = false;
+          state.pinnedPopoverSha = null;
+          render();
+        }
+        return;
+      }
+      const action = target.dataset.action;
+      if (action !== 'toggle-more') state.moreMenuOpen = false;
+      const ws = getWs();
+
+      switch (action) {
+        case 'toggle-changes-sec':
+          state.changesCollapsed = !state.changesCollapsed;
+          render();
+          break;
+        case 'toggle-graph-sec':
+          state.graphCollapsed = !state.graphCollapsed;
+          render();
+          break;
+        case 'toggle-staged-grp':
+          state.stagedOpen = !state.stagedOpen;
+          render();
+          break;
+        case 'toggle-unstaged-grp':
+          state.unstagedOpen = !state.unstagedOpen;
+          render();
+          break;
+        case 'stage-file': {
+          e.stopPropagation();
+          const idx = ws.changes.findIndex((f) => f.path === target.dataset.path);
+          if (idx !== -1) {
+            const [item] = ws.changes.splice(idx, 1);
+            ws.staged.push({ ...item, status: item.status === 'U' ? 'A' : item.status });
+            render();
+          }
+          break;
+        }
+        case 'unstage-file': {
+          e.stopPropagation();
+          const idx = ws.staged.findIndex((f) => f.path === target.dataset.path);
+          if (idx !== -1) {
+            const [item] = ws.staged.splice(idx, 1);
+            ws.changes.push({ ...item, status: item.status === 'A' ? 'U' : item.status });
+            render();
+          }
+          break;
+        }
+        case 'stage-all':
+          e.stopPropagation();
+          for (const item of ws.changes.splice(0)) {
+            ws.staged.push({ ...item, status: item.status === 'U' ? 'A' : item.status });
+          }
+          render();
+          break;
+        case 'unstage-all':
+          e.stopPropagation();
+          for (const item of ws.staged.splice(0)) {
+            ws.changes.push({ ...item, status: item.status === 'A' ? 'U' : item.status });
+          }
+          render();
+          break;
+        case 'discard-file': {
+          e.stopPropagation();
+          const isUntracked = target.dataset.status === 'U';
+          state.modal = {
+            kind: isUntracked ? 'delete-untracked' : 'discard-file',
+            path: target.dataset.path,
+            title: isUntracked ? '永久删除未跟踪文件' : '确认放弃更改',
+            body: isUntracked
+              ? `将永久从磁盘删除 ${target.dataset.path}，无法通过 Git 恢复。`
+              : `将放弃 ${target.dataset.path} 的未暂存工作区更改（不影响已暂存区）。`,
+            confirmText: isUntracked ? '永久删除' : '放弃更改',
+          };
+          render();
+          break;
+        }
+        case 'discard-all': {
+          e.stopPropagation();
+          const tracked = ws.changes.filter((f) => f.status !== 'U');
+          if (tracked.length === 0) {
+            showToast('仅含未跟踪文件，批量放弃默认不删除未跟踪文件');
+            break;
+          }
+          state.modal = {
+            kind: 'discard-all',
+            title: '确认放弃所有更改',
+            body: `将放弃 ${tracked.length} 个已跟踪文件的未暂存更改（不会删除未跟踪文件，也不会清空已暂存区）。`,
+            confirmText: '放弃所有更改',
+          };
+          render();
+          break;
+        }
+        case 'confirm-modal': {
+          const m = state.modal;
+          state.modal = null;
+          if (m?.kind === 'stage-and-commit') {
+            for (const item of ws.changes.splice(0)) {
+              ws.staged.push({ ...item, status: item.status === 'U' ? 'A' : item.status });
+            }
+            commitStagedNow();
+            break;
+          }
+          if (m?.kind === 'discard-all') {
+            ws.changes = ws.changes.filter((f) => f.status === 'U');
+            showToast('已放弃所有已跟踪未暂存更改（未跟踪文件已保留）');
+          } else if (m?.path) {
+            ws.changes = ws.changes.filter((f) => f.path !== m.path);
+            showToast(m.kind === 'delete-untracked' ? `已删除未跟踪文件 ${splitPath(m.path).name}` : `已放弃 ${splitPath(m.path).name} 的更改`);
+          }
+          render();
+          break;
+        }
+        case 'close-modal':
+          state.modal = null;
+          render();
+          break;
+        case 'modal-backdrop':
+          if (e.target === target) { state.modal = null; render(); }
+          break;
+        case 'primary-btn': {
+          const mode = target.dataset.mode;
+          if (mode === 'commit') doCommit();
+          else if (mode === 'push') { ws.ahead = 0; showToast(`git push origin ${ws.branch} ✓`); }
+          else if (mode === 'publish') { ws.hasUpstream = true; ws.ahead = 0; showToast(`git push -u origin ${ws.branch} ✓`); }
+          else if (mode === 'pull') { ws.behind = 0; showToast(`git pull --ff-only (${ws.branch}) ✓`); }
+          break;
+        }
+        case 'open-file':
+          e.stopPropagation();
+          showToast(`宿主原生 fileView 打开: ${target.dataset.path}`);
+          break;
+        case 'toggle-commit': {
+          const sha = target.dataset.sha;
+          state.pinnedPopoverSha = null;
+          state.hoverCommitSha = null;
+          if (state.expandedCommits.has(sha)) state.expandedCommits.delete(sha);
+          else state.expandedCommits.add(sha);
+          render();
+          break;
+        }
+        case 'pin-popover': {
+          e.stopPropagation();
+          const sha = target.dataset.sha;
+          const row = target.closest('[data-commit-sha]');
+          if (state.pinnedPopoverSha === sha) state.pinnedPopoverSha = null;
+          else {
+            const c = ws.commits.find((x) => x.sha === sha);
+            state.hoverStyle = computeMinOcclusionPopoverStyle(row, c?.body || '');
+            state.pinnedPopoverSha = sha;
+          }
+          render();
+          break;
+        }
+        case 'copy-sha':
+          e.stopPropagation();
+          navigator.clipboard?.writeText(target.dataset.sha).catch(() => {});
+          showToast(`已复制 SHA: ${target.dataset.sha.slice(0, 12)}`);
+          break;
+        case 'toggle-scope':
+          state.scope = state.scope === 'auto' ? 'all' : 'auto';
+          render();
+          break;
+        case 'remote': {
+          const op = target.dataset.op;
+          if (op === 'fetch') showToast('git fetch --all --prune ✓');
+          else if (op === 'pull') { ws.behind = 0; showToast(`git pull --ff-only (${ws.branch}) ✓`); }
+          else if (op === 'push') {
+            if (!ws.hasUpstream) { ws.hasUpstream = true; ws.ahead = 0; showToast(`git push -u origin ${ws.branch} ✓`); }
+            else { ws.ahead = 0; showToast(`git push origin ${ws.branch} ✓`); }
+          } else if (op === 'refresh') showToast('已刷新本地更改与提交图表');
+          break;
+        }
+        case 'toggle-more':
+          state.moreMenuOpen = !state.moreMenuOpen;
+          render();
+          break;
+        case 'collapse-all':
+          state.expandedCommits.clear();
+          render();
+          break;
+        case 'copy-branch':
+          navigator.clipboard?.writeText(ws.branch).catch(() => {});
+          showToast(`已复制分支: ${ws.branch}`);
+          break;
+        case 'load-more':
+          state.graphLimit += 200;
+          showToast(`已加载更多提交（上限 ${state.graphLimit}）`);
+          break;
+      }
+    });
+
+    // Harness controls
+    document.querySelectorAll('[data-width]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-width]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.paneWidth = Number(btn.dataset.width);
+        render();
+      });
+    });
+    document.querySelectorAll('[data-theme-set]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('[data-theme-set]').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.theme = btn.dataset.themeSet;
+        render();
+      });
+    });
+    document.getElementById('btnSimHostSwitch').addEventListener('click', () => {
+      state.hostIdx = (state.hostIdx + 1) % HOST_WORKSPACES.length;
+      state.expandedCommits.clear();
+      state.hoverCommitSha = null;
+      state.pinnedPopoverSha = null;
+      showToast(`宿主切换工作区 → 自动跟随至 ${getWs().label}`);
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        state.pinnedPopoverSha = null;
+        state.hoverCommitSha = null;
+        state.moreMenuOpen = false;
+        state.modal = null;
+        render();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
