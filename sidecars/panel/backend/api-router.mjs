@@ -1,6 +1,5 @@
 import {
   discoverRepositories,
-  normalizeFsPath,
   toPathKey,
 } from './discovery.mjs';
 import {
@@ -583,6 +582,5 @@ export function createApiRouter(deps) {
 
   return {
     dispatch,
-    getAuthorizedWorktreePath: (worktreePath) => normalizeFsPath(worktreePath),
   };
 }

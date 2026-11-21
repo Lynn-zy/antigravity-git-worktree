@@ -395,7 +395,7 @@ export function createMockFixtureStore(options = {}) {
       active.changes.unstaged.length;
 
     const workspaceKey = createHash('sha256')
-      .update(`${active.id}\0${active.worktreePath.toLowerCase()}`)
+      .update(`${active.id}\0${(active.worktreePath ?? '').toLowerCase()}`)
       .digest('hex');
 
     return {
@@ -462,13 +462,16 @@ export function createMockFixtureStore(options = {}) {
       subject: target.subject,
       body: target.body,
       coAuthors: target.coAuthors.map((item) => ({ ...item })),
-      files: target.files.map((item) => ({
-        status: item.status,
-        path: item.path,
-        origPath: item.origPath,
-        existsInWorktree: item.existsInWorktree,
-        fileUri: item.existsInWorktree ? buildMockFileUri(repo.worktreePath, item.path) : null,
-      })),
+      files: target.files.map((item) => {
+        const canBuildFileUri = Boolean(repo.worktreePath) && !repo.isBare && item.existsInWorktree;
+        return {
+          status: item.status,
+          path: item.path,
+          origPath: item.origPath,
+          existsInWorktree: canBuildFileUri,
+          fileUri: canBuildFileUri ? buildMockFileUri(repo.worktreePath, item.path) : null,
+        };
+      }),
     };
   };
 

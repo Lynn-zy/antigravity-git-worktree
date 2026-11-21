@@ -543,12 +543,12 @@ export async function startStandaloneServer(options = {}) {
       }
 
       const abortController = new AbortController();
-      const onReqClose = () => {
+      const onResClose = () => {
         if (!res.writableEnded) {
           abortController.abort();
         }
       };
-      req.once('close', onReqClose);
+      res.once('close', onResClose);
 
       try {
         const activeFixture = options.fixture ?? resolveFixtureFlag(req, url, host, process.env.AG_GIT_FIXTURE);
@@ -560,7 +560,7 @@ export async function startStandaloneServer(options = {}) {
           writeJsonResponse(res, result.statusCode, result.body);
         }
       } finally {
-        req.removeListener('close', onReqClose);
+        res.removeListener('close', onResClose);
       }
       return;
     }
