@@ -239,6 +239,15 @@ test('graph-layout: 泳道宽度上限 72px 压缩与三阶贝塞尔路径切线
   assert.ok(metrics10.laneStep < 12);
   assert.ok(metrics10.getLaneX(9) < metrics10.width);
 
+  // 极大量并发车道（rawLaneCount > 72）时 effectivePadX 与各车道坐标仍保持正值且不越界
+  const metrics80 = computeGraphMetrics(80);
+  assert.equal(metrics80.laneCount, 80);
+  assert.equal(metrics80.width, 72);
+  assert.ok(metrics80.padX >= 2);
+  assert.ok(metrics80.laneStep > 0);
+  assert.ok(metrics80.getLaneX(0) >= 2);
+  assert.ok(metrics80.getLaneX(79) <= metrics80.width - 2);
+
   assert.equal(buildCurvePath(6, 12, 6, 24), 'M 6 12 L 6 24');
   assert.equal(buildCurvePath(6, 12, 18, 24), 'M 6 12 C 6 18, 18 18, 18 24');
 });
