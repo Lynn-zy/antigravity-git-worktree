@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Git Graph</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main id="app" class="gw-pane" data-testid="app-pane">
+    <!-- 多仓库顶部切换条：仅在命中 2 个及以上仓库时显示 -->
+    <header id="repo-bar" class="gw-repo-bar hidden" data-testid="repo-bar">
+      <div class="gw-repo-select-wrap">
+        <span id="repo-bar-icon" class="gw-repo-bar-icon" aria-hidden="true"></span>
+        <select
+          id="repo-select"
+          class="gw-repo-select"
+          data-testid="repo-select"
+        ></select>
+      </div>
+      <span id="repo-branch-meta" class="gw-repo-branch-meta" data-testid="repo-branch-meta"></span>
+    </header>
+
+    <!-- 全局状态横幅（如文件监听风暴降级告警） -->
+    <div id="global-banners" class="gw-banner-stack hidden" data-testid="global-banners"></div>
+
+    <!-- 零仓库空态与首屏加载态 -->
+    <section id="empty-state" class="gw-empty-state hidden" data-testid="empty-state" aria-live="polite">
+      <div id="empty-state-icon" class="gw-empty-icon" aria-hidden="true"></div>
+      <h2 id="empty-state-title" class="gw-empty-title"></h2>
+      <p id="empty-state-desc" class="gw-empty-desc"></p>
+    </section>
+
+    <!-- VS Code 风格上下可拖拽双区 -->
+    <div id="dual-pane" class="gw-dual-pane hidden" data-testid="dual-pane">
+      <!-- 上区：源代码管理 -->
+      <section
+        id="section-changes"
+        class="gw-section gw-section-changes"
+        data-testid="section-changes"
+        aria-labelledby="changes-section-title"
+      >
+        <div class="gw-section-header" data-testid="changes-section-header">
+          <button
+            id="changes-collapse-btn"
+            type="button"
+            class="gw-section-toggle gw-clip-focus"
+            data-testid="changes-collapse-btn"
+            aria-expanded="true"
+            aria-controls="section-changes-body"
+          >
+            <span id="changes-collapse-chevron" class="gw-chevron" aria-hidden="true"></span>
+            <span id="changes-section-title" class="gw-section-title"></span>
+          </button>
+          <span id="changes-total-badge" class="gw-count-pill hidden" data-testid="changes-total-badge"></span>
+        </div>
+        <div
+          id="section-changes-body"
+          class="gw-section-body"
+          data-testid="section-changes-body"
+        ></div>
+      </section>
+
+      <!-- 4px 中缝拖拽分隔条 -->
+      <div
+        id="pane-sash"
+        class="gw-sash"
+        data-testid="pane-sash"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-valuemin="15"
+        aria-valuemax="85"
+        aria-valuenow="42"
+        tabindex="0"
+      ></div>
+
+      <!-- 下区：提交图表 -->
+      <section
+        id="section-graph"
+        class="gw-section gw-section-graph"
+        data-testid="section-graph"
+        aria-labelledby="graph-section-title"
+      >
+        <div class="gw-section-header gw-graph-toolbar" data-testid="graph-section-header">
+          <button
+            id="graph-collapse-btn"
+            type="button"
+            class="gw-section-toggle gw-clip-focus"
+            data-testid="graph-collapse-btn"
+            aria-expanded="true"
+            aria-controls="section-graph-body"
+          >
+            <span id="graph-collapse-chevron" class="gw-chevron" aria-hidden="true"></span>
+            <span id="graph-section-title" class="gw-section-title"></span>
+          </button>
+          <div id="graph-toolbar-actions" class="gw-toolbar-actions" data-testid="graph-toolbar-actions"></div>
+        </div>
+        <div id="graph-search-bar" class="gw-search-bar hidden" data-testid="graph-search-bar"></div>
+        <div
+          id="section-graph-body"
+          class="gw-section-body gw-graph-body"
+          data-testid="section-graph-body"
+          tabindex="0"
+        ></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- 浮层置于 container-type 容器外，保证 position: fixed 严格相对于 iframe 视口定位 -->
+  <div id="graph-more-menu" class="gw-dropdown-menu hidden" data-testid="graph-more-menu" role="menu"></div>
+
+  <aside
+    id="commit-popover"
+    class="gw-popover hidden"
+    data-testid="commit-popover"
+    role="dialog"
+    aria-modal="false"
+    aria-labelledby="popover-subject"
+  ></aside>
+
+  <div
+    id="modal-overlay"
+    class="gw-modal-overlay hidden"
+    data-testid="modal-overlay"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="modal-title"
+  >
+    <div id="modal-dialog" class="gw-modal" data-testid="modal-dialog"></div>
+  </div>
+
+  <div
+    id="toast-container"
+    class="gw-toast-container"
+    data-testid="toast-container"
+    aria-live="polite"
+    aria-atomic="false"
+  ></div>
+
+  <script src="/preload.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
