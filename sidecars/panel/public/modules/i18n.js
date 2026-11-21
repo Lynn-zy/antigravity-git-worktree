@@ -138,7 +138,6 @@ export const MESSAGES = Object.freeze({
     'popover.coAuthors': '共同创作者',
     'popover.copySha': '复制完整 SHA',
     'popover.copiedSha': '已复制完整 SHA：{sha}',
-    'popover.noBody': '（无更多提交正文）',
     'popover.close': '关闭提交详情',
 
     // 远端同步反馈
@@ -292,7 +291,6 @@ export const MESSAGES = Object.freeze({
     'popover.coAuthors': 'Co-authors',
     'popover.copySha': 'Copy Full SHA',
     'popover.copiedSha': 'Copied SHA: {sha}',
-    'popover.noBody': '(No additional commit body)',
     'popover.close': 'Close commit details',
 
     // Remote operation feedback

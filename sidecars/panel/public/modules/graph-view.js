@@ -325,6 +325,7 @@ export const createGraphView = (elements, deps) => {
   let searchQuery = '';
   let moreMenuOpen = false;
   let latestRenderState = null;
+  let lastPopoverSha = null;
 
   // 持久挂载搜索栏输入框，保证输入与 IME 期间不被后台刷新销毁
   const searchFieldEl = doc.createElement('div');
@@ -452,19 +453,24 @@ export const createGraphView = (elements, deps) => {
       metaEl.append(coLine);
     }
 
-    const bodyBox = doc.createElement('pre');
-    bodyBox.className = 'gw-popover-body';
+    const children = [headerEl, subjectEl, metaEl];
+    const trimmedBody = typeof detail?.body === 'string' ? detail.body.trim() : '';
     if (isLoadingDetail && !detail) {
-      bodyBox.classList.add('is-empty');
+      const bodyBox = doc.createElement('pre');
+      bodyBox.className = 'gw-popover-body is-empty';
       bodyBox.textContent = t('graph.loadingDetail');
-    } else if (detail && typeof detail.body === 'string' && detail.body.trim()) {
-      bodyBox.textContent = detail.body.trim();
-    } else {
-      bodyBox.classList.add('is-empty');
-      bodyBox.textContent = t('popover.noBody');
+      children.push(bodyBox);
+    } else if (trimmedBody) {
+      const bodyBox = doc.createElement('pre');
+      bodyBox.className = 'gw-popover-body';
+      bodyBox.textContent = trimmedBody;
+      children.push(bodyBox);
     }
 
-    popoverEl.replaceChildren(headerEl, subjectEl, metaEl, bodyBox);
+    const isDifferentCommit = lastPopoverSha !== sha;
+    lastPopoverSha = sha;
+
+    popoverEl.replaceChildren(...children);
     popoverEl.classList.remove('hidden');
 
     const viewportRect = {
@@ -473,11 +479,16 @@ export const createGraphView = (elements, deps) => {
       width: win.innerWidth,
       height: win.innerHeight,
     };
-    const targetWidth = Math.min(340, Math.max(200, viewportRect.width - 16));
+    const popoverPadding = 8;
+    // 最大宽度对齐侧边栏可视宽度（左右各保留 8px 边距），避免宽侧边栏下卡片过窄
+    const targetWidth = Math.max(0, viewportRect.width - popoverPadding * 2);
     popoverEl.style.width = `${targetWidth}px`;
-    popoverEl.style.maxHeight = `${Math.max(120, Math.floor(viewportRect.height * 0.65))}px`;
+    popoverEl.style.maxHeight = '';
 
-    const measuredHeight = Math.min(260, Math.max(110, popoverEl.scrollHeight));
+    const maxPreferredHeight = Math.min(340, Math.max(220, Math.floor(viewportRect.height * 0.45)));
+    // box-sizing: border-box 下 scrollHeight 不含上下 1px 边框，使用 offsetHeight/getBoundingClientRect 避免短卡片多出 2px 冗余滚动条
+    const naturalHeight = Math.ceil(Math.max(popoverEl.offsetHeight, popoverEl.getBoundingClientRect().height));
+    const measuredHeight = Math.min(maxPreferredHeight, Math.max(72, naturalHeight));
     const anchorRect = anchorEl.getBoundingClientRect();
     const graphContentRect = bodyEl.getBoundingClientRect();
 
@@ -486,7 +497,7 @@ export const createGraphView = (elements, deps) => {
       { width: targetWidth, height: measuredHeight },
       graphContentRect,
       viewportRect,
-      { gap: 4, padding: 8 },
+      { gap: 4, padding: popoverPadding },
     );
 
     popoverEl.style.top = `${style.top}px`;
@@ -495,6 +506,9 @@ export const createGraphView = (elements, deps) => {
     popoverEl.style.maxHeight = `${style.maxHeight}px`;
     popoverEl.dataset.placement = style.placement;
     popoverEl.dataset.occludedGraphPx = String(Math.round(style.occludedGraphPx));
+    if (isDifferentCommit) {
+      popoverEl.scrollTop = 0;
+    }
   };
 
   const syncActiveCommitHighlight = () => {
@@ -552,12 +566,15 @@ export const createGraphView = (elements, deps) => {
   const popoverController = createPopoverController({
     onOpen: (sha) => {
       syncActiveCommitHighlight();
-      renderAndPositionPopover(sha);
+      // 先触发详情加载使 loadingDetailShas 同步入集，避免首次打开瞬间误判为“已加载且无正文”
       if (!commitDetailCache.has(sha)) {
         void ensureCommitDetail(sha);
       }
+      renderAndPositionPopover(sha);
     },
     onClose: () => {
+      lastPopoverSha = null;
+      popoverEl.scrollTop = 0;
       popoverEl.classList.add('hidden');
       popoverEl.replaceChildren();
       syncActiveCommitHighlight();
@@ -928,7 +945,8 @@ export const createGraphView = (elements, deps) => {
       rowEl.dataset.testid = 'commit-row';
       rowEl.dataset.commitSha = commit.sha;
       rowEl.dataset.focusId = `commit:${commit.sha}`;
-      rowEl.title = `${commit.shortSha || commit.sha.slice(0, 7)} — ${commit.subject || ''}`;
+      // 提交行已有悬浮详情卡，仅写 aria-label 不写 title，避免浏览器原生文字 tooltip 与悬浮卡片重叠
+      rowEl.setAttribute('aria-label', `${commit.shortSha || commit.sha.slice(0, 7)} ${commit.subject || ''}`.trim());
 
       rowEl.append(
         buildCommitRowSvg({
@@ -955,7 +973,7 @@ export const createGraphView = (elements, deps) => {
           const pill = doc.createElement('span');
           pill.className = `gw-ref-pill ${ref.className}`;
           pill.textContent = ref.name;
-          pill.title = ref.fullRef || ref.name;
+          pill.setAttribute('aria-label', ref.fullRef || ref.name);
           refsWrap.append(pill);
         }
 

@@ -739,10 +739,13 @@ const setupRealGitFixtures = async (rootDir) => {
   );
   const mergeSha = await execGit(['rev-parse', 'HEAD'], repoA);
 
-  // 在 Merge 提交之上再加一条提交并挂载 > 3 个 ref 标签验证 +N 折叠，随后推到上游 Bare 远端
+  // 在 Merge 提交之上再加一条带正文说明的提交并挂载 > 3 个 ref 标签验证 +N 折叠，随后推到上游 Bare 远端
   writeRepoFile(repoA, 'CHANGELOG.md', '## v1.0.0\n');
   await execGit(['add', '--', 'CHANGELOG.md'], repoA);
-  await execGit(['commit', '-m', 'release: tag multi-ref baseline'], repoA);
+  await execGit(
+    ['commit', '-m', 'release: tag multi-ref baseline\n\nBaseline release notes for commit popover body rendering.'],
+    repoA,
+  );
   const taggedSha = await execGit(['rev-parse', 'HEAD'], repoA);
 
   await execGit(['tag', 'v1.0.0', taggedSha], repoA);
@@ -1061,8 +1064,16 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     assert.equal(rowSvg.continuous, true, '展开行穿行竖线必须从 y=0 贯穿至 y=22 无断口');
   }
 
-  // 点击第 1、2 条提交详情按钮向上弹出且不溢出视口；点击中部提交详情按钮向下弹出
-  const checkCommitPopoverPlacement = async (rowIndex, expectedPlacement) => {
+  // 验证提交列表项及可见分支标签不挂原生 title，避免 hover 弹出原生文字 tooltip 遮挡悬浮卡片
+  const nativeTooltipCheck = await page.evaluate(`(() => {
+    const rowsWithTitle = [...document.querySelectorAll('[data-testid="commit-row"]')].filter((el) => el.hasAttribute('title')).length;
+    const pillsWithTitle = [...document.querySelectorAll('[data-testid="commit-row"] .gw-ref-pill:not(.is-more)')].filter((el) => el.hasAttribute('title')).length;
+    return { rowsWithTitle, pillsWithTitle };
+  })()`);
+  assert.deepEqual(nativeTooltipCheck, { rowsWithTitle: 0, pillsWithTitle: 0 });
+
+  // 点击第 1、2 条提交详情按钮向上弹出且不溢出视口；点击中部提交详情按钮向下弹出；校验最大宽度对齐侧边栏且无正文时不渲染正文块
+  const checkCommitPopoverPlacement = async (rowIndex, expectedPlacement, { expectBody = null } = {}) => {
     await page.hoverSelector('[data-testid="commit-row"]', { index: rowIndex });
     await page.waitFor(
       `(() => {
@@ -1093,29 +1104,56 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     const placementInfo = await page.evaluate(`(() => {
       const p = document.querySelector('[data-testid="commit-popover"]');
       const r = p.getBoundingClientRect();
+      const header = p.querySelector('.gw-popover-header');
+      const headerRect = header ? header.getBoundingClientRect() : null;
+      const bodyEl = p.querySelector('.gw-popover-body');
       return {
         placement: p.dataset.placement,
+        width: r.width,
+        expectedMaxWidth: window.innerWidth - 16,
+        scrollTop: p.scrollTop,
+        headerVisible: Boolean(headerRect && headerRect.height > 0 && headerRect.top >= r.top - 1),
+        hasBodyEl: Boolean(bodyEl),
+        bodyText: bodyEl ? bodyEl.textContent : '',
+        fullText: p.textContent || '',
         withinViewport: r.top >= -0.5 && r.left >= -0.5 && r.right <= window.innerWidth + 0.5 && r.bottom <= window.innerHeight + 0.5,
       };
     })()`);
     assert.equal(placementInfo.placement, expectedPlacement, `第 ${rowIndex + 1} 条提交详情卡方向应为 ${expectedPlacement}`);
     assert.equal(placementInfo.withinViewport, true, `第 ${rowIndex + 1} 条提交详情卡不得溢出视口`);
+    assert.ok(
+      Math.abs(placementInfo.width - placementInfo.expectedMaxWidth) <= 1.5,
+      `悬浮详情卡宽度应随侧边栏自适应: actual=${placementInfo.width}, expected=${placementInfo.expectedMaxWidth}`,
+    );
+    assert.equal(placementInfo.scrollTop, 0, '打开提交详情卡时应位于顶部');
+    assert.equal(placementInfo.headerVisible, true, '提交详情卡顶部 SHA 与复制操作栏必须完整可见');
+    assert.equal(placementInfo.fullText.includes('无更多提交正文'), false, '无提交正文时不得显示占位文案');
+    if (expectBody === false) {
+      assert.equal(placementInfo.hasBodyEl, false, '无提交正文时不得渲染 .gw-popover-body');
+    } else if (typeof expectBody === 'string') {
+      assert.equal(placementInfo.hasBodyEl, true, '存在提交正文时应渲染 .gw-popover-body');
+      assert.ok(placementInfo.bodyText.includes(expectBody));
+    }
     await page.clickSelector('[data-testid="popover-close-btn"]');
     await page.waitFor('document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")', {
       description: 'close popover',
     });
   };
 
-  // 先折叠 Merge 文件列表以免第 3+ 行位置下移，测第 1/2 条向上、中部第 9 条向下
+  // 先折叠 Merge 文件列表以免第 3+ 行位置下移，测第 1/2 条向上、中部第 9 条向下，以及宽侧边栏（620px）下卡片宽度跟随扩展
   await page.clickSelector('[data-testid="graph-more-btn"]');
   await page.clickSelector('[data-testid="graph-menu-collapse-all"]');
   await page.waitFor('document.querySelectorAll("[data-testid=commit-files]").length === 0', {
     description: 'collapse all expanded commits',
   });
 
-  await checkCommitPopoverPlacement(0, 'above');
-  await checkCommitPopoverPlacement(1, 'above');
-  await checkCommitPopoverPlacement(8, 'below');
+  await checkCommitPopoverPlacement(0, 'above', { expectBody: false });
+  await checkCommitPopoverPlacement(1, 'above', { expectBody: 'Baseline release notes' });
+  await checkCommitPopoverPlacement(8, 'below', { expectBody: false });
+
+  await page.setViewport(620, 760);
+  await checkCommitPopoverPlacement(1, 'above', { expectBody: 'Baseline release notes' });
+  await page.setViewport(460, 760);
 
   // 再展开 Merge 验证 ⋯ 菜单三项：搜索过滤、折叠全部、中英语言切换
   await page.clickSelector(`[data-testid="commit-row"][data-commit-sha="${fixtures.mergeSha}"]`);
@@ -1240,6 +1278,43 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   assert.equal(focusAfterRerender.notBody, true);
   assert.equal(focusAfterRerender.focusId, 'file:unstaged:README.md');
   assert.equal(focusAfterRerender.focusVisible, true);
+
+  // 分批快速写入文件以触发真实的 1 秒 >200 事件风暴熔断（规避单次同步写入顶满 libuv 4KB 缓冲导致内核合并）
+  const stormDir = path.join(fixtures.repoA, 'tmp-storm');
+  fs.mkdirSync(stormDir, { recursive: true });
+  for (let batch = 0; batch < 15; batch += 1) {
+    for (let i = 0; i < 15; i += 1) {
+      fs.writeFileSync(path.join(stormDir, `f-${batch}-${i}.txt`), `storm-${batch}-${i}\n`, 'utf8');
+    }
+    await sleep(20);
+  }
+  await page.waitFor(
+    'Boolean(document.querySelector("[data-testid=watch-degraded-banner]") && document.querySelector("[data-testid=watch-degraded-refresh-btn]"))',
+    { description: 'watch degraded banner and trailing refresh button visible' },
+  );
+  const bannerLayout = await page.evaluate(`(() => {
+    const banner = document.querySelector('[data-testid="watch-degraded-banner"]');
+    const text = banner.querySelector('.gw-banner-text');
+    const btn = banner.querySelector('[data-testid="watch-degraded-refresh-btn"]');
+    const br = banner.getBoundingClientRect();
+    const tr = text.getBoundingClientRect();
+    const btnR = btn.getBoundingClientRect();
+    return {
+      btnText: btn.textContent?.trim() ?? '',
+      isTrailing: btnR.left >= tr.right - 1,
+      withinViewport: btnR.right <= window.innerWidth + 0.5 && br.right <= window.innerWidth + 0.5,
+    };
+  })()`);
+  assert.equal(bannerLayout.btnText, '刷新');
+  assert.equal(bannerLayout.isTrailing, true, '刷新按钮应位于警示条尾部');
+  assert.equal(bannerLayout.withinViewport, true, '警示条与刷新按钮不得横向溢出');
+
+  fs.rmSync(stormDir, { recursive: true, force: true });
+  await page.clickSelector('[data-testid="watch-degraded-refresh-btn"]');
+  await page.waitFor(
+    'document.getElementById("global-banners").classList.contains("hidden") && !document.querySelector("[data-testid=watch-degraded-banner]")',
+    { description: 'degraded banner cleared after clicking trailing refresh button' },
+  );
 
   const sceneAErrors = page.getErrors();
   assert.deepEqual(sceneAErrors.consoleErrors, [], `Scenario A had console errors: ${sceneAErrors.consoleErrors.join('; ')}`);

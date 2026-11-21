@@ -650,6 +650,16 @@ const bootstrapPanel = () => {
     },
   );
 
+  const handleManualRefresh = async () => {
+    if (state.pendingOp) return;
+    const t = getT();
+    graphView.clearDetailCache();
+    const ok = await loadSnapshot({ forceRefresh: true });
+    if (ok) {
+      showToast(t('remote.refreshed'), 'info');
+    }
+  };
+
   const graphView = createGraphView(
     {
       sectionTitleEl: graphTitleEl,
@@ -691,14 +701,7 @@ const bootstrapPanel = () => {
         });
       },
       onPushOrPublish: (repo) => runPushOrPublish(repo),
-      onRefresh: async () => {
-        const t = getT();
-        graphView.clearDetailCache();
-        const ok = await loadSnapshot({ forceRefresh: true });
-        if (ok) {
-          showToast(t('remote.refreshed'), 'info');
-        }
-      },
+      onRefresh: handleManualRefresh,
       onLoadMore: async () => {
         if (state.loadingMore) return;
         state.loadingMore = true;
@@ -883,6 +886,8 @@ const bootstrapPanel = () => {
       return;
     }
 
+    const savedFocus = captureFocus(globalBannersEl);
+
     const bannerEl = document.createElement('div');
     bannerEl.className = 'gw-banner is-warning';
     bannerEl.dataset.testid = 'watch-degraded-banner';
@@ -897,9 +902,26 @@ const bootstrapPanel = () => {
     textEl.className = 'gw-banner-text';
     textEl.textContent = t('watch.degradedBanner');
 
-    bannerEl.append(iconWrap, textEl);
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'gw-banner-action gw-clip-focus';
+    refreshBtn.dataset.testid = 'watch-degraded-refresh-btn';
+    refreshBtn.dataset.focusId = 'watch-degraded-refresh';
+    refreshBtn.title = t('graph.action.refreshTitle');
+    refreshBtn.setAttribute('aria-label', t('graph.action.refreshTitle'));
+    refreshBtn.disabled = Boolean(state.pendingOp);
+    refreshBtn.append(createIcon('refresh'));
+    const refreshLabel = document.createElement('span');
+    refreshLabel.textContent = t('graph.action.refresh');
+    refreshBtn.append(refreshLabel);
+    refreshBtn.addEventListener('click', () => {
+      void handleManualRefresh();
+    });
+
+    bannerEl.append(iconWrap, textEl, refreshBtn);
     globalBannersEl.replaceChildren(bannerEl);
     globalBannersEl.classList.remove('hidden');
+    restoreFocus(globalBannersEl, savedFocus);
   };
 
   const renderAll = () => {

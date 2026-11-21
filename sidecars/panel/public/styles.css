@@ -292,6 +292,44 @@ button {
   min-width: 0;
 }
 
+.gw-banner-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  align-self: center;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--gw-fg) 20%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--gw-card) 72%, transparent);
+  color: var(--gw-fg);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+.gw-banner-action .gw-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.gw-banner-action:hover:not(:disabled) {
+  background: var(--gw-card);
+  border-color: color-mix(in srgb, var(--gw-fg) 32%, transparent);
+}
+
+.gw-banner-action:active:not(:disabled) {
+  background: var(--gw-press);
+}
+
+.gw-banner-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .gw-banner.is-warning {
   background: color-mix(in srgb, var(--gw-status-warning) 12%, transparent);
   color: var(--gw-fg);
@@ -1204,6 +1242,7 @@ body.is-resizing-panes {
 .gw-popover {
   position: fixed;
   z-index: 60;
+  max-width: calc(100vw - 16px);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1216,6 +1255,10 @@ body.is-resizing-panes {
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+}
+
+.gw-popover > * {
+  flex: none;
 }
 
 .gw-popover-header {
