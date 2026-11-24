@@ -136,15 +136,69 @@ export function createApiRouter(deps) {
     isStandalone = false,
   } = deps;
 
-  let currentWorkspaceKey = null;
   let currentActiveRepo = null;
   let lastWorkspaceUris = [...defaultWorkspaceUris];
   let lastDiscoveredSummaries = [];
   let snapshotSeq = 0;
+  const knownWorkspaces = new Map();
   const authorizedEntries = new Map();
   const authorizedById = new Map();
   const authorizedByWorktreeKey = new Map();
   const authorizedByCommonDirKey = new Map();
+
+  const recordWorkspaceSession = (workspaceKey, repoTarget) => {
+    if (!workspaceKey) {
+      return;
+    }
+    if (knownWorkspaces.has(workspaceKey)) {
+      knownWorkspaces.delete(workspaceKey);
+    }
+    knownWorkspaces.set(workspaceKey, {
+      repoTarget: repoTarget ?? null,
+      gitCommonDirKey: repoTarget?.gitCommonDir ? toPathKey(repoTarget.gitCommonDir) : null,
+      worktreeKey: repoTarget?.worktreePath ? toPathKey(repoTarget.worktreePath) : null,
+    });
+    while (knownWorkspaces.size > MAX_AUTHORIZED_REPOS) {
+      const oldestKey = knownWorkspaces.keys().next().value;
+      if (oldestKey === undefined) break;
+      knownWorkspaces.delete(oldestKey);
+    }
+  };
+
+  const resolveAffectedWorkspaceKeys = (info) => {
+    const target = info?.target;
+    if (!target?.gitCommonDir || knownWorkspaces.size === 0) {
+      return [];
+    }
+    const targetCommonKey = toPathKey(target.gitCommonDir);
+    const targetWtKey = target.worktreePath ? toPathKey(target.worktreePath) : null;
+    if (!targetCommonKey) {
+      return [];
+    }
+    const matchRepositoryWide = info?.channel === 'metadata' || Boolean(target.isBare);
+    const affected = [];
+    for (const [workspaceKey, session] of knownWorkspaces.entries()) {
+      if (session.gitCommonDirKey !== targetCommonKey) {
+        continue;
+      }
+      if (matchRepositoryWide || session.worktreeKey === targetWtKey) {
+        affected.push(workspaceKey);
+      }
+    }
+    return affected;
+  };
+
+  const bumpRepoRevision = (repo, { repositoryWide = false } = {}) => {
+    const scopeKeys = resolveAffectedWorkspaceKeys({
+      channel: repositoryWide ? 'metadata' : 'worktree',
+      target: repo,
+    });
+    const watchState = watcher.getWatchState(repo);
+    return eventBus.bumpRevision({
+      watchDegraded: watchState.degraded,
+      scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+    });
+  };
 
   const evictOldestAuthorizedEntry = () => {
     const oldestKey = authorizedEntries.keys().next().value;
@@ -301,7 +355,7 @@ export function createApiRouter(deps) {
         },
         preferences,
       );
-      currentWorkspaceKey = mockSnapshot.workspaceKey;
+      recordWorkspaceSession(mockSnapshot.workspaceKey, null);
       return mockSnapshot;
     }
 
@@ -327,31 +381,39 @@ export function createApiRouter(deps) {
       graphLimit,
       onActiveRepoDiscovered: (activeDiscovery, discoveredRepos) => {
         cacheDiscoveredRepos(discoveredRepos);
-        if (reqSeq === snapshotSeq) {
+        if (activeDiscovery || reqSeq === snapshotSeq) {
           watcher.setTarget(activeDiscovery, { forceRefresh });
         }
       },
     });
-    const changedDuringQuery = eventBus.revision !== snapshotStartRevision;
 
     if (snapshotBase.activeRepo) {
       cacheRepoRecord(snapshotBase.activeRepo);
+      recordWorkspaceSession(snapshotBase.workspaceKey, snapshotBase.activeRepo);
+      watcher.applyStatusBudget(snapshotBase.changes, snapshotBase.activeRepo);
     }
 
-    // 仅最新快照更新单焦点活跃上下文与监听预算，防止并发乱序或后台会话快照覆盖当前焦点状态
+    // 仅最新快照更新默认回退上下文，避免并发乱序覆盖
     if (reqSeq === snapshotSeq) {
       lastWorkspaceUris = [...effectiveUris];
       lastDiscoveredSummaries = snapshotBase.repositories;
       currentActiveRepo = snapshotBase.activeRepo;
-      currentWorkspaceKey = snapshotBase.workspaceKey;
-      if (snapshotBase.activeRepo) {
-        watcher.applyStatusBudget(snapshotBase.changes);
-      }
     }
 
-    const watchState = watcher.getWatchState();
-    eventBus.setWatchDegraded(watchState.degraded);
-    const snapshotRevision = changedDuringQuery ? snapshotStartRevision : eventBus.revision;
+    const watchState = snapshotBase.activeRepo
+      ? watcher.getWatchState(snapshotBase.activeRepo)
+      : { active: false, degraded: false, reason: null };
+    if (snapshotBase.workspaceKey) {
+      eventBus.setWatchDegraded(watchState.degraded, snapshotBase.workspaceKey);
+    } else if (reqSeq === snapshotSeq) {
+      eventBus.setWatchDegraded(watchState.degraded);
+    }
+
+    const scopedRevision = snapshotBase.workspaceKey
+      ? eventBus.getRevision(snapshotBase.workspaceKey)
+      : eventBus.revision;
+    const changedDuringQuery = scopedRevision > snapshotStartRevision;
+    const snapshotRevision = changedDuringQuery ? snapshotStartRevision : scopedRevision;
 
     return {
       workspaceKey: snapshotBase.workspaceKey,
@@ -407,13 +469,19 @@ export function createApiRouter(deps) {
       timeoutMs = body.timeoutMs;
     }
 
-    // Sidecar 重启后内存版本归零且尚无活跃上下文，立即唤醒已挂载前端重新发起 /api/snapshot；
-    // 不因多会话之间 workspaceKey 不同而立即返回 changed: true，避免共享 Sidecar 时互相触发快照风暴。
-    if ((workspaceKey && !currentWorkspaceKey) || sinceRevision > eventBus.revision) {
+    // Sidecar 重启、监听目标已被 LRU 淘汰或客户端版本号高于内存版本时立即唤醒重拉快照，
+    // 确保已挂载前端面板自动恢复监听与授权上下文；多会话活跃期间通过 workspaceKey 隔离互不干扰。
+    const session = workspaceKey ? knownWorkspaces.get(workspaceKey) : null;
+    const watcherEvicted = Boolean(
+      session?.repoTarget &&
+      typeof watcher.touchTarget === 'function' &&
+      !watcher.touchTarget(session.repoTarget),
+    );
+    if ((workspaceKey && !session) || watcherEvicted || sinceRevision > eventBus.revision) {
       return {
-        revision: eventBus.revision,
+        revision: eventBus.getRevision(workspaceKey),
         changed: true,
-        watchDegraded: eventBus.watchDegraded,
+        watchDegraded: eventBus.isWatchDegraded(workspaceKey),
       };
     }
 
@@ -421,6 +489,7 @@ export function createApiRouter(deps) {
       sinceRevision,
       timeoutMs,
       signal: context?.signal,
+      scopeKey: workspaceKey,
     });
   };
 
@@ -442,7 +511,7 @@ export function createApiRouter(deps) {
       all,
       paths,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: false });
     return { revision };
   };
 
@@ -464,7 +533,7 @@ export function createApiRouter(deps) {
       all,
       paths,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: false });
     return { revision };
   };
 
@@ -488,7 +557,7 @@ export function createApiRouter(deps) {
       paths,
       untracked,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: false });
     return { revision };
   };
 
@@ -520,7 +589,7 @@ export function createApiRouter(deps) {
       message: body.message,
       autoStageAll,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: true });
     return {
       revision,
       sha: result.sha,
@@ -542,7 +611,7 @@ export function createApiRouter(deps) {
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: true });
     return { revision };
   };
 
@@ -560,7 +629,7 @@ export function createApiRouter(deps) {
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: true });
     return { revision };
   };
 
@@ -583,7 +652,7 @@ export function createApiRouter(deps) {
       gitCommonDir: repo.gitCommonDir,
       remote: remote ?? undefined,
     });
-    const { revision } = eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: true });
     return { revision };
   };
 
@@ -642,5 +711,6 @@ export function createApiRouter(deps) {
 
   return {
     dispatch,
+    resolveAffectedWorkspaceKeys,
   };
 }

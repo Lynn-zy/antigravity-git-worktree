@@ -10,7 +10,7 @@ import { createEventBus } from './backend/event-bus.mjs';
 import { AppError, ERROR_CODES } from './backend/git-runner.mjs';
 import { createMockFixtureStore } from './backend/mock-fixture.mjs';
 import { createPreferencesStore } from './backend/preferences.mjs';
-import { createRepositoryWatcher } from './backend/watcher.mjs';
+import { createWatcherPool } from './backend/watcher.mjs';
 import {
   buildPanelAppBundle,
   buildPanelPageHtml,
@@ -329,18 +329,26 @@ function createCoreRuntime(options = {}) {
   const preferencesStore = createPreferencesStore({
     filePath: options.preferencesPath,
   });
-  const watcher = createRepositoryWatcher({
+  let router = null;
+  const watcher = createWatcherPool({
     ...options.watcherOptions,
-    onChange: () => {
-      eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded });
+    onChange: (info) => {
+      const scopeKeys = router?.resolveAffectedWorkspaceKeys(info) ?? [];
+      eventBus.bumpRevision({
+        watchDegraded: info?.watchState?.degraded ?? false,
+        scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+      });
     },
-    onDegraded: () => {
-      eventBus.notifyWatchDegraded();
+    onDegraded: (_watchState, info) => {
+      const scopeKeys = router?.resolveAffectedWorkspaceKeys(info) ?? [];
+      eventBus.notifyWatchDegraded({
+        scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+      });
     },
   });
   const mockFixture = createMockFixtureStore({ eventBus });
 
-  const router = createApiRouter({
+  router = createApiRouter({
     eventBus,
     watcher,
     preferencesStore,

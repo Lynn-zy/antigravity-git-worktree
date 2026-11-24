@@ -23,6 +23,7 @@ import {
 } from '../../sidecars/panel/backend/preferences.mjs';
 import {
   createRepositoryWatcher,
+  createWatcherPool,
 } from '../../sidecars/panel/backend/watcher.mjs';
 import {
   API_ROUTES,
@@ -1615,4 +1616,144 @@ test('集成测试：多会话共享 Sidecar、同仓多 Worktree 与 Sidecar �
   });
   assert.equal(outOfScopePush.statusCode, 409);
   assert.equal(outOfScopePush.body.error.code, ERROR_CODES.NO_REPOSITORY);
+});
+
+test('集成测试：多会话共享 Sidecar 并发监听不互拆、外部 git commit 精准唤醒对应会话且 .git 监听错误自动重挂', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-m2-watch-pool-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const repoA = path.join(root, 'repo-a');
+  const repoAWt = path.join(root, 'repo-a-wt');
+  const repoB = path.join(root, 'repo-b');
+  await initConfiguredRepo(repoA, 'main');
+  fs.writeFileSync(path.join(repoA, 'a.txt'), 'v1\n');
+  await execGit(['add', '-A'], repoA);
+  await execGit(['commit', '-m', 'init a'], repoA);
+  await execGit(['worktree', 'add', '-b', 'wt-branch', repoAWt], repoA);
+
+  await initConfiguredRepo(repoB, 'main');
+  fs.writeFileSync(path.join(repoB, 'b.txt'), 'b1\n');
+  await execGit(['add', '-A'], repoB);
+  await execGit(['commit', '-m', 'init b'], repoB);
+
+  // 1) 真实多会话 HTTP 服务器：会话 A/B 及空工作区并发快照后，外部终端提交 repoA 必须实时唤醒 A（及同仓 linked worktree），且不误唤醒 B
+  const server = await startStandaloneServer({
+    port: 0,
+    defaultWorkspaceUris: [],
+    preferencesPath: path.join(root, 'prefs.json'),
+    watcherOptions: {
+      metadataDebounceMs: 60,
+      worktreeDebounceMs: 80,
+    },
+    eventBusOptions: {
+      minTimeoutMs: 100,
+    },
+  });
+  t.after(() => server.close());
+
+  const snapA = (await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(repoA)] })).json.data;
+  const snapAWt = (await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(repoAWt)] })).json.data;
+  const snapB = (await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(repoB)] })).json.data;
+  // 空工作区或非 Git 目录快照不得拆毁已挂载仓库的监听
+  await postApi(server.url, '/api/snapshot', { workspaceUris: [] });
+  await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(root)] });
+  assert.equal(server.runtime.watcher.size, 3);
+
+  const waitA = postApi(server.url, '/api/events/wait', {
+    workspaceKey: snapA.workspaceKey,
+    sinceRevision: snapA.revision,
+    timeoutMs: 3000,
+  });
+  const waitAWt = postApi(server.url, '/api/events/wait', {
+    workspaceKey: snapAWt.workspaceKey,
+    sinceRevision: snapAWt.revision,
+    timeoutMs: 3000,
+  });
+  const waitB = postApi(server.url, '/api/events/wait', {
+    workspaceKey: snapB.workspaceKey,
+    sinceRevision: snapB.revision,
+    timeoutMs: 400,
+  });
+
+  // 模拟外部终端对 repoA 执行 reset + add + commit（不经过面板 API）
+  fs.writeFileSync(path.join(repoA, 'a.txt'), 'v2\n');
+  await execGit(['add', 'a.txt'], repoA);
+  await execGit(['commit', '-m', 'external commit in repoA'], repoA);
+
+  const [resA, resAWt, resB] = await Promise.all([waitA, waitAWt, waitB]);
+  assert.equal(resA.json.data.changed, true, '其他会话快照后，外部终端提交 repoA 仍必须即时唤醒会话 A');
+  assert.equal(resAWt.json.data.changed, true, '同一 Repository 的 metadata 变更应同步唤醒关联 Worktree');
+  assert.equal(resB.json.data.changed, false, 'repoA 的外部提交不得误唤醒无关会话 B');
+
+  // 2) 监听池超出 maxTargets 淘汰旧目标时，被淘汰会话下一次 /api/events/wait 应立即返回 changed: true 触发重建
+  const smallEventBus = createEventBus({ minTimeoutMs: 100 });
+  let smallRouter = null;
+  const smallPool = createWatcherPool({
+    maxTargets: 1,
+    onChange: (info) => {
+      const scopeKeys = smallRouter?.resolveAffectedWorkspaceKeys(info) ?? [];
+      smallEventBus.bumpRevision({
+        watchDegraded: info?.watchState?.degraded ?? false,
+        scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+      });
+    },
+  });
+  smallRouter = createApiRouter({
+    eventBus: smallEventBus,
+    watcher: smallPool,
+    preferencesStore: createPreferencesStore({ filePath: path.join(root, 'prefs-small.json') }),
+    mockFixture: createMockFixtureStore({ eventBus: smallEventBus }),
+    defaultWorkspaceUris: [],
+    isStandalone: false,
+  });
+  t.after(() => {
+    smallPool.close();
+    smallEventBus.dispose();
+  });
+
+  const sSmallA = (await smallRouter.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoA)] })).body.data;
+  await smallRouter.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoB)] });
+  assert.equal(smallPool.size, 1);
+  const evictedWait = (await smallRouter.dispatch('/api/events/wait', {
+    workspaceKey: sSmallA.workspaceKey,
+    sinceRevision: sSmallA.revision,
+    timeoutMs: 1000,
+  })).body.data;
+  assert.equal(evictedWait.changed, true, '被 LRU 淘汰监听的会话轮询时应立即唤醒重拉快照并重建监听');
+
+  // 3) .git 元数据监听遭遇瞬时 error 后自动延迟重挂并补发一次 metadata 变更
+  let gitMountCount = 0;
+  let gitErrorHandler = null;
+  const remountChanges = [];
+  const normGit = normalizeFsPath(path.join(repoA, '.git'));
+  const gitRemountWatcher = createRepositoryWatcher({
+    metadataDebounceMs: 30,
+    worktreeRetryDelayMs: 40,
+    existsFn: () => true,
+    statFn: () => ({ isDirectory: () => false }),
+    watchFn: (dir) => {
+      const key = normalizeFsPath(dir);
+      if (key === normGit) gitMountCount += 1;
+      return {
+        close() {},
+        on(evt, fn) {
+          if (key === normGit && evt === 'error') gitErrorHandler = fn;
+        },
+      };
+    },
+    onChange: (info) => remountChanges.push(info.channel),
+  });
+  t.after(() => gitRemountWatcher.close());
+
+  gitRemountWatcher.setTarget({
+    gitCommonDir: path.join(repoA, '.git'),
+    gitDir: path.join(repoA, '.git'),
+    worktreePath: repoA,
+    isBare: false,
+  });
+  assert.equal(gitMountCount, 1);
+  gitErrorHandler(new Error('EPERM transient'));
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.equal(gitMountCount, 2, '.git 监听遭遇瞬时错误后应自动延迟重挂');
+  assert.ok(remountChanges.includes('metadata'), '.git 监听重挂成功后应主动触发 metadata 同步补齐中断窗口');
 });

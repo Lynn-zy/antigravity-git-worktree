@@ -2,14 +2,18 @@ export const MIN_WAIT_TIMEOUT_MS = 1000;
 export const MAX_WAIT_TIMEOUT_MS = 20_000;
 export const DEFAULT_WAIT_TIMEOUT_MS = 20_000;
 export const MAX_EVENT_WAITERS = 8;
+const MAX_TRACKED_SCOPES = 64;
 
 /**
- * 内存变更事件总线，维护单调递增 `revision` 并协调挂起式长轮询请求（替代流式 SSE）。
+ * 内存变更事件总线，维护单调递增 `revision`、按工作区作用域隔离的变更版本并协调挂起式长轮询请求。
  * 支持最多 8 个并发等待者，超限提前唤醒最旧者返回 `changed: false`，避免内存与连接泄漏。
  */
 export class EventBus {
   #revision = 1;
+  #globalBroadcastRevision = 1;
   #watchDegraded = false;
+  #scopeRevisions = new Map();
+  #scopeDegraded = new Map();
   #waiters = [];
   #minTimeoutMs;
   #maxTimeoutMs;
@@ -25,13 +29,14 @@ export class EventBus {
     this.#revision = Number.isInteger(options.initialRevision) && options.initialRevision >= 0
       ? options.initialRevision
       : 1;
+    this.#globalBroadcastRevision = this.#revision;
     this.#minTimeoutMs = options.minTimeoutMs ?? MIN_WAIT_TIMEOUT_MS;
     this.#maxTimeoutMs = options.maxTimeoutMs ?? MAX_WAIT_TIMEOUT_MS;
     this.#maxWaiters = options.maxWaiters ?? MAX_EVENT_WAITERS;
   }
 
   /**
-   * 获取当前内存修订版本号。
+   * 获取当前全局内存修订版本号。
    *
    * @returns {number} 单调递增版本号
    */
@@ -40,7 +45,7 @@ export class EventBus {
   }
 
   /**
-   * 获取当前是否处于文件监听降级态。
+   * 获取当前全局文件监听降级态。
    *
    * @returns {boolean} 是否降级
    */
@@ -58,32 +63,95 @@ export class EventBus {
   }
 
   /**
-   * 更新监听降级状态标记（仅更新标记而不主动递增版本号时使用）。
+   * 获取指定工作区作用域（或全局）的有效修订版本号。
    *
-   * @param {boolean} degraded 是否处于降级态
-   * @returns {void}
+   * @param {string | null | undefined} [scopeKey] 可选工作区标识（`workspaceKey`）
+   * @returns {number} 有效修订版本号
    */
-  setWatchDegraded(degraded) {
-    this.#watchDegraded = Boolean(degraded);
+  getRevision(scopeKey) {
+    if (typeof scopeKey === 'string' && scopeKey.length > 0) {
+      return Math.max(this.#globalBroadcastRevision, this.#scopeRevisions.get(scopeKey) ?? 0);
+    }
+    return this.#revision;
   }
 
   /**
-   * 递增内存 `revision` 并立即唤醒全部挂起中的长轮询等待者。
+   * 获取指定工作区作用域（或全局）的监听降级状态。
    *
-   * @param {{ watchDegraded?: boolean }} [options] 可选同步更新的监听降级状态
-   * @returns {{ revision: number, watchDegraded: boolean }} 更新后的当前版本号与降级状态
+   * @param {string | null | undefined} [scopeKey] 可选工作区标识（`workspaceKey`）
+   * @returns {boolean} 是否处于降级态
+   */
+  isWatchDegraded(scopeKey) {
+    if (typeof scopeKey === 'string' && scopeKey.length > 0 && this.#scopeDegraded.has(scopeKey)) {
+      return Boolean(this.#scopeDegraded.get(scopeKey));
+    }
+    return this.#watchDegraded;
+  }
+
+  /**
+   * 更新监听降级状态标记（仅更新标记而不主动递增版本号时使用）。
+   *
+   * @param {boolean} degraded 是否处于降级态
+   * @param {string | null | undefined} [scopeKey] 可选工作区标识；传入时仅更新对应作用域
+   * @returns {void}
+   */
+  setWatchDegraded(degraded, scopeKey) {
+    const flag = Boolean(degraded);
+    if (typeof scopeKey === 'string' && scopeKey.length > 0) {
+      this.#setScopeDegraded(scopeKey, flag);
+      return;
+    }
+    this.#watchDegraded = flag;
+  }
+
+  /**
+   * 递增内存 `revision` 并立即唤醒匹配作用域（或全局）的挂起长轮询等待者。
+   *
+   * @param {{ watchDegraded?: boolean, scopeKeys?: string[] | null }} [options] 可选降级状态与受影响工作区集合
+   * @returns {{ revision: number, watchDegraded: boolean }} 更新后的版本号与降级状态
    */
   bumpRevision(options = {}) {
+    const validScopeKeys = Array.isArray(options.scopeKeys)
+      ? options.scopeKeys.filter((item) => typeof item === 'string' && item.length > 0)
+      : [];
+
+    this.#revision += 1;
+
+    if (validScopeKeys.length > 0) {
+      const scopeSet = new Set(validScopeKeys);
+      for (const key of scopeSet) {
+        this.#setScopeRevision(key, this.#revision);
+        if (options.watchDegraded !== undefined) {
+          this.#setScopeDegraded(key, Boolean(options.watchDegraded));
+        }
+      }
+      const resolvedDegraded = options.watchDegraded !== undefined
+        ? Boolean(options.watchDegraded)
+        : this.#watchDegraded;
+      this.#flushMatchingWaiters(
+        (waiter) => waiter.scopeKey === null || scopeSet.has(waiter.scopeKey),
+        (waiter) => ({
+          revision: this.#revision,
+          changed: true,
+          watchDegraded: this.isWatchDegraded(waiter.scopeKey),
+        }),
+      );
+      return {
+        revision: this.#revision,
+        watchDegraded: resolvedDegraded,
+      };
+    }
+
+    this.#globalBroadcastRevision = this.#revision;
     if (options.watchDegraded !== undefined) {
       this.#watchDegraded = Boolean(options.watchDegraded);
+      this.#scopeDegraded.clear();
     }
-    this.#revision += 1;
-    const payload = {
+    this.#flushAllWaiters({
       revision: this.#revision,
       changed: true,
       watchDegraded: this.#watchDegraded,
-    };
-    this.#flushAllWaiters(payload);
+    });
     return {
       revision: this.#revision,
       watchDegraded: this.#watchDegraded,
@@ -91,12 +159,16 @@ export class EventBus {
   }
 
   /**
-   * 同步标记监听状态切换为降级态并立即递增版本号唤醒客户端展示提示。
+   * 同步标记监听状态切换为降级态并立即递增版本号唤醒受影响客户端展示提示。
    *
+   * @param {{ scopeKeys?: string[] | null }} [options] 可选受影响工作区集合
    * @returns {{ revision: number, watchDegraded: boolean }} 更新后的版本信息
    */
-  notifyWatchDegraded() {
-    return this.bumpRevision({ watchDegraded: true });
+  notifyWatchDegraded(options = {}) {
+    return this.bumpRevision({
+      watchDegraded: true,
+      scopeKeys: options?.scopeKeys,
+    });
   }
 
   /**
@@ -114,41 +186,48 @@ export class EventBus {
 
   /**
    * 挂起等待仓库变化或直到超时。
-   * 若当前 `revision > sinceRevision` 或刚发生状态跳变，则立即返回 `changed: true`。
+   * 若目标作用域有效版本号大于 `sinceRevision`，则立即返回 `changed: true`。
    *
-   * @param {{ sinceRevision: number, timeoutMs?: number, signal?: AbortSignal }} options 等待参数
+   * @param {{ sinceRevision: number, timeoutMs?: number, signal?: AbortSignal, scopeKey?: string | null }} options 等待参数
    * @returns {Promise<{ revision: number, changed: boolean, watchDegraded: boolean }>} 等待结果
    */
   waitForEvent(options) {
     const sinceRevision = options?.sinceRevision ?? 0;
     const clampedTimeoutMs = this.clampTimeoutMs(options?.timeoutMs);
+    const scopeKey = typeof options?.scopeKey === 'string' && options.scopeKey.length > 0
+      ? options.scopeKey
+      : null;
+
+    const currentRev = this.getRevision(scopeKey);
+    const currentDegraded = this.isWatchDegraded(scopeKey);
 
     if (this.#disposed) {
       return Promise.resolve({
-        revision: this.#revision,
+        revision: currentRev,
         changed: false,
-        watchDegraded: this.#watchDegraded,
+        watchDegraded: currentDegraded,
       });
     }
 
-    if (this.#revision > sinceRevision) {
+    if (currentRev > sinceRevision) {
       return Promise.resolve({
-        revision: this.#revision,
+        revision: currentRev,
         changed: true,
-        watchDegraded: this.#watchDegraded,
+        watchDegraded: currentDegraded,
       });
     }
 
     if (options?.signal?.aborted) {
       return Promise.resolve({
-        revision: this.#revision,
+        revision: currentRev,
         changed: false,
-        watchDegraded: this.#watchDegraded,
+        watchDegraded: currentDegraded,
       });
     }
 
     return new Promise((resolve) => {
       const waiter = {
+        scopeKey,
         resolved: false,
         timer: null,
         onAbort: null,
@@ -177,17 +256,17 @@ export class EventBus {
       while (this.#waiters.length >= this.#maxWaiters) {
         const oldest = this.#waiters.shift();
         oldest?.finish({
-          revision: this.#revision,
+          revision: this.getRevision(oldest.scopeKey),
           changed: false,
-          watchDegraded: this.#watchDegraded,
+          watchDegraded: this.isWatchDegraded(oldest.scopeKey),
         });
       }
 
       waiter.timer = setTimeout(() => {
         waiter.finish({
-          revision: this.#revision,
+          revision: this.getRevision(scopeKey),
           changed: false,
-          watchDegraded: this.#watchDegraded,
+          watchDegraded: this.isWatchDegraded(scopeKey),
         });
       }, clampedTimeoutMs);
       waiter.timer.unref?.();
@@ -195,9 +274,9 @@ export class EventBus {
       if (options?.signal) {
         waiter.onAbort = () => {
           waiter.finish({
-            revision: this.#revision,
+            revision: this.getRevision(scopeKey),
             changed: false,
-            watchDegraded: this.#watchDegraded,
+            watchDegraded: this.isWatchDegraded(scopeKey),
           });
         };
         options.signal.addEventListener('abort', waiter.onAbort, { once: true });
@@ -219,6 +298,38 @@ export class EventBus {
       changed: false,
       watchDegraded: this.#watchDegraded,
     });
+  }
+
+  #setScopeRevision(scopeKey, revision) {
+    if (this.#scopeRevisions.has(scopeKey)) {
+      this.#scopeRevisions.delete(scopeKey);
+    }
+    this.#scopeRevisions.set(scopeKey, revision);
+    while (this.#scopeRevisions.size > MAX_TRACKED_SCOPES) {
+      const oldestKey = this.#scopeRevisions.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.#scopeRevisions.delete(oldestKey);
+      this.#scopeDegraded.delete(oldestKey);
+    }
+  }
+
+  #setScopeDegraded(scopeKey, degraded) {
+    if (this.#scopeDegraded.has(scopeKey)) {
+      this.#scopeDegraded.delete(scopeKey);
+    }
+    this.#scopeDegraded.set(scopeKey, degraded);
+    while (this.#scopeDegraded.size > MAX_TRACKED_SCOPES) {
+      const oldestKey = this.#scopeDegraded.keys().next().value;
+      if (oldestKey === undefined) break;
+      this.#scopeDegraded.delete(oldestKey);
+    }
+  }
+
+  #flushMatchingWaiters(predicate, buildPayload) {
+    const matched = this.#waiters.filter(predicate);
+    for (const waiter of matched) {
+      waiter.finish(buildPayload(waiter));
+    }
   }
 
   #flushAllWaiters(payload) {

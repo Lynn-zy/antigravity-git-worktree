@@ -7,6 +7,7 @@ export const WORKTREE_DEBOUNCE_MS = 300;
 export const WORKTREE_MAX_WAIT_MS = 1000;
 export const WORKTREE_RETRY_DELAY_MS = 500;
 export const MAX_WORKTREE_ERROR_RETRIES = 3;
+export const MAX_POOL_TARGETS = 8;
 export const STORM_WINDOW_MS = 1000;
 export const STORM_EVENT_LIMIT = 200;
 export const STATUS_DEGRADE_LIMIT = 2000;
@@ -38,6 +39,18 @@ const IGNORED_WORKTREE_DIRS = new Set([
   'target',
   '__pycache__',
 ]);
+
+function buildWatcherTargetKey(repoTarget) {
+  if (!repoTarget || !repoTarget.gitCommonDir) {
+    return null;
+  }
+  return [
+    toPathKey(repoTarget.gitCommonDir) ?? repoTarget.gitCommonDir,
+    toPathKey(repoTarget.gitDir ?? repoTarget.gitCommonDir) ?? '',
+    repoTarget.worktreePath ? (toPathKey(repoTarget.worktreePath) ?? repoTarget.worktreePath) : '',
+    repoTarget.isBare ? 'bare' : 'wt',
+  ].join('\0');
+}
 
 function closeWatcherHandle(handle) {
   if (!handle || handle.closed) {
@@ -120,6 +133,8 @@ export class RepositoryWatcher {
   #worktreeWatcher = null;
   #metadataTimer = null;
   #worktreeTimer = null;
+  #gitRetryTimer = null;
+  #gitRetryCount = 0;
   #worktreeRetryTimer = null;
   #worktreePendingSince = null;
   #worktreeRetryCount = 0;
@@ -223,15 +238,12 @@ export class RepositoryWatcher {
       return this.getWatchState();
     }
 
-    const nextKey = [
-      toPathKey(repoTarget.gitCommonDir) ?? repoTarget.gitCommonDir,
-      toPathKey(repoTarget.gitDir ?? repoTarget.gitCommonDir) ?? '',
-      repoTarget.worktreePath ? (toPathKey(repoTarget.worktreePath) ?? repoTarget.worktreePath) : '',
-      repoTarget.isBare ? 'bare' : 'wt',
-    ].join('\0');
+    const nextKey = buildWatcherTargetKey(repoTarget);
 
     if (nextKey === this.#targetKey) {
       if (forceRefresh) {
+        this.#clearGitRetryTimer();
+        this.#gitRetryCount = 0;
         this.#clearWorktreeRetryTimer();
         this.#worktreeRetryCount = 0;
         this.#recentWorktreeEvents = [];
@@ -261,6 +273,7 @@ export class RepositoryWatcher {
       isBare: Boolean(repoTarget.isBare),
     };
     this.#targetKey = nextKey;
+    this.#gitRetryCount = 0;
     this.#worktreeRetryCount = 0;
     this.#recentWorktreeEvents = [];
     this.#watchState = { active: false, degraded: false, reason: null };
@@ -316,6 +329,13 @@ export class RepositoryWatcher {
     this.#watchState = { active: false, degraded: false, reason: null };
   }
 
+  #clearGitRetryTimer() {
+    if (this.#gitRetryTimer) {
+      clearTimeout(this.#gitRetryTimer);
+      this.#gitRetryTimer = null;
+    }
+  }
+
   #clearWorktreeRetryTimer() {
     if (this.#worktreeRetryTimer) {
       clearTimeout(this.#worktreeRetryTimer);
@@ -333,6 +353,7 @@ export class RepositoryWatcher {
       this.#worktreeTimer = null;
     }
     this.#worktreePendingSince = null;
+    this.#clearGitRetryTimer();
     this.#clearWorktreeRetryTimer();
     for (const handle of this.#gitWatchers) {
       closeWatcherHandle(handle);
@@ -399,10 +420,14 @@ export class RepositoryWatcher {
           if (isCommonRoot && (!filename || filename.toLowerCase() === 'worktrees')) {
             this.#syncWorktreesDirWatcher();
           }
+          this.#gitRetryCount = 0;
           this.#scheduleMetadataChange();
         },
-        () => {
+        (closeReason) => {
           this.#recomputeActiveFlag();
+          if (closeReason === 'error') {
+            this.#scheduleGitRemount();
+          }
         },
       );
       if (rootHandle) {
@@ -423,15 +448,55 @@ export class RepositoryWatcher {
         if (isIgnoredGitEventName(filename)) {
           return;
         }
+        this.#gitRetryCount = 0;
         this.#scheduleMetadataChange();
       },
-      () => {
+      (closeReason) => {
         this.#recomputeActiveFlag();
+        if (closeReason === 'error') {
+          this.#scheduleGitRemount();
+        }
       },
     );
     if (refsHandle) {
       this.#gitWatchers.push(refsHandle);
     }
+  }
+
+  #scheduleGitRemount() {
+    if (
+      this.#disposed ||
+      this.#gitRetryTimer ||
+      !this.#target?.gitCommonDir ||
+      !this.#existsFn(this.#target.gitCommonDir) ||
+      this.#gitRetryCount >= this.#maxWorktreeErrorRetries
+    ) {
+      return;
+    }
+    const expectedTargetKey = this.#targetKey;
+    this.#gitRetryCount += 1;
+    this.#gitRetryTimer = setTimeout(() => {
+      this.#gitRetryTimer = null;
+      if (this.#disposed || this.#targetKey !== expectedTargetKey || !this.#target?.gitCommonDir) {
+        return;
+      }
+      if (!this.#existsFn(this.#target.gitCommonDir)) {
+        this.#recomputeActiveFlag();
+        return;
+      }
+      for (const handle of this.#gitWatchers) {
+        closeWatcherHandle(handle);
+      }
+      this.#gitWatchers = [];
+      this.#mountGitWatchers();
+      this.#recomputeActiveFlag();
+      if (this.#gitWatchers.some((item) => !item.closed)) {
+        this.#scheduleMetadataChange();
+      } else {
+        this.#scheduleGitRemount();
+      }
+    }, this.#worktreeRetryDelayMs);
+    this.#gitRetryTimer.unref?.();
   }
 
   #syncWorktreesDirWatcher() {
@@ -664,4 +729,222 @@ export class RepositoryWatcher {
  */
 export function createRepositoryWatcher(options = {}) {
   return new RepositoryWatcher(options);
+}
+
+/**
+ * 面向多会话共享 Sidecar 场景的有界 LRU 多仓库监听池。
+ * 每个活跃 `{ gitCommonDir, gitDir, worktreePath, isBare }` 独立维护 `RepositoryWatcher`，
+ * 避免后台对话或空工作区快照拆毁当前对话的文件监听，超出上限时自动淘汰最久未活跃目标。
+ */
+export class RepositoryWatcherPool {
+  #watcherOptions;
+  #onChange;
+  #onDegraded;
+  #maxTargets;
+  #entries = new Map();
+  #lastTargetKey = null;
+  #disposed = false;
+
+  /**
+   * 创建多目标文件监听池。
+   *
+   * @param {ConstructorParameters<typeof RepositoryWatcher>[0] & {
+   *   maxTargets?: number,
+   *   onChange?: (info: { channel: 'metadata' | 'worktree', target: object, watchState: { active: boolean, degraded: boolean, reason: string | null } }) => void,
+   *   onDegraded?: (watchState: { active: false, degraded: true, reason: string }, info: { channel: 'degraded', target: object, watchState: { active: false, degraded: true, reason: string } }) => void
+   * }} [options] 监听与容量配置
+   */
+  constructor(options = {}) {
+    const { maxTargets, onChange, onDegraded, ...watcherOptions } = options;
+    this.#watcherOptions = watcherOptions;
+    this.#onChange = onChange ?? (() => {});
+    this.#onDegraded = onDegraded ?? (() => {});
+    this.#maxTargets = Number.isInteger(maxTargets) && maxTargets >= 1 ? maxTargets : MAX_POOL_TARGETS;
+  }
+
+  /**
+   * 获取当前池内维护的监听目标数量。
+   *
+   * @returns {number} 活跃目标数
+   */
+  get size() {
+    return this.#entries.size;
+  }
+
+  /**
+   * 注册或刷新目标仓库/工作树的监听句柄；传入空目标时不拆毁其他会话的活跃监听。
+   *
+   * @param {{ id?: string, gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null} repoTarget 活跃仓库描述或 null
+   * @param {{ forceRefresh?: boolean }} [options] 刷新控制选项
+   * @returns {{ active: boolean, degraded: boolean, reason: string | null }} 目标监听状态
+   */
+  setTarget(repoTarget, options = {}) {
+    if (this.#disposed) {
+      return { active: false, degraded: false, reason: null };
+    }
+    const targetKey = buildWatcherTargetKey(repoTarget);
+    if (!targetKey) {
+      return { active: false, degraded: false, reason: null };
+    }
+
+    const normalizedTarget = {
+      id: repoTarget.id ?? null,
+      gitCommonDir: repoTarget.gitCommonDir,
+      gitDir: repoTarget.gitDir ?? repoTarget.gitCommonDir,
+      worktreePath: repoTarget.isBare ? null : (repoTarget.worktreePath ?? null),
+      isBare: Boolean(repoTarget.isBare),
+    };
+
+    let entry = this.#entries.get(targetKey);
+    if (entry) {
+      this.#entries.delete(targetKey);
+      entry.target = normalizedTarget;
+    } else {
+      const targetRef = { current: normalizedTarget };
+      const watcher = new RepositoryWatcher({
+        ...this.#watcherOptions,
+        onChange: (info) => {
+          this.#onChange({
+            ...info,
+            target: targetRef.current,
+            watchState: watcher.getWatchState(),
+          });
+        },
+        onDegraded: (watchState) => {
+          this.#onDegraded(watchState, {
+            channel: 'degraded',
+            target: targetRef.current,
+            watchState,
+          });
+        },
+      });
+      entry = { watcher, targetRef, target: normalizedTarget };
+    }
+
+    entry.targetRef.current = normalizedTarget;
+    this.#entries.set(targetKey, entry);
+    this.#lastTargetKey = targetKey;
+
+    while (this.#entries.size > this.#maxTargets) {
+      const oldestKey = this.#entries.keys().next().value;
+      if (oldestKey === undefined || oldestKey === targetKey) {
+        break;
+      }
+      const oldest = this.#entries.get(oldestKey);
+      this.#entries.delete(oldestKey);
+      oldest?.watcher.close();
+    }
+
+    return entry.watcher.setTarget(normalizedTarget, options);
+  }
+
+  /**
+   * 刷新指定监听目标在 LRU 池中的活跃顺序，避免长轮询活跃会话被后台淘汰。
+   *
+   * @param {{ gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null | undefined} repoTarget 仓库目标
+   * @returns {boolean} 是否命中池内监听
+   */
+  touchTarget(repoTarget) {
+    const targetKey = buildWatcherTargetKey(repoTarget);
+    if (!targetKey) {
+      return false;
+    }
+    const entry = this.#entries.get(targetKey);
+    if (!entry) {
+      return false;
+    }
+    this.#entries.delete(targetKey);
+    this.#entries.set(targetKey, entry);
+    return true;
+  }
+
+  /**
+   * 获取指定目标（省略时取最近操作目标）的监听状态摘要。
+   *
+   * @param {{ gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null} [repoTarget] 可选仓库目标
+   * @returns {{ active: boolean, degraded: boolean, reason: string | null }} 监听状态对象
+   */
+  getWatchState(repoTarget) {
+    const entry = this.#resolveEntry(repoTarget);
+    return entry ? entry.watcher.getWatchState() : { active: false, degraded: false, reason: null };
+  }
+
+  /**
+   * 对指定目标（省略时取最近操作目标）应用变更条目数预算检查。
+   *
+   * @param {{ totalEntries?: number, truncated?: boolean } | null | undefined} changes 快照中的变更统计
+   * @param {{ gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null} [repoTarget] 可选仓库目标
+   * @returns {{ active: boolean, degraded: boolean, reason: string | null }} 最新监听状态
+   */
+  applyStatusBudget(changes, repoTarget) {
+    const entry = this.#resolveEntry(repoTarget);
+    return entry ? entry.watcher.applyStatusBudget(changes) : { active: false, degraded: false, reason: null };
+  }
+
+  /**
+   * 显式触发指定目标（省略时取最近操作目标）的风暴或预算降级。
+   *
+   * @param {string} [reason='watch_storm'] 降级原因标识
+   * @param {{ gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null} [repoTarget] 可选仓库目标
+   * @returns {void}
+   */
+  degrade(reason = 'watch_storm', repoTarget) {
+    const entry = this.#resolveEntry(repoTarget);
+    entry?.watcher.degrade(reason);
+  }
+
+  /**
+   * 汇总池内所有监听器的句柄与回调统计。
+   *
+   * @returns {{ rawCallbackCount: number, effectiveEventCount: number, selfDestructCount: number, activeHandleCount: number, targetCount: number }} 汇总统计
+   */
+  getStats() {
+    const totals = {
+      rawCallbackCount: 0,
+      effectiveEventCount: 0,
+      selfDestructCount: 0,
+      activeHandleCount: 0,
+      targetCount: this.#entries.size,
+    };
+    for (const entry of this.#entries.values()) {
+      const s = entry.watcher.getStats();
+      totals.rawCallbackCount += s.rawCallbackCount;
+      totals.effectiveEventCount += s.effectiveEventCount;
+      totals.selfDestructCount += s.selfDestructCount;
+      totals.activeHandleCount += s.activeHandleCount;
+    }
+    return totals;
+  }
+
+  /**
+   * 关闭池内全部监听器并释放资源。
+   *
+   * @returns {void}
+   */
+  close() {
+    this.#disposed = true;
+    for (const entry of this.#entries.values()) {
+      entry.watcher.close();
+    }
+    this.#entries.clear();
+    this.#lastTargetKey = null;
+  }
+
+  #resolveEntry(repoTarget) {
+    if (repoTarget !== undefined) {
+      const key = buildWatcherTargetKey(repoTarget);
+      return key ? (this.#entries.get(key) ?? null) : null;
+    }
+    return this.#lastTargetKey ? (this.#entries.get(this.#lastTargetKey) ?? null) : null;
+  }
+}
+
+/**
+ * 创建多目标共享 Sidecar 文件监听池实例。
+ *
+ * @param {ConstructorParameters<typeof RepositoryWatcherPool>[0]} [options] 监听池配置
+ * @returns {RepositoryWatcherPool} 文件监听池实例
+ */
+export function createWatcherPool(options = {}) {
+  return new RepositoryWatcherPool(options);
 }
