@@ -1261,4 +1261,220 @@ test('集成测试：切分支防吞事件、watcher 合并与目录噪声过滤
     }
     assert.equal(sidecarInstance.runtime.eventBus.pendingCount, 0, 'SidecarApp 模式中止长轮询后不得泄漏等待者');
   }
+
+  // 4) 模拟真实 SidecarApp 以 async/await 读取请求体时，AbortSignal 仍必须透传至 eventBus
+  class AsyncBodyFakeSidecarApp {
+    #apis = new Map();
+    #server = null;
+    page() {}
+    api(routePath, handler, method = 'POST') {
+      this.#apis.set(`${method}:${routePath}`, handler);
+    }
+    async run() {
+      this.#server = http.createServer(async (req, res) => {
+        const url = new URL(req.url || '/', 'http://127.0.0.1');
+        const handler = this.#apis.get(`${req.method}:${url.pathname}`);
+        if (!handler) {
+          res.writeHead(404);
+          res.end('Not found');
+          return;
+        }
+        const raw = await new Promise((resolve) => {
+          let buf = '';
+          req.on('data', (chunk) => { buf += chunk; });
+          req.on('end', () => resolve(buf));
+        });
+        const result = await handler(raw ? JSON.parse(raw) : {});
+        if (!res.writableEnded) {
+          res.writeHead(result.status || 200, { 'Content-Type': result.contentType, ...result.headers });
+          res.end(result.body);
+        }
+      });
+      await new Promise((resolve) => this.#server.listen(0, '127.0.0.1', resolve));
+      return this.#server;
+    }
+    async close() {
+      await new Promise((resolve) => (this.#server ? this.#server.close(() => resolve()) : resolve()));
+    }
+  }
+
+  const asyncSidecar = await startSidecarServer({
+    loadSdk: async () => ({ SidecarApp: AsyncBodyFakeSidecarApp, Response: HttpFakeResponse }),
+    preferencesPath: path.join(root, 'prefs-sidecar-async-abort.json'),
+  });
+  t.after(() => asyncSidecar.close());
+
+  const asyncSidecarUrl = `http://127.0.0.1:${asyncSidecar.server.address().port}`;
+  const asyncSnap = (await (await fetch(`${asyncSidecarUrl}/api/snapshot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workspaceUris: [repoUri] }),
+  })).json()).data;
+
+  const asyncAc = new AbortController();
+  const asyncWaitPromise = fetch(`${asyncSidecarUrl}/api/events/wait`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      workspaceKey: asyncSnap.workspaceKey,
+      sinceRevision: asyncSnap.revision,
+      timeoutMs: 20_000,
+    }),
+    signal: asyncAc.signal,
+  });
+  for (let j = 0; j < 40 && asyncSidecar.runtime.eventBus.pendingCount === 0; j += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(asyncSidecar.runtime.eventBus.pendingCount, 1);
+  asyncAc.abort();
+  await assert.rejects(asyncWaitPromise, (err) => err?.name === 'AbortError');
+  for (let j = 0; j < 40 && asyncSidecar.runtime.eventBus.pendingCount > 0; j += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(asyncSidecar.runtime.eventBus.pendingCount, 0, 'async/await 读 body 的 SidecarApp 同样不得泄漏长轮询等待者');
+});
+
+test('集成测试：工作区监听瞬时错误自动重挂与降级、连续写入 maxWait 防饿死、后到工作区事件不被元数据合并吞掉', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm2-int-watch-resilience-'));
+  const repoDir = path.join(root, 'repo');
+  await initConfiguredRepo(repoDir, 'main');
+  fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(repoDir, 'src', 'app.js'), 'export const a = 1;\n');
+  await execGit(['add', '.'], repoDir);
+  await execGit(['commit', '-m', 'init'], repoDir);
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const normGit = normalizeFsPath(path.join(repoDir, '.git'));
+  const normWt = normalizeFsPath(repoDir);
+
+  // 1) worktree watcher 触发 error 后自动延迟重挂并主动补发一次 worktree 刷新；同目标非强制 setTarget 也应补挂
+  let wtMountCount = 0;
+  let latestWtErrorHandler = null;
+  const recoveredChannels = [];
+  const degradedStates = [];
+  const resilientWatcher = createRepositoryWatcher({
+    worktreeDebounceMs: 30,
+    worktreeRetryDelayMs: 40,
+    maxWorktreeErrorRetries: 2,
+    existsFn: () => true,
+    statFn: () => ({ isDirectory: () => false }),
+    watchFn: (dir, _opts, _listener) => {
+      const key = normalizeFsPath(dir);
+      const handlers = {};
+      if (key === normWt) {
+        wtMountCount += 1;
+        if (wtMountCount === 3 || wtMountCount === 4) {
+          throw new Error('simulated persistent EPERM');
+        }
+      }
+      return {
+        close() {},
+        on(evt, fn) {
+          handlers[evt] = fn;
+          if (key === normWt && evt === 'error') {
+            latestWtErrorHandler = fn;
+          }
+        },
+      };
+    },
+    onChange: (info) => recoveredChannels.push(info.channel),
+    onDegraded: (state) => degradedStates.push(state),
+  });
+  t.after(() => resilientWatcher.close());
+
+  const target = {
+    gitCommonDir: path.join(repoDir, '.git'),
+    gitDir: path.join(repoDir, '.git'),
+    worktreePath: repoDir,
+    isBare: false,
+  };
+  resilientWatcher.setTarget(target);
+  assert.equal(wtMountCount, 1);
+
+  // 触发首次瞬时 error：应在 40ms 后自动重挂（wtMountCount -> 2）并补发一次 worktree 同步
+  latestWtErrorHandler(new Error('transient EPERM'));
+  await new Promise((resolve) => setTimeout(resolve, 140));
+  assert.equal(wtMountCount, 2, '工作区监听瞬时错误后应自动重挂');
+  assert.deepEqual(recoveredChannels, ['worktree'], '重挂成功后应补发一次工作区同步');
+  assert.equal(resilientWatcher.getWatchState().degraded, false);
+
+  // 再次错误且连续重挂均抛出异常：重试耗尽后应显式降级为 watch_error 而非静默失活
+  latestWtErrorHandler(new Error('persistent EPERM'));
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.equal(resilientWatcher.getWatchState().degraded, true);
+  assert.equal(resilientWatcher.getWatchState().reason, 'watch_error');
+  assert.equal(degradedStates.at(-1)?.reason, 'watch_error');
+
+  // 2) 非降级状态下若 worktree watcher 意外关闭，同目标 setTarget({ forceRefresh: false }) 必须补挂
+  let manualHealMounts = 0;
+  let manualHealError = null;
+  const healWatcher = createRepositoryWatcher({
+    worktreeRetryDelayMs: 60_000,
+    existsFn: () => true,
+    statFn: () => ({ isDirectory: () => false }),
+    watchFn: (dir) => {
+      const key = normalizeFsPath(dir);
+      if (key === normWt) manualHealMounts += 1;
+      return {
+        close() {},
+        on(evt, fn) {
+          if (key === normWt && evt === 'error') manualHealError = fn;
+        },
+      };
+    },
+  });
+  t.after(() => healWatcher.close());
+  healWatcher.setTarget(target);
+  assert.equal(manualHealMounts, 1);
+  manualHealError(new Error('transient error'));
+  healWatcher.setTarget(target, { forceRefresh: false });
+  assert.equal(manualHealMounts, 2, '同目标非强制 setTarget 也应补挂失活的工作区监听');
+
+  // 3) 持续写入间隔小于 worktreeDebounceMs 时，worktreeMaxWaitMs 必须保证周期性刷出不饿死
+  let streamWtEmit = null;
+  const streamEvents = [];
+  const maxWaitWatcher = createRepositoryWatcher({
+    worktreeDebounceMs: 80,
+    worktreeMaxWaitMs: 140,
+    existsFn: () => true,
+    statFn: () => ({ isDirectory: () => false }),
+    watchFn: (dir, _opts, listener) => {
+      if (normalizeFsPath(dir) === normWt) streamWtEmit = listener;
+      return { close() {}, on() {} };
+    },
+    onChange: (info) => streamEvents.push(info.channel),
+  });
+  t.after(() => maxWaitWatcher.close());
+  maxWaitWatcher.setTarget(target);
+
+  for (let i = 0; i < 6; i += 1) {
+    streamWtEmit('change', 'src/app.js');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  assert.ok(streamEvents.length >= 1, '连续高频写入期间达到 worktreeMaxWaitMs 后必须刷出变更通知，不得无限饿死');
+
+  // 4) 晚于 .git 元数据事件到达的工作区文件变动，不得被 metadataTimer 合并清除
+  let orderGitEmit = null;
+  let orderWtEmit = null;
+  const orderChannels = [];
+  const orderWatcher = createRepositoryWatcher({
+    metadataDebounceMs: 40,
+    worktreeDebounceMs: 90,
+    existsFn: () => true,
+    statFn: () => ({ isDirectory: () => false }),
+    watchFn: (dir, _opts, listener) => {
+      const key = normalizeFsPath(dir);
+      if (key === normGit) orderGitEmit = listener;
+      if (key === normWt) orderWtEmit = listener;
+      return { close() {}, on() {} };
+    },
+    onChange: (info) => orderChannels.push(info.channel),
+  });
+  t.after(() => orderWatcher.close());
+  orderWatcher.setTarget(target);
+
+  orderGitEmit('change', 'index');
+  orderWtEmit('change', 'src/app.js');
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.deepEqual(orderChannels, ['metadata', 'worktree'], '晚于元数据事件到达的工作区改动不得被 metadata 定时器吞掉');
 });

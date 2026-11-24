@@ -4,6 +4,9 @@ import { toPathKey } from './discovery.mjs';
 
 export const METADATA_DEBOUNCE_MS = 200;
 export const WORKTREE_DEBOUNCE_MS = 300;
+export const WORKTREE_MAX_WAIT_MS = 1000;
+export const WORKTREE_RETRY_DELAY_MS = 500;
+export const MAX_WORKTREE_ERROR_RETRIES = 3;
 export const STORM_WINDOW_MS = 1000;
 export const STORM_EVENT_LIMIT = 200;
 export const STATUS_DEGRADE_LIMIT = 2000;
@@ -101,6 +104,9 @@ export class RepositoryWatcher {
   #nowFn;
   #metadataDebounceMs;
   #worktreeDebounceMs;
+  #worktreeMaxWaitMs;
+  #worktreeRetryDelayMs;
+  #maxWorktreeErrorRetries;
   #stormWindowMs;
   #stormEventLimit;
   #statusDegradeLimit;
@@ -114,6 +120,12 @@ export class RepositoryWatcher {
   #worktreeWatcher = null;
   #metadataTimer = null;
   #worktreeTimer = null;
+  #worktreeRetryTimer = null;
+  #worktreePendingSince = null;
+  #worktreeRetryCount = 0;
+  #eventSeq = 0;
+  #lastMetadataEventSeq = 0;
+  #lastWorktreeEventSeq = 0;
   #recentWorktreeEvents = [];
   #watchState = {
     active: false,
@@ -135,6 +147,9 @@ export class RepositoryWatcher {
    *   onDegraded?: (watchState: { active: false, degraded: true, reason: string }) => void,
    *   metadataDebounceMs?: number,
    *   worktreeDebounceMs?: number,
+   *   worktreeMaxWaitMs?: number,
+   *   worktreeRetryDelayMs?: number,
+   *   maxWorktreeErrorRetries?: number,
    *   stormWindowMs?: number,
    *   stormEventLimit?: number,
    *   statusDegradeLimit?: number,
@@ -149,6 +164,9 @@ export class RepositoryWatcher {
     this.#onDegraded = options.onDegraded ?? (() => {});
     this.#metadataDebounceMs = options.metadataDebounceMs ?? METADATA_DEBOUNCE_MS;
     this.#worktreeDebounceMs = options.worktreeDebounceMs ?? WORKTREE_DEBOUNCE_MS;
+    this.#worktreeMaxWaitMs = options.worktreeMaxWaitMs ?? Math.max(this.#worktreeDebounceMs, WORKTREE_MAX_WAIT_MS);
+    this.#worktreeRetryDelayMs = options.worktreeRetryDelayMs ?? WORKTREE_RETRY_DELAY_MS;
+    this.#maxWorktreeErrorRetries = options.maxWorktreeErrorRetries ?? MAX_WORKTREE_ERROR_RETRIES;
     this.#stormWindowMs = options.stormWindowMs ?? STORM_WINDOW_MS;
     this.#stormEventLimit = options.stormEventLimit ?? STORM_EVENT_LIMIT;
     this.#statusDegradeLimit = options.statusDegradeLimit ?? STATUS_DEGRADE_LIMIT;
@@ -214,6 +232,8 @@ export class RepositoryWatcher {
 
     if (nextKey === this.#targetKey) {
       if (forceRefresh) {
+        this.#clearWorktreeRetryTimer();
+        this.#worktreeRetryCount = 0;
         this.#recentWorktreeEvents = [];
         this.#watchState = { active: false, degraded: false, reason: null };
         this.#ensureWorktreeWatcher();
@@ -226,6 +246,8 @@ export class RepositoryWatcher {
       }
       if (!this.#watchState.degraded) {
         this.#ensureWorktreesDirWatcher();
+        // 非降级状态下若工作区监听句柄曾因瞬时错误关闭，自动补挂恢复文件同步
+        this.#ensureWorktreeWatcher();
         this.#recomputeActiveFlag();
       }
       return this.getWatchState();
@@ -239,6 +261,7 @@ export class RepositoryWatcher {
       isBare: Boolean(repoTarget.isBare),
     };
     this.#targetKey = nextKey;
+    this.#worktreeRetryCount = 0;
     this.#recentWorktreeEvents = [];
     this.#watchState = { active: false, degraded: false, reason: null };
 
@@ -293,6 +316,13 @@ export class RepositoryWatcher {
     this.#watchState = { active: false, degraded: false, reason: null };
   }
 
+  #clearWorktreeRetryTimer() {
+    if (this.#worktreeRetryTimer) {
+      clearTimeout(this.#worktreeRetryTimer);
+      this.#worktreeRetryTimer = null;
+    }
+  }
+
   #teardownAllWatchers() {
     if (this.#metadataTimer) {
       clearTimeout(this.#metadataTimer);
@@ -302,6 +332,8 @@ export class RepositoryWatcher {
       clearTimeout(this.#worktreeTimer);
       this.#worktreeTimer = null;
     }
+    this.#worktreePendingSince = null;
+    this.#clearWorktreeRetryTimer();
     for (const handle of this.#gitWatchers) {
       closeWatcherHandle(handle);
     }
@@ -323,7 +355,7 @@ export class RepositoryWatcher {
           this.#stats.rawCallbackCount += 1;
           this.#stats.selfDestructCount += 1;
           closeWatcherHandle(handle);
-          onClose?.();
+          onClose?.('self_destruct');
           return;
         }
         this.#stats.rawCallbackCount += 1;
@@ -335,7 +367,7 @@ export class RepositoryWatcher {
       handle.watcher = watcher;
       watcher.on?.('error', () => {
         closeWatcherHandle(handle);
-        onClose?.();
+        onClose?.('error');
       });
       return handle;
     } catch {
@@ -436,6 +468,45 @@ export class RepositoryWatcher {
     this.#syncWorktreesDirWatcher();
   }
 
+  #scheduleWorktreeRemount() {
+    if (
+      this.#disposed ||
+      this.#watchState.degraded ||
+      this.#worktreeRetryTimer ||
+      !this.#target?.worktreePath ||
+      !this.#existsFn(this.#target.worktreePath)
+    ) {
+      return;
+    }
+    if (this.#worktreeRetryCount >= this.#maxWorktreeErrorRetries) {
+      this.#triggerDegraded('watch_error');
+      return;
+    }
+    const expectedTargetKey = this.#targetKey;
+    this.#worktreeRetryCount += 1;
+    this.#worktreeRetryTimer = setTimeout(() => {
+      this.#worktreeRetryTimer = null;
+      if (this.#disposed || this.#watchState.degraded || this.#targetKey !== expectedTargetKey) {
+        return;
+      }
+      if (!this.#target?.worktreePath || !this.#existsFn(this.#target.worktreePath)) {
+        this.#recomputeActiveFlag();
+        return;
+      }
+      this.#ensureWorktreeWatcher();
+      this.#recomputeActiveFlag();
+      if (this.#worktreeWatcher && !this.#worktreeWatcher.closed) {
+        // 补挂成功后主动触发一次工作区同步，补齐监听中断窗口内的文件变动
+        this.#eventSeq += 1;
+        this.#lastWorktreeEventSeq = this.#eventSeq;
+        this.#scheduleWorktreeChange();
+      } else {
+        this.#scheduleWorktreeRemount();
+      }
+    }, this.#worktreeRetryDelayMs);
+    this.#worktreeRetryTimer.unref?.();
+  }
+
   #ensureWorktreeWatcher() {
     if (!this.#target || !this.#target.worktreePath || this.#watchState.degraded) {
       return;
@@ -454,11 +525,15 @@ export class RepositoryWatcher {
         if (this.#isDirectoryOnlyChange(wtDir, eventType, filename)) {
           return;
         }
+        this.#worktreeRetryCount = 0;
         this.#recordWorktreeEvent();
       },
-      () => {
+      (closeReason) => {
         this.#worktreeWatcher = null;
         this.#recomputeActiveFlag();
+        if (closeReason === 'error') {
+          this.#scheduleWorktreeRemount();
+        }
       },
     );
   }
@@ -490,6 +565,8 @@ export class RepositoryWatcher {
       this.#triggerDegraded('watch_storm');
       return;
     }
+    this.#eventSeq += 1;
+    this.#lastWorktreeEventSeq = this.#eventSeq;
     this.#scheduleWorktreeChange();
   }
 
@@ -497,15 +574,19 @@ export class RepositoryWatcher {
     if (this.#disposed) {
       return;
     }
+    this.#eventSeq += 1;
+    this.#lastMetadataEventSeq = this.#eventSeq;
     if (this.#metadataTimer) {
       clearTimeout(this.#metadataTimer);
     }
     this.#metadataTimer = setTimeout(() => {
       this.#metadataTimer = null;
-      // 同一 git checkout 会先写工作区文件再更新 .git/HEAD；metadata 触发时合并已排队的 worktree 定时器，避免连续触发两次快照
-      if (this.#worktreeTimer) {
+      // 同一 git checkout 会先写工作区文件再更新 .git/HEAD；仅当工作区事件早于元数据事件时合并定时器，
+      // 避免吞掉晚于元数据事件到达的工作区文件改动。
+      if (this.#worktreeTimer && this.#lastWorktreeEventSeq < this.#lastMetadataEventSeq) {
         clearTimeout(this.#worktreeTimer);
         this.#worktreeTimer = null;
+        this.#worktreePendingSince = null;
       }
       if (!this.#disposed) {
         this.#onChange({ channel: 'metadata' });
@@ -518,15 +599,22 @@ export class RepositoryWatcher {
     if (this.#disposed || this.#watchState.degraded) {
       return;
     }
+    const now = this.#nowFn();
+    if (this.#worktreePendingSince === null) {
+      this.#worktreePendingSince = now;
+    }
+    const remainingMaxWait = Math.max(0, (this.#worktreePendingSince + this.#worktreeMaxWaitMs) - now);
+    const delayMs = Math.min(this.#worktreeDebounceMs, remainingMaxWait);
     if (this.#worktreeTimer) {
       clearTimeout(this.#worktreeTimer);
     }
     this.#worktreeTimer = setTimeout(() => {
       this.#worktreeTimer = null;
+      this.#worktreePendingSince = null;
       if (!this.#disposed && !this.#watchState.degraded) {
         this.#onChange({ channel: 'worktree' });
       }
-    }, this.#worktreeDebounceMs);
+    }, delayMs);
     this.#worktreeTimer.unref?.();
   }
 
@@ -535,6 +623,8 @@ export class RepositoryWatcher {
       clearTimeout(this.#worktreeTimer);
       this.#worktreeTimer = null;
     }
+    this.#worktreePendingSince = null;
+    this.#clearWorktreeRetryTimer();
     closeWatcherHandle(this.#worktreeWatcher);
     this.#worktreeWatcher = null;
     this.#recentWorktreeEvents = [];

@@ -656,7 +656,7 @@ function buildWorkspaceKey(activeRepo) {
 /**
  * 根据宿主 `workspaceUris` 发现 Repository 集合，并为当前选中仓库构建完整基础快照（供 M2 `/api/snapshot` 组装）。
  *
- * @param {{ workspaceUris?: string[], selectedRepoId?: string | null, graphScope?: 'auto' | 'all', graphLimit?: number, maxStatusEntries?: number, timeoutMs?: number, runGitRead?: typeof runGitRead }} [params] 快照请求参数
+ * @param {{ workspaceUris?: string[], selectedRepoId?: string | null, graphScope?: 'auto' | 'all', graphLimit?: number, maxStatusEntries?: number, timeoutMs?: number, runGitRead?: typeof runGitRead, onActiveRepoDiscovered?: (activeDiscovery: object | null) => void }} [params] 快照请求参数
  * @returns {Promise<{ workspaceKey: string | null, repositories: Array<{ id: string, name: string, worktreePath: string | null, branch: string | null, isBare: boolean }>, activeRepo: object | null, changes: object, graph: object }>} 基础快照数据
  */
 export async function discoverAndBuildSnapshotBase(params = {}) {
@@ -668,6 +668,7 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
     maxStatusEntries = MAX_STATUS_ENTRIES,
     timeoutMs,
     runGitRead: customRunRead,
+    onActiveRepoDiscovered,
   } = params;
 
   const { scope, limit } = normalizeGraphOptions({ scope: graphScope, limit: graphLimit });
@@ -679,6 +680,7 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
   });
 
   if (discovered.length === 0) {
+    onActiveRepoDiscovered?.(null);
     return {
       workspaceKey: null,
       repositories: [],
@@ -703,6 +705,7 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
   const activeDiscovery =
     (selectedRepoId ? discovered.find((repo) => repo.id === selectedRepoId) : null) ??
     discovered[0];
+  onActiveRepoDiscovered?.(activeDiscovery);
 
   const repoCwd = activeDiscovery.isBare ? activeDiscovery.gitCommonDir : activeDiscovery.worktreePath;
 

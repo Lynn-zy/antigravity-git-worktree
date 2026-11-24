@@ -512,10 +512,17 @@ const bootstrapPanel = () => {
   let snapshotRequestSeq = 0;
   let eventsAbortController = null;
   let eventsLoopToken = 0;
+  let eventsLoopActive = false;
+  let eventsRestartTimer = null;
   let eventsBackoffMs = 1200;
 
   const abortEventsWait = () => {
     eventsLoopToken += 1;
+    eventsLoopActive = false;
+    if (eventsRestartTimer !== null) {
+      window.clearTimeout(eventsRestartTimer);
+      eventsRestartTimer = null;
+    }
     if (eventsAbortController) {
       eventsAbortController.abort();
       eventsAbortController = null;
@@ -535,13 +542,19 @@ const bootstrapPanel = () => {
   const runMutation = async (opName, fn) => {
     if (state.pendingOp) return false;
     state.pendingOp = opName;
+    abortEventsWait();
     renderAll();
+    let ranSnapshot = false;
     try {
       await fn();
+      ranSnapshot = true;
       await loadSnapshot({ forceRefresh: false });
       return true;
     } catch (err) {
       handleApiError(err);
+      if (!ranSnapshot) {
+        restartEventsWaitLoop();
+      }
       return false;
     } finally {
       state.pendingOp = null;
@@ -975,6 +988,20 @@ const bootstrapPanel = () => {
   };
 
   // --- 快照加载与挂起式长轮询 ---
+  const scheduleEventsWaitRestart = () => {
+    if (document.hidden || !state.snapshot?.workspaceKey || eventsLoopActive || eventsRestartTimer !== null) {
+      return;
+    }
+    const delayMs = eventsBackoffMs;
+    eventsBackoffMs = Math.min(5000, eventsBackoffMs * 2);
+    eventsRestartTimer = window.setTimeout(() => {
+      eventsRestartTimer = null;
+      if (!document.hidden && state.snapshot?.workspaceKey && !snapshotAbortController) {
+        restartEventsWaitLoop();
+      }
+    }, delayMs);
+  };
+
   const restartEventsWaitLoop = () => {
     abortEventsWait();
     if (document.hidden || !state.snapshot?.workspaceKey) {
@@ -982,44 +1009,49 @@ const bootstrapPanel = () => {
     }
 
     const token = eventsLoopToken;
+    eventsLoopActive = true;
     const poll = async () => {
-      while (token === eventsLoopToken && !document.hidden && state.snapshot?.workspaceKey) {
-        const controller = new AbortController();
-        eventsAbortController = controller;
-        try {
-          const eventRes = await apiClient.waitEvents(
-            {
-              workspaceKey: state.snapshot.workspaceKey,
-              sinceRevision: state.revision,
-              timeoutMs: EVENTS_WAIT_TIMEOUT_MS,
-            },
-            controller.signal,
-          );
-          eventsBackoffMs = 1200;
-          if (token !== eventsLoopToken || document.hidden) return;
+      try {
+        while (token === eventsLoopToken && !document.hidden && state.snapshot?.workspaceKey) {
+          const controller = new AbortController();
+          eventsAbortController = controller;
+          try {
+            const eventRes = await apiClient.waitEvents(
+              {
+                workspaceKey: state.snapshot.workspaceKey,
+                sinceRevision: state.revision,
+                timeoutMs: EVENTS_WAIT_TIMEOUT_MS,
+              },
+              controller.signal,
+            );
+            eventsBackoffMs = 1200;
+            if (token !== eventsLoopToken || document.hidden) return;
 
-          const shouldRefresh = Boolean(eventRes?.changed)
-            || (Number.isFinite(eventRes?.revision) && eventRes.revision > state.revision)
-            || Boolean(eventRes?.watchDegraded && !state.snapshot?.watchState?.degraded);
+            const shouldRefresh = Boolean(eventRes?.changed)
+              || (Number.isFinite(eventRes?.revision) && eventRes.revision > state.revision)
+              || Boolean(eventRes?.watchDegraded && !state.snapshot?.watchState?.degraded);
 
-          if (shouldRefresh) {
-            const refreshed = await loadSnapshot({ forceRefresh: false });
-            if (refreshed) {
+            if (shouldRefresh) {
+              // loadSnapshot 会立即接管长轮询生命周期（成功重启、失败退避重连），当前循环直接退出
+              await loadSnapshot({ forceRefresh: false });
+              return;
+            }
+          } catch (err) {
+            // 仅本端主动取消或页面不可见时退出；宿主 fetch 超时/连接重置等外部 AbortError 必须退避重连
+            if (controller.signal.aborted || token !== eventsLoopToken || document.hidden) {
               return;
             }
             await new Promise((resolve) => window.setTimeout(resolve, eventsBackoffMs));
             eventsBackoffMs = Math.min(5000, eventsBackoffMs * 2);
+          } finally {
+            if (eventsAbortController === controller) {
+              eventsAbortController = null;
+            }
           }
-        } catch (err) {
-          if (err?.name === 'AbortError' || token !== eventsLoopToken || document.hidden) {
-            return;
-          }
-          await new Promise((resolve) => window.setTimeout(resolve, eventsBackoffMs));
-          eventsBackoffMs = Math.min(5000, eventsBackoffMs * 2);
-        } finally {
-          if (eventsAbortController === controller) {
-            eventsAbortController = null;
-          }
+        }
+      } finally {
+        if (token === eventsLoopToken) {
+          eventsLoopActive = false;
         }
       }
     };
@@ -1030,11 +1062,13 @@ const bootstrapPanel = () => {
   const loadSnapshot = async ({ forceRefresh = false } = {}) => {
     snapshotRequestSeq += 1;
     const reqSeq = snapshotRequestSeq;
+    abortEventsWait();
 
     if (snapshotAbortController) {
       snapshotAbortController.abort();
     }
-    snapshotAbortController = new AbortController();
+    const controller = new AbortController();
+    snapshotAbortController = controller;
 
     const payload = {
       workspaceUris: state.workspaceUris,
@@ -1050,14 +1084,22 @@ const bootstrapPanel = () => {
 
     let nextSnapshot;
     try {
-      nextSnapshot = await apiClient.fetchSnapshot(payload, snapshotAbortController.signal);
+      nextSnapshot = await apiClient.fetchSnapshot(payload, controller.signal);
     } catch (err) {
-      if (reqSeq === snapshotRequestSeq && err?.name !== 'AbortError') {
-        state.hasLoadedInitial = true;
-        renderAll();
-        handleApiError(err);
+      if (reqSeq === snapshotRequestSeq) {
+        if (!controller.signal.aborted && err?.name !== 'AbortError') {
+          state.hasLoadedInitial = true;
+          renderAll();
+          handleApiError(err);
+        }
+        // 快照失败后仍需退避恢复长轮询，防止页面回切或瞬时异常后自动同步永久停摆
+        scheduleEventsWaitRestart();
       }
       return false;
+    } finally {
+      if (snapshotAbortController === controller) {
+        snapshotAbortController = null;
+      }
     }
 
     if (reqSeq !== snapshotRequestSeq) return false;
@@ -1073,6 +1115,7 @@ const bootstrapPanel = () => {
     state.revision = Number(nextSnapshot?.revision ?? 0);
     state.selectedRepoId = nextRepoId;
     state.hasLoadedInitial = true;
+    eventsBackoffMs = 1200;
 
     if (!state.hasSyncedInitialPrefs) {
       state.hasSyncedInitialPrefs = true;
@@ -1126,6 +1169,19 @@ const bootstrapPanel = () => {
       abortEventsWait();
     } else if (state.hasLoadedInitial) {
       void loadSnapshot({ forceRefresh: false });
+    }
+  });
+
+  window.addEventListener('focus', () => {
+    if (
+      !document.hidden &&
+      state.hasLoadedInitial &&
+      state.snapshot?.workspaceKey &&
+      !eventsLoopActive &&
+      !snapshotAbortController &&
+      eventsRestartTimer === null
+    ) {
+      restartEventsWaitLoop();
     }
   });
 

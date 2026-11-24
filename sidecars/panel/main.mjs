@@ -422,10 +422,10 @@ export async function startSidecarServer(options = {}) {
   }
 
   const server = await app.run();
-  // SidecarApp.api 回调不透传 req/res；在原生 http.Server 请求入口绑定 res.close -> AbortSignal，
-  // 并在 req 'end' 触发时注入当前请求上下文，确保客户端中止 /api/events/wait 时立即释放等待者。
+  // SidecarApp.api 回调不透传 req/res；在原生 http.Server 的 request 入口同步写入 AsyncLocalStorage，
+  // 确保无论 SidecarApp 用 req.on('end') 还是 async/await 读取请求体，/api/events/wait 都能拿到中止信号。
   if (typeof server?.prependListener === 'function') {
-    server.prependListener('request', (req, res) => {
+    server.prependListener('request', (_req, res) => {
       const abortController = new AbortController();
       const onResClose = () => {
         if (!res.writableEnded) {
@@ -434,9 +434,7 @@ export async function startSidecarServer(options = {}) {
       };
       res.once('close', onResClose);
       res.once('finish', () => res.removeListener('close', onResClose));
-      req.prependOnceListener('end', () => {
-        requestAbortStorage.enterWith(abortController.signal);
-      });
+      requestAbortStorage.enterWith(abortController.signal);
     });
   }
 

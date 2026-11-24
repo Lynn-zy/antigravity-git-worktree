@@ -276,14 +276,17 @@ export function createApiRouter(deps) {
 
     lastWorkspaceUris = [...effectiveUris];
 
-    // 在启动只读 Git 查询前锁定基准 revision；若查询期间发生切分支或文件写入导致事件总线递增，
-    // 本次快照保留旧 revision，确保前端下一次 /api/events/wait 0ms 立即唤醒而不会吞掉变更事件。
+    // 在启动只读 Git 查询前锁定基准 revision，并在发现目标仓库后、执行 git status 前立即挂载 watcher，
+    // 防止冷启动/切仓期间 git status 与 watcher 挂载之间的盲区漏掉文件变更。
     const snapshotStartRevision = eventBus.revision;
     const snapshotBase = await discoverAndBuildSnapshotBase({
       workspaceUris: effectiveUris,
       selectedRepoId,
       graphScope,
       graphLimit,
+      onActiveRepoDiscovered: (activeDiscovery) => {
+        watcher.setTarget(activeDiscovery, { forceRefresh });
+      },
     });
     const changedDuringQuery = eventBus.revision !== snapshotStartRevision;
 
@@ -298,10 +301,7 @@ export function createApiRouter(deps) {
     currentWorkspaceKey = snapshotBase.workspaceKey;
 
     if (snapshotBase.activeRepo) {
-      watcher.setTarget(snapshotBase.activeRepo, { forceRefresh });
       watcher.applyStatusBudget(snapshotBase.changes);
-    } else {
-      watcher.setTarget(null);
     }
 
     const watchState = watcher.getWatchState();

@@ -1598,6 +1598,42 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     { sessionId: iframeSessionId, description: 'workspace-change to multi-repo' },
   );
 
+  // 模拟宿主 window.sidecar.fetch 对 /api/events/wait 抛出外部 AbortError（非面板主动取消）：
+  // 面板长轮询必须自动退避重连，随后磁盘修改的文件仍须自动出现在变更列表中（无需手动刷新）
+  await page.evaluate(
+    `(() => {
+      const origFetch = window.sidecar.fetch.bind(window.sidecar);
+      let injectedAbort = false;
+      window.sidecar.fetch = (url, options) => {
+        if (!injectedAbort && typeof url === 'string' && url.includes('/api/events/wait')) {
+          injectedAbort = true;
+          return Promise.reject(new DOMException('Simulated host proxy abort', 'AbortError'));
+        }
+        return origFetch(url, options);
+      };
+    })()`,
+    { sessionId: iframeSessionId },
+  );
+  // 触发一次普通文件写入让当前挂起中的 waitEvents 结束并进入注入外部 AbortError 的下一轮，随后写入第二个文件验证自动恢复
+  fs.writeFileSync(path.join(fixtures.repoA, 'abort-probe-1.txt'), 'probe1\n');
+  await page.waitFor(
+    'document.body.innerText.includes("abort-probe-1.txt")',
+    { sessionId: iframeSessionId, timeoutMs: 8000, description: 'first probe file synced' },
+  );
+  // 下一轮 waitEvents 会收到外部 AbortError；退避重连（1.2s）后再写入第二个文件，仍须自动同步出现
+  await sleep(300);
+  fs.writeFileSync(path.join(fixtures.repoA, 'abort-recovery-2.txt'), 'probe2\n');
+  await page.waitFor(
+    'document.body.innerText.includes("abort-recovery-2.txt")',
+    { sessionId: iframeSessionId, timeoutMs: 10000, description: 'second file auto-synced after external AbortError' },
+  );
+  fs.rmSync(path.join(fixtures.repoA, 'abort-probe-1.txt'), { force: true });
+  fs.rmSync(path.join(fixtures.repoA, 'abort-recovery-2.txt'), { force: true });
+  await page.waitFor(
+    '!document.body.innerText.includes("abort-recovery-2.txt")',
+    { sessionId: iframeSessionId, timeoutMs: 8000, description: 'probe files removed from changes list' },
+  );
+
   // 依次在 320px、360px、420px、560px 宽度下验证零横向溢出与主要元素边界无越界
   for (const width of [320, 360, 420, 560]) {
     await page.setViewport(width, 720);
