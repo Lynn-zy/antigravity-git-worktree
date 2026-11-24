@@ -65,29 +65,31 @@ const safeParseJson = async (response) => {
 };
 
 /**
- * 创建绑定语言解析器与网络传输器的后端 API 客户端实例。
+ * 创建绑定语言解析器、工作区上下文与网络传输器的后端 API 客户端实例。
  *
  * @param {{
  *   getLocale?: () => string,
+ *   getWorkspaceUris?: () => string[],
  *   transport?: (input: string, init?: RequestInit) => Promise<Response>
- * }} [options] 可选语言读取回调与自定义 fetch 传输器
+ * }} [options] 可选语言/工作区读取回调与自定义 fetch 传输器
  * @returns {{
  *   postJson: (pathname: string, body?: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
  *   fetchSnapshot: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
- *   fetchCommitDetail: (params: { worktreePath?: string | null, repoId?: string | null, sha: string }, signal?: AbortSignal) => Promise<any>,
+ *   fetchCommitDetail: (params: { worktreePath?: string | null, repoId?: string | null, sha: string, workspaceUris?: string[] }, signal?: AbortSignal) => Promise<any>,
  *   waitEvents: (params: { workspaceKey: string, sinceRevision: number, timeoutMs?: number }, signal?: AbortSignal) => Promise<any>,
- *   stageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[] }) => Promise<any>,
- *   unstageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[] }) => Promise<any>,
- *   discardChanges: (params: { worktreePath: string, allTracked?: boolean, paths?: string[], untracked?: boolean }) => Promise<any>,
- *   commitChanges: (params: { worktreePath: string, message: string, autoStageAll?: boolean }) => Promise<any>,
- *   fetchRemotes: (params: { worktreePath?: string | null, repoId?: string | null }) => Promise<any>,
- *   pullBranch: (params: { worktreePath: string }) => Promise<any>,
- *   pushBranch: (params: { worktreePath: string, remote?: string }) => Promise<any>,
+ *   stageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[], workspaceUris?: string[] }) => Promise<any>,
+ *   unstageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[], workspaceUris?: string[] }) => Promise<any>,
+ *   discardChanges: (params: { worktreePath: string, allTracked?: boolean, paths?: string[], untracked?: boolean, workspaceUris?: string[] }) => Promise<any>,
+ *   commitChanges: (params: { worktreePath: string, message: string, autoStageAll?: boolean, workspaceUris?: string[] }) => Promise<any>,
+ *   fetchRemotes: (params: { worktreePath?: string | null, repoId?: string | null, workspaceUris?: string[] }) => Promise<any>,
+ *   pullBranch: (params: { worktreePath: string, workspaceUris?: string[] }) => Promise<any>,
+ *   pushBranch: (params: { worktreePath: string, remote?: string, workspaceUris?: string[] }) => Promise<any>,
  *   savePreferences: (params: { locale?: string, graphScope?: string, splitRatio?: number }) => Promise<any>
  * }} API 客户端方法集合（发起网络请求存在 I/O 副作用）
  */
 export const createApiClient = (options = {}) => {
   const getLocale = typeof options.getLocale === 'function' ? options.getLocale : () => 'en';
+  const getWorkspaceUris = typeof options.getWorkspaceUris === 'function' ? options.getWorkspaceUris : null;
 
   const postJson = async (pathname, body = {}, signal) => {
     const transport = typeof options.transport === 'function'
@@ -141,18 +143,28 @@ export const createApiClient = (options = {}) => {
     return payload.data;
   };
 
+  const postRepoJson = (pathname, params = {}, signal) => {
+    if (params?.workspaceUris === undefined && getWorkspaceUris) {
+      const workspaceUris = getWorkspaceUris();
+      if (Array.isArray(workspaceUris) && workspaceUris.length > 0) {
+        return postJson(pathname, { ...params, workspaceUris }, signal);
+      }
+    }
+    return postJson(pathname, params, signal);
+  };
+
   return {
     postJson,
     fetchSnapshot: (params, signal) => postJson('/api/snapshot', params, signal),
-    fetchCommitDetail: (params, signal) => postJson('/api/commit/detail', params, signal),
+    fetchCommitDetail: (params, signal) => postRepoJson('/api/commit/detail', params, signal),
     waitEvents: (params, signal) => postJson('/api/events/wait', params, signal),
-    stageChanges: (params) => postJson('/api/changes/stage', params),
-    unstageChanges: (params) => postJson('/api/changes/unstage', params),
-    discardChanges: (params) => postJson('/api/changes/discard', params),
-    commitChanges: (params) => postJson('/api/commit', params),
-    fetchRemotes: (params) => postJson('/api/remote/fetch', params),
-    pullBranch: (params) => postJson('/api/remote/pull', params),
-    pushBranch: (params) => postJson('/api/remote/push', params),
+    stageChanges: (params) => postRepoJson('/api/changes/stage', params),
+    unstageChanges: (params) => postRepoJson('/api/changes/unstage', params),
+    discardChanges: (params) => postRepoJson('/api/changes/discard', params),
+    commitChanges: (params) => postRepoJson('/api/commit', params),
+    fetchRemotes: (params) => postRepoJson('/api/remote/fetch', params),
+    pullBranch: (params) => postRepoJson('/api/remote/pull', params),
+    pushBranch: (params) => postRepoJson('/api/remote/push', params),
     savePreferences: (params) => postJson('/api/preferences', params),
   };
 };

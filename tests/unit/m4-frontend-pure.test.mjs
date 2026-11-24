@@ -10,6 +10,10 @@ import {
 } from '../../sidecars/panel/public-bundle.mjs';
 
 import {
+  createApiClient,
+} from '../../sidecars/panel/public/modules/api-client.js';
+
+import {
   GRAPH_ROW_HEIGHT,
   LANE_STEP,
   MAX_LANES,
@@ -653,4 +657,52 @@ test('public-bundle: 零构建经典脚本可作为 classic JS 编译运行且 H
   const cssVer = headSection.match(/\/styles\.css\?v=([a-f0-9]{12})/)?.[1];
   const jsVer = headSection.match(/\/app\.js\?v=([a-f0-9]{12})/)?.[1];
   assert.ok(cssVer && jsVer && cssVer === jsVer, 'styles.css 与 app.js 必须共享同一内容哈希版本');
+});
+
+test('api-client: 仓库级请求自动透传非空 workspaceUris，且不污染非仓库端点或覆盖显式传参', async () => {
+  const captured = [];
+  let currentUris = ['file:///D:/repo-a'];
+
+  const client = createApiClient({
+    getLocale: () => 'zh-CN',
+    getWorkspaceUris: () => currentUris,
+    transport: async (url, init) => {
+      captured.push({ url, body: JSON.parse(init.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, data: { revision: 2 } }),
+      };
+    },
+  });
+
+  await client.pushBranch({ worktreePath: 'D:/repo-a' });
+  await client.commitChanges({ worktreePath: 'D:/repo-a', message: 'test', autoStageAll: true });
+  await client.fetchCommitDetail({ worktreePath: 'D:/repo-a', sha: '1234567' });
+  await client.pushBranch({ worktreePath: 'D:/repo-a', workspaceUris: ['file:///D:/explicit'] });
+  await client.waitEvents({ workspaceKey: 'k1', sinceRevision: 1 });
+  await client.savePreferences({ locale: 'zh-CN' });
+
+  currentUris = [];
+  await client.pushBranch({ worktreePath: 'D:/repo-a' });
+
+  assert.deepEqual(captured[0], {
+    url: '/api/remote/push',
+    body: { worktreePath: 'D:/repo-a', workspaceUris: ['file:///D:/repo-a'] },
+  });
+  assert.deepEqual(captured[1], {
+    url: '/api/commit',
+    body: { worktreePath: 'D:/repo-a', message: 'test', autoStageAll: true, workspaceUris: ['file:///D:/repo-a'] },
+  });
+  assert.deepEqual(captured[2], {
+    url: '/api/commit/detail',
+    body: { worktreePath: 'D:/repo-a', sha: '1234567', workspaceUris: ['file:///D:/repo-a'] },
+  });
+  assert.deepEqual(captured[3], {
+    url: '/api/remote/push',
+    body: { worktreePath: 'D:/repo-a', workspaceUris: ['file:///D:/explicit'] },
+  });
+  assert.equal('workspaceUris' in captured[4].body, false);
+  assert.equal('workspaceUris' in captured[5].body, false);
+  assert.equal('workspaceUris' in captured[6].body, false);
 });

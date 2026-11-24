@@ -38,6 +38,7 @@ export const API_ROUTES = Object.freeze([
 
 const SHA_PATTERN = /^[0-9a-f]{7,64}$/i;
 const CONTROL_CHAR_PATTERN = /[\x00-\x1f\x7f]/;
+const MAX_AUTHORIZED_REPOS = 64;
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -139,41 +140,91 @@ export function createApiRouter(deps) {
   let currentActiveRepo = null;
   let lastWorkspaceUris = [...defaultWorkspaceUris];
   let lastDiscoveredSummaries = [];
+  let snapshotSeq = 0;
+  const authorizedEntries = new Map();
   const authorizedById = new Map();
   const authorizedByWorktreeKey = new Map();
   const authorizedByCommonDirKey = new Map();
+
+  const evictOldestAuthorizedEntry = () => {
+    const oldestKey = authorizedEntries.keys().next().value;
+    if (oldestKey === undefined) {
+      return;
+    }
+    const entry = authorizedEntries.get(oldestKey);
+    authorizedEntries.delete(oldestKey);
+    if (!entry) {
+      return;
+    }
+    if (entry.wtKey && authorizedByWorktreeKey.get(entry.wtKey) === entry.repo) {
+      authorizedByWorktreeKey.delete(entry.wtKey);
+    }
+    if (entry.commonKey && authorizedByCommonDirKey.get(entry.commonKey) === entry.repo) {
+      authorizedByCommonDirKey.delete(entry.commonKey);
+    }
+    if (entry.repo.id && authorizedById.get(entry.repo.id) === entry.repo) {
+      authorizedById.delete(entry.repo.id);
+    }
+  };
 
   const cacheRepoRecord = (repo) => {
     if (!repo || !repo.id) {
       return;
     }
-    authorizedById.set(repo.id, repo);
-    if (repo.worktreePath) {
-      const wtKey = toPathKey(repo.worktreePath);
-      if (wtKey) {
-        authorizedByWorktreeKey.set(wtKey, repo);
-      }
+    const wtKey = repo.worktreePath ? toPathKey(repo.worktreePath) : null;
+    const commonKey = repo.gitCommonDir ? toPathKey(repo.gitCommonDir) : null;
+    // 以工作树路径键区分同一 Repository 下的多个 Worktree，避免多会话共享 Sidecar 时互相覆盖
+    const entryKey = wtKey ? `wt:${wtKey}` : `repo:${commonKey ?? repo.id}`;
+
+    if (authorizedEntries.has(entryKey)) {
+      authorizedEntries.delete(entryKey);
     }
-    if (repo.gitCommonDir) {
-      const commonKey = toPathKey(repo.gitCommonDir);
-      if (commonKey) {
-        authorizedByCommonDirKey.set(commonKey, repo);
-      }
+    authorizedEntries.set(entryKey, { repo, wtKey, commonKey });
+    authorizedById.set(repo.id, repo);
+    if (wtKey) {
+      authorizedByWorktreeKey.set(wtKey, repo);
+    }
+    if (commonKey) {
+      authorizedByCommonDirKey.set(commonKey, repo);
+    }
+    while (authorizedEntries.size > MAX_AUTHORIZED_REPOS) {
+      evictOldestAuthorizedEntry();
+    }
+  };
+
+  const cacheDiscoveredRepos = (repos) => {
+    if (!Array.isArray(repos)) {
+      return;
+    }
+    for (const repo of repos) {
+      cacheRepoRecord(repo);
     }
   };
 
   const refreshAuthorizedDiscovery = async (uris) => {
-    const discovered = await discoverRepositories(uris);
-    authorizedById.clear();
-    authorizedByWorktreeKey.clear();
-    authorizedByCommonDirKey.clear();
-    for (const repo of discovered) {
-      cacheRepoRecord(repo);
+    if (!Array.isArray(uris) || uris.length === 0) {
+      return [];
     }
+    const discovered = await discoverRepositories(uris);
+    cacheDiscoveredRepos(discovered);
     return discovered;
   };
 
-  const resolveAuthorizedRepo = async ({ worktreePath, repoId, allowBare = false }) => {
+  const lookupAuthorizedRepo = (targetWtKey, repoId, allowBare) => {
+    let matched = null;
+    if (targetWtKey) {
+      matched = authorizedByWorktreeKey.get(targetWtKey) ?? null;
+      if (!matched && allowBare) {
+        matched = authorizedByCommonDirKey.get(targetWtKey) ?? null;
+      }
+    }
+    if (!matched && repoId) {
+      matched = authorizedById.get(repoId) ?? null;
+    }
+    return matched;
+  };
+
+  const resolveAuthorizedRepo = async ({ worktreePath, repoId, workspaceUris, allowBare = false }) => {
     if (!worktreePath && !repoId) {
       if (allowBare && currentActiveRepo?.isBare) {
         return currentActiveRepo;
@@ -186,35 +237,24 @@ export function createApiRouter(deps) {
       throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Invalid worktreePath.');
     }
 
-    let matched = null;
-    if (targetWtKey) {
-      matched = authorizedByWorktreeKey.get(targetWtKey) ?? null;
-      if (!matched && allowBare) {
-        matched = authorizedByCommonDirKey.get(targetWtKey) ?? null;
-      }
-    }
-    if (!matched && repoId) {
-      matched = authorizedById.get(repoId) ?? null;
+    let matched = lookupAuthorizedRepo(targetWtKey, repoId, allowBare);
+
+    if (!matched && Array.isArray(workspaceUris) && workspaceUris.length > 0) {
+      // Sidecar 重启或缓存淘汰后，基于调用方当前会话工作区 URI 按需重新验证并补录授权
+      await refreshAuthorizedDiscovery(workspaceUris);
+      matched = lookupAuthorizedRepo(targetWtKey, repoId, allowBare);
     }
 
-    // 多仓或直连调用时若命中已知摘要但缺少完整 gitCommonDir，则按最近工作区上下文补全探测
+    // 多仓或直连调用时若命中已知摘要或冷启动尚无缓存，则按最近工作区上下文补全探测
     const knownInSummaries = !matched && lastDiscoveredSummaries.some((item) => (
       (targetWtKey && item.worktreePath && toPathKey(item.worktreePath) === targetWtKey) ||
       (repoId && item.id === repoId)
     ));
-    const shouldBootstrapFromDefault = !matched && authorizedById.size === 0 && lastWorkspaceUris.length > 0;
+    const shouldBootstrapFromDefault = !matched && authorizedEntries.size === 0 && lastWorkspaceUris.length > 0;
 
     if (knownInSummaries || shouldBootstrapFromDefault) {
       await refreshAuthorizedDiscovery(lastWorkspaceUris);
-      if (targetWtKey) {
-        matched = authorizedByWorktreeKey.get(targetWtKey) ?? null;
-        if (!matched && allowBare) {
-          matched = authorizedByCommonDirKey.get(targetWtKey) ?? null;
-        }
-      }
-      if (!matched && repoId) {
-        matched = authorizedById.get(repoId) ?? null;
-      }
+      matched = lookupAuthorizedRepo(targetWtKey, repoId, allowBare);
     }
 
     if (!matched) {
@@ -274,7 +314,8 @@ export function createApiRouter(deps) {
       effectiveUris = providedUris;
     }
 
-    lastWorkspaceUris = [...effectiveUris];
+    snapshotSeq += 1;
+    const reqSeq = snapshotSeq;
 
     // 在启动只读 Git 查询前锁定基准 revision，并在发现目标仓库后、执行 git status 前立即挂载 watcher，
     // 防止冷启动/切仓期间 git status 与 watcher 挂载之间的盲区漏掉文件变更。
@@ -284,24 +325,28 @@ export function createApiRouter(deps) {
       selectedRepoId,
       graphScope,
       graphLimit,
-      onActiveRepoDiscovered: (activeDiscovery) => {
-        watcher.setTarget(activeDiscovery, { forceRefresh });
+      onActiveRepoDiscovered: (activeDiscovery, discoveredRepos) => {
+        cacheDiscoveredRepos(discoveredRepos);
+        if (reqSeq === snapshotSeq) {
+          watcher.setTarget(activeDiscovery, { forceRefresh });
+        }
       },
     });
     const changedDuringQuery = eventBus.revision !== snapshotStartRevision;
 
-    authorizedById.clear();
-    authorizedByWorktreeKey.clear();
-    authorizedByCommonDirKey.clear();
-    lastDiscoveredSummaries = snapshotBase.repositories;
-    currentActiveRepo = snapshotBase.activeRepo;
     if (snapshotBase.activeRepo) {
       cacheRepoRecord(snapshotBase.activeRepo);
     }
-    currentWorkspaceKey = snapshotBase.workspaceKey;
 
-    if (snapshotBase.activeRepo) {
-      watcher.applyStatusBudget(snapshotBase.changes);
+    // 仅最新快照更新单焦点活跃上下文与监听预算，防止并发乱序或后台会话快照覆盖当前焦点状态
+    if (reqSeq === snapshotSeq) {
+      lastWorkspaceUris = [...effectiveUris];
+      lastDiscoveredSummaries = snapshotBase.repositories;
+      currentActiveRepo = snapshotBase.activeRepo;
+      currentWorkspaceKey = snapshotBase.workspaceKey;
+      if (snapshotBase.activeRepo) {
+        watcher.applyStatusBudget(snapshotBase.changes);
+      }
     }
 
     const watchState = watcher.getWatchState();
@@ -324,6 +369,7 @@ export function createApiRouter(deps) {
     const body = assertPlainObject(rawBody);
     const worktreePath = body.worktreePath == null ? null : assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
     const repoId = assertOptionalNonEmptyString(body.repoId, 'repoId');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
     const sha = assertRequiredNonEmptyString(body.sha, 'sha');
 
     if (!SHA_PATTERN.test(sha)) {
@@ -334,7 +380,7 @@ export function createApiRouter(deps) {
       return mockFixture.getCommitDetail({ worktreePath, repoId, sha });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath, repoId, allowBare: true });
+    const repo = await resolveAuthorizedRepo({ worktreePath, repoId, workspaceUris, allowBare: true });
     const repoCwd = repo.isBare ? repo.gitCommonDir : repo.worktreePath;
     return queryCommitDetail(repoCwd, sha, {
       worktreePath: repo.worktreePath,
@@ -361,7 +407,9 @@ export function createApiRouter(deps) {
       timeoutMs = body.timeoutMs;
     }
 
-    if (workspaceKey && currentWorkspaceKey && workspaceKey !== currentWorkspaceKey) {
+    // Sidecar 重启后内存版本归零且尚无活跃上下文，立即唤醒已挂载前端重新发起 /api/snapshot；
+    // 不因多会话之间 workspaceKey 不同而立即返回 changed: true，避免共享 Sidecar 时互相触发快照风暴。
+    if ((workspaceKey && !currentWorkspaceKey) || sinceRevision > eventBus.revision) {
       return {
         revision: eventBus.revision,
         changed: true,
@@ -379,6 +427,7 @@ export function createApiRouter(deps) {
   const handleStage = async (rawBody, context) => {
     const body = assertPlainObject(rawBody);
     const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
     const all = assertOptionalBoolean(body.all, 'all') ?? false;
     const paths = assertOptionalStringArray(body.paths, 'paths');
 
@@ -386,7 +435,7 @@ export function createApiRouter(deps) {
       return mockFixture.stage({ worktreePath, all, paths });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath });
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
     await stageChanges({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
@@ -400,6 +449,7 @@ export function createApiRouter(deps) {
   const handleUnstage = async (rawBody, context) => {
     const body = assertPlainObject(rawBody);
     const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
     const all = assertOptionalBoolean(body.all, 'all') ?? false;
     const paths = assertOptionalStringArray(body.paths, 'paths');
 
@@ -407,7 +457,7 @@ export function createApiRouter(deps) {
       return mockFixture.unstage({ worktreePath, all, paths });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath });
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
     await unstageChanges({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
@@ -421,6 +471,7 @@ export function createApiRouter(deps) {
   const handleDiscard = async (rawBody, context) => {
     const body = assertPlainObject(rawBody);
     const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
     const allTracked = assertOptionalBoolean(body.allTracked, 'allTracked') ?? false;
     const untracked = assertOptionalBoolean(body.untracked, 'untracked') ?? false;
     const paths = assertOptionalStringArray(body.paths, 'paths');
@@ -429,7 +480,7 @@ export function createApiRouter(deps) {
       return mockFixture.discard({ worktreePath, allTracked, paths, untracked });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath });
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
     await discardChanges({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
@@ -444,6 +495,7 @@ export function createApiRouter(deps) {
   const handleCommit = async (rawBody, context) => {
     const body = assertPlainObject(rawBody);
     const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
     if (typeof body.message !== 'string') {
       throw new AppError(ERROR_CODES.INVALID_REQUEST, 'message must be a string.');
     }
@@ -461,7 +513,7 @@ export function createApiRouter(deps) {
       throw new AppError(ERROR_CODES.EMPTY_COMMIT_MESSAGE, '提交说明不能为空。');
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath });
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
     const result = await commitChanges({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
@@ -479,12 +531,13 @@ export function createApiRouter(deps) {
     const body = assertPlainObject(rawBody);
     const worktreePath = body.worktreePath == null ? null : assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
     const repoId = assertOptionalNonEmptyString(body.repoId, 'repoId');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
 
     if (context?.fixture === 'mock') {
       return mockFixture.fetch({ worktreePath, repoId });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath, repoId, allowBare: true });
+    const repo = await resolveAuthorizedRepo({ worktreePath, repoId, workspaceUris, allowBare: true });
     await fetchRepository({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
@@ -496,12 +549,13 @@ export function createApiRouter(deps) {
   const handleRemotePull = async (rawBody, context) => {
     const body = assertPlainObject(rawBody);
     const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
 
     if (context?.fixture === 'mock') {
       return mockFixture.pull({ worktreePath });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath });
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
     await pullBranch({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,
@@ -517,12 +571,13 @@ export function createApiRouter(deps) {
     }
     const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
     const remote = assertOptionalNonEmptyString(body.remote, 'remote');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
 
     if (context?.fixture === 'mock') {
       return mockFixture.push({ worktreePath, remote });
     }
 
-    const repo = await resolveAuthorizedRepo({ worktreePath });
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
     await pushBranch({
       worktreePath: repo.worktreePath,
       gitCommonDir: repo.gitCommonDir,

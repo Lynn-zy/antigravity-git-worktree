@@ -229,6 +229,7 @@ const bootstrapPanel = () => {
 
   const apiClient = createApiClient({
     getLocale: () => state.effectiveLocale,
+    getWorkspaceUris: () => state.workspaceUris,
   });
 
   // --- Toast 轻提示 ---

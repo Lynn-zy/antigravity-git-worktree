@@ -26,7 +26,11 @@ import {
 } from '../../sidecars/panel/backend/watcher.mjs';
 import {
   API_ROUTES,
+  createApiRouter,
 } from '../../sidecars/panel/backend/api-router.mjs';
+import {
+  createMockFixtureStore,
+} from '../../sidecars/panel/backend/mock-fixture.mjs';
 import {
   STATIC_WHITELIST,
   startSidecarServer,
@@ -1477,4 +1481,138 @@ test('集成测试：工作区监听瞬时错误自动重挂与降级、连续�
   orderWtEmit('change', 'src/app.js');
   await new Promise((resolve) => setTimeout(resolve, 180));
   assert.deepEqual(orderChannels, ['metadata', 'worktree'], '晚于元数据事件到达的工作区改动不得被 metadata 定时器吞掉');
+});
+
+test('集成测试：多会话共享 Sidecar、同仓多 Worktree 与 Sidecar 重启后提交推送不误报 NO_REPOSITORY', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-m2-multitab-restart-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const remoteDir = path.join(root, 'remote.git');
+  const repoA = path.join(root, 'repo-a');
+  const repoAWt = path.join(root, 'repo-a-wt');
+  const repoB = path.join(root, 'repo-b');
+  const prefsPath = path.join(root, 'prefs.json');
+
+  await execGit(['init', '--bare', remoteDir], root);
+  await initConfiguredRepo(repoA, 'main');
+  fs.writeFileSync(path.join(repoA, 'a.txt'), 'v1\n');
+  await execGit(['add', '-A'], repoA);
+  await execGit(['commit', '-m', 'init a'], repoA);
+  await execGit(['remote', 'add', 'origin', remoteDir], repoA);
+  await execGit(['push', '-u', 'origin', 'main'], repoA);
+  await execGit(['worktree', 'add', '-b', 'feat-wt', repoAWt], repoA);
+
+  await initConfiguredRepo(repoB, 'main');
+  fs.writeFileSync(path.join(repoB, 'b.txt'), 'b1\n');
+  await execGit(['add', '-A'], repoB);
+  await execGit(['commit', '-m', 'init b'], repoB);
+
+  const createTestRouter = () => {
+    const eventBus = createEventBus({ minTimeoutMs: 100 });
+    const watcher = createRepositoryWatcher({
+      onChange: () => eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded }),
+    });
+    const preferencesStore = createPreferencesStore({ filePath: prefsPath });
+    const mockFixture = createMockFixtureStore({ eventBus });
+    const router = createApiRouter({
+      eventBus,
+      watcher,
+      preferencesStore,
+      mockFixture,
+      defaultWorkspaceUris: [],
+      isStandalone: false,
+    });
+    return {
+      router,
+      eventBus,
+      close: () => {
+        watcher.close();
+        eventBus.dispose();
+      },
+    };
+  };
+
+  // 1) 会话 A 提交后，会话 B 触发不同仓库或空工作区快照，不得清空会话 A 授权；且两会话长轮询不互踩风暴
+  const inst1 = createTestRouter();
+  t.after(() => inst1.close());
+
+  const snapA = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoA)] });
+  assert.equal(snapA.statusCode, 200);
+  const wtA = snapA.body.data.activeRepo.worktreePath;
+  const keyA = snapA.body.data.workspaceKey;
+
+  fs.writeFileSync(path.join(repoA, 'a.txt'), 'v2\n');
+  const commitA = await inst1.router.dispatch('/api/commit', {
+    worktreePath: wtA,
+    message: 'feat: commit before peer snapshot',
+    autoStageAll: true,
+  });
+  assert.equal(commitA.statusCode, 200);
+
+  const snapB = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoB)] });
+  assert.equal(snapB.statusCode, 200);
+  const snapEmpty = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [] });
+  assert.equal(snapEmpty.statusCode, 200);
+
+  // 会话 A 推送必须成功，且其长轮询不会因为 currentWorkspaceKey 不同而立即误报 changed: true
+  const pushA = await inst1.router.dispatch('/api/remote/push', { worktreePath: wtA });
+  assert.equal(pushA.statusCode, 200);
+  assert.equal(pushA.body.ok, true);
+
+  const snapB2 = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoB)] });
+  assert.equal(snapB2.statusCode, 200);
+  const waitA = await inst1.router.dispatch('/api/events/wait', {
+    workspaceKey: keyA,
+    sinceRevision: inst1.eventBus.revision,
+    timeoutMs: 120,
+  });
+  assert.equal(waitA.statusCode, 200);
+  assert.equal(waitA.body.data.changed, false, '多会话 workspaceKey 不同不得触发互相唤醒风暴');
+
+  // 2) 同一 Repository 的两个 Worktree（主工作树与链接工作树）应共存授权，互不覆盖
+  const snapWt = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoAWt)] });
+  assert.equal(snapWt.statusCode, 200);
+  const wtLinked = snapWt.body.data.activeRepo.worktreePath;
+  assert.notEqual(wtLinked, wtA);
+
+  fs.writeFileSync(path.join(repoA, 'a.txt'), 'v3\n');
+  const stageMainAfterLinked = await inst1.router.dispatch('/api/changes/stage', {
+    worktreePath: wtA,
+    all: true,
+  });
+  assert.equal(stageMainAfterLinked.statusCode, 200);
+  const commitMainAfterLinked = await inst1.router.dispatch('/api/commit', {
+    worktreePath: wtA,
+    message: 'feat: commit on main while linked wt active',
+    autoStageAll: false,
+  });
+  assert.equal(commitMainAfterLinked.statusCode, 200);
+
+  // 3) 模拟 Sidecar 进程重启（空内存缓存、currentWorkspaceKey=null、revision 重置为 1）
+  const inst2 = createTestRouter();
+  t.after(() => inst2.close());
+
+  const restartWait = await inst2.router.dispatch('/api/events/wait', {
+    workspaceKey: keyA,
+    sinceRevision: 8,
+    timeoutMs: 1000,
+  });
+  assert.equal(restartWait.statusCode, 200);
+  assert.equal(restartWait.body.data.changed, true, 'Sidecar 重启后应立即唤醒已挂载前端重新同步快照');
+
+  // 即使尚未重新拉取 snapshot，写接口携带 workspaceUris 也应按需校验并推送成功
+  const pushAfterRestart = await inst2.router.dispatch('/api/remote/push', {
+    worktreePath: wtA,
+    workspaceUris: [toFileUri(repoA)],
+  });
+  assert.equal(pushAfterRestart.statusCode, 200);
+  assert.equal(pushAfterRestart.body.ok, true);
+
+  // 安全边界不可退化：传入合法 workspaceUris 但 worktreePath 指向范围外目录，仍必须拒绝 NO_REPOSITORY
+  const outOfScopePush = await inst2.router.dispatch('/api/remote/push', {
+    worktreePath: root,
+    workspaceUris: [toFileUri(repoA)],
+  });
+  assert.equal(outOfScopePush.statusCode, 409);
+  assert.equal(outOfScopePush.body.error.code, ERROR_CODES.NO_REPOSITORY);
 });
