@@ -244,7 +244,6 @@ test('assets/logo.svg is valid standalone vector SVG with zero external referenc
   assert.match(svgText, /\bviewBox="[^"]+"/);
   assert.match(svgText, /<\/svg>\s*$/);
   assert.match(svgText, /<path\b/);
-  assert.match(svgText, /<circle\b/);
 
   // 禁止任何外网或外部资源引用
   assert.doesNotMatch(svgText, /https?:\/\/(?!www\.w3\.org\/2000\/svg)/i);

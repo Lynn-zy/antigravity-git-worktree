@@ -41,6 +41,42 @@ export const STATIC_WHITELIST = Object.freeze({
   '/app.js': { file: 'app.js', contentType: 'text/javascript; charset=utf-8' },
 });
 
+/** @type {string} 文件类型图标（vscode-icons SVG）的 URL 前缀，对应 `public/file-icons/` 目录 */
+const FILE_ICON_ROUTE_PREFIX = '/file-icons/';
+
+// 只允许单层文件名，排除路径分隔符与 `..`，杜绝路径穿越
+const FILE_ICON_NAME_PATTERN = /^[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*\.svg$/i;
+
+// 与其他静态资源一致不做长期缓存：图标 URL 不带版本号，插件升级替换图标后需立即生效；同一页面内重复渲染由浏览器图片缓存复用
+const FILE_ICON_HEADERS = Object.freeze({
+  'Cache-Control': 'no-store',
+  'X-Content-Type-Options': 'nosniff',
+});
+
+/**
+ * 读取单个文件类型图标。
+ *
+ * @param {string} fileName 图标文件名（如 `file_type_js.svg`）
+ * @param {string} [publicDir=PUBLIC_DIR] 前端静态资源根目录
+ * @returns {{ contentType: string, body: Buffer } | null} 图标内容；名称非法或文件不存在时为 null
+ */
+function readFileIcon(fileName, publicDir = PUBLIC_DIR) {
+  if (!FILE_ICON_NAME_PATTERN.test(fileName)) {
+    return null;
+  }
+  try {
+    return {
+      contentType: 'image/svg+xml',
+      body: fs.readFileSync(path.join(publicDir, 'file-icons', fileName)),
+    };
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
 const SECURITY_API_HEADERS = Object.freeze({
   'Content-Type': 'application/json; charset=utf-8',
   'Cache-Control': 'no-store',
@@ -413,6 +449,17 @@ export async function startSidecarServer(options = {}) {
     });
   }
 
+  // SidecarApp 只支持精确路径的页面路由，逐个注册随插件分发的图标文件
+  for (const fileName of fs.readdirSync(path.join(publicDir, 'file-icons'))) {
+    if (!fileName.endsWith('.svg')) continue;
+    app.page(`${FILE_ICON_ROUTE_PREFIX}${fileName}`, () => {
+      const icon = readFileIcon(fileName, publicDir);
+      return icon
+        ? new SdkResponse(icon.body, { status: 200, contentType: icon.contentType, headers: FILE_ICON_HEADERS })
+        : new SdkResponse('Not found', { status: 404, contentType: 'text/plain; charset=utf-8', headers: FILE_ICON_HEADERS });
+    });
+  }
+
   for (const apiRoute of API_ROUTES) {
     app.api(apiRoute, async (data) => {
       const activeFixture = options.fixture ?? (process.env.AG_GIT_FIXTURE === 'mock' ? 'mock' : null);
@@ -614,6 +661,15 @@ export async function startStandaloneServer(options = {}) {
       });
       res.end(asset.body);
       return;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith(FILE_ICON_ROUTE_PREFIX)) {
+      const icon = readFileIcon(url.pathname.slice(FILE_ICON_ROUTE_PREFIX.length), publicDir);
+      if (icon) {
+        res.writeHead(200, { 'Content-Type': icon.contentType, ...FILE_ICON_HEADERS });
+        res.end(icon.body);
+        return;
+      }
     }
 
     res.writeHead(404, {

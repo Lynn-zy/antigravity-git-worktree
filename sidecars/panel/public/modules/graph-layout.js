@@ -1,362 +1,390 @@
-/**
- * 提交图谱（Commit Graph）SVG 动态拓扑车道纯计算模块。
- * 按当前可见提交序列实时推导车道槽位、收敛弧线与分叉贝塞尔曲线，
- * 不硬编码主干通道，且不为不可见父提交占用悬空线槽。
+/*
+ * Portions of this file are adapted from Visual Studio Code
+ * (src/vs/workbench/contrib/scm/browser/scmHistory.ts, https://github.com/microsoft/vscode).
+ *
+ * MIT License
+ *
+ * Copyright (c) 2015 - present Microsoft Corporation
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
-/** @type {number} 单条提交行的固定像素高度 */
-export const GRAPH_ROW_HEIGHT = 24;
+/**
+ * 提交图谱（Commit Graph）泳道布局纯计算模块，逐段移植自 VS Code `scmHistory.ts`。
+ * 与原实现的差异：直接创建 SVG DOM 改为输出图形描述（由 graph-view 落成节点，便于在 Node 中测试）；
+ * 根提交处保留其余泳道（见 `toHistoryItemViewModels` 内注释）；未移植 Incoming / Outgoing Changes 虚拟节点。
+ * 徽标归组 `groupHistoryItemBadges` 移植自 `scmHistoryViewPane.ts` 的 `HistoryItemRenderer._renderBadges`。
+ */
 
-/** @type {number} 相邻泳道中心线的标准水平间距（像素） */
-export const LANE_STEP = 12;
+/** @type {number} 提交行与泳道的像素高度 */
+export const SWIMLANE_HEIGHT = 22;
 
-/** @type {number} 窄幅辅助栏下不压缩时的最大泳道列数上限 */
-export const MAX_LANES = 6;
+/** @type {number} 相邻泳道中心线的像素间距 */
+export const SWIMLANE_WIDTH = 11;
 
-/** @type {readonly string[]} 泳道调色板（优先消费宿主/面板 CSS 变量并附带回退色） */
+const SWIMLANE_CURVE_RADIUS = 5;
+const CIRCLE_RADIUS = 4;
+const CIRCLE_STROKE_WIDTH = 2;
+
+/** @type {string} 当前分支引用及其泳道颜色（对应 VS Code `scmGraph.historyItemRefColor`） */
+export const HISTORY_ITEM_REF_COLOR = 'var(--gw-graph-ref)';
+
+/** @type {string} 当前分支上游远程引用颜色（对应 VS Code `scmGraph.historyItemRemoteRefColor`） */
+export const HISTORY_ITEM_REMOTE_REF_COLOR = 'var(--gw-graph-remote-ref)';
+
+/** @type {readonly string[]} 其余泳道轮换色（对应 VS Code `scmGraph.foreground1..5`） */
 export const LANE_COLORS = Object.freeze([
-  'var(--lane-0, #3794ff)',
-  'var(--lane-1, #73c991)',
-  'var(--lane-2, #c586c0)',
-  'var(--lane-3, #e2b969)',
-  'var(--lane-4, #4ec9b0)',
-  'var(--lane-5, #f48771)',
+  'var(--gw-graph-1)',
+  'var(--gw-graph-2)',
+  'var(--gw-graph-3)',
+  'var(--gw-graph-4)',
+  'var(--gw-graph-5)',
 ]);
 
-const DEFAULT_PAD_X = 6;
+const REF_ICON_BY_TYPE = Object.freeze({
+  head: 'target',
+  branch: 'gitBranch',
+  remote: 'cloud',
+  tag: 'tag',
+});
 
-const findFirstFreeLaneIndex = (activeLanes) => {
-  const freeIndex = activeLanes.findIndex((slot) => slot === null);
-  return freeIndex === -1 ? activeLanes.length : freeIndex;
-};
+const rotate = (value, modulo) => ((value % modulo) + modulo) % modulo;
 
-const findLaneByExpectedSha = (activeLanes, targetSha) =>
-  activeLanes.findIndex((slot) => slot !== null && slot.expectedSha === targetSha);
-
-const trimTrailingEmptyLanes = (activeLanes) => {
-  while (activeLanes.length > 0 && activeLanes[activeLanes.length - 1] === null) {
-    activeLanes.pop();
+const findLastIndex = (nodes, id) => {
+  for (let index = nodes.length - 1; index >= 0; index -= 1) {
+    if (nodes[index].id === id) return index;
   }
+  return -1;
 };
 
-const collectVisibleParents = (parents, visibleShaSet) => {
-  const visibleParents = [];
-  const seen = new Set();
-  let hasHiddenParent = false;
+// 圆点取接续它的第一父提交泳道的颜色；根提交没有接续泳道（该列已被右侧泳道左移占用），取进入圆点的泳道颜色
+const getCircleColor = (commit, inputSwimlanes, outputSwimlanes, circleIndex) => {
+  if (commit.parents.length > 0 && circleIndex < outputSwimlanes.length) return outputSwimlanes[circleIndex].color;
+  if (circleIndex < inputSwimlanes.length) return inputSwimlanes[circleIndex].color;
+  return HISTORY_ITEM_REF_COLOR;
+};
 
-  for (const parentSha of parents) {
-    if (typeof parentSha !== 'string' || !parentSha) continue;
-    if (!visibleShaSet.has(parentSha)) {
-      hasHiddenParent = true;
+const getLabelColor = (refs, colorMap) => {
+  for (const ref of refs) {
+    const color = colorMap.get(ref.fullRef);
+    if (color !== undefined) return color;
+  }
+  return undefined;
+};
+
+const getRefOrder = (ref, currentRefId, remoteRefId) => {
+  if (ref.id === currentRefId) return 1;
+  if (ref.id === remoteRefId) return 2;
+  if (ref.color !== undefined) return 4;
+  return 99;
+};
+
+/**
+ * 构造引用到泳道颜色的映射，规则同 VS Code `_getGraphColorMap`：
+ * 当前分支固定蓝色、其上游固定紫色；`scope === 'all'` 时其余引用登记为 `undefined`，表示沿用所在泳道颜色。
+ * `auto` 视图下未登记的引用不显示徽标。
+ *
+ * @param {{ currentRefId: string | null, remoteRefId: string | null, scope: 'auto' | 'all', commits: Array<{ refs?: Array<{ fullRef: string }> }> }} params 当前分支与上游的完整引用名、图表范围与提交列表
+ * @returns {Map<string, string | undefined>} 以完整引用名为键的颜色映射（无副作用）
+ */
+export const buildRefColorMap = ({ currentRefId, remoteRefId, scope, commits }) => {
+  const colorMap = new Map();
+  if (currentRefId) {
+    colorMap.set(currentRefId, HISTORY_ITEM_REF_COLOR);
+    if (remoteRefId) colorMap.set(remoteRefId, HISTORY_ITEM_REMOTE_REF_COLOR);
+  }
+  if (scope === 'all') {
+    for (const commit of commits) {
+      for (const ref of commit.refs ?? []) {
+        if (!colorMap.has(ref.fullRef)) colorMap.set(ref.fullRef, undefined);
+      }
+    }
+  }
+  return colorMap;
+};
+
+/**
+ * 逐行推导每个提交的输入/输出泳道（`toISCMHistoryItemViewModelArray` 的移植）。
+ * 每条泳道以它等待的提交 sha 标识；父提交不在列表内时泳道一直延伸到列表末尾（分页边界由「加载更多」行承接）。
+ *
+ * @param {Array<{ sha: string, parents: string[], refs?: Array<{ type: string, name: string, fullRef: string }> }>} commits 按拓扑顺序从新到旧排列的提交
+ * @param {{ headSha: string | null, currentRefId: string | null, remoteRefId: string | null, colorMap: Map<string, string | undefined> }} options HEAD 提交、当前分支与上游的完整引用名及 `buildRefColorMap` 的结果
+ * @returns {Array<{
+ *   commit: object,
+ *   kind: 'HEAD' | 'node',
+ *   inputSwimlanes: Array<{ id: string, color: string }>,
+ *   outputSwimlanes: Array<{ id: string, color: string }>,
+ *   references: Array<{ id: string, name: string, icon: string, color: string | undefined }>
+ * }>} 与输入一一对应的行视图模型（无副作用）
+ */
+export const toHistoryItemViewModels = (commits, { headSha, currentRefId, remoteRefId, colorMap }) => {
+  const commitBySha = new Map(commits.map((commit) => [commit.sha, commit]));
+  const viewModels = [];
+  let colorIndex = -1;
+
+  for (const commit of commits) {
+    const refs = commit.refs ?? [];
+    const parentIds = commit.parents;
+    const inputSwimlanes = viewModels.at(-1)?.outputSwimlanes.slice() ?? [];
+    const outputSwimlanes = [];
+    let firstParentAdded = false;
+
+    // 原实现仅在有父提交时才保留其余泳道，导致多根仓库在根提交处截断其他分支的泳道
+    for (const node of inputSwimlanes) {
+      if (node.id === commit.sha) {
+        if (!firstParentAdded && parentIds.length > 0) {
+          outputSwimlanes.push({ id: parentIds[0], color: getLabelColor(refs, colorMap) ?? node.color });
+          firstParentAdded = true;
+        }
+        continue;
+      }
+      outputSwimlanes.push(node);
+    }
+
+    for (let parentIndex = firstParentAdded ? 1 : 0; parentIndex < parentIds.length; parentIndex += 1) {
+      let color;
+      if (parentIndex === 0) {
+        color = getLabelColor(refs, colorMap);
+      } else {
+        const parentCommit = commitBySha.get(parentIds[parentIndex]);
+        color = parentCommit ? getLabelColor(parentCommit.refs ?? [], colorMap) : undefined;
+      }
+      if (!color) {
+        colorIndex = rotate(colorIndex + 1, LANE_COLORS.length);
+        color = LANE_COLORS[colorIndex];
+      }
+      outputSwimlanes.push({ id: parentIds[parentIndex], color });
+    }
+
+    const inputIndex = inputSwimlanes.findIndex((node) => node.id === commit.sha);
+    const circleIndex = inputIndex !== -1 ? inputIndex : inputSwimlanes.length;
+    const circleColor = getCircleColor(commit, inputSwimlanes, outputSwimlanes, circleIndex);
+
+    const references = refs
+      .filter((ref) => ref.fullRef !== 'HEAD')
+      .map((ref) => ({
+        id: ref.fullRef,
+        name: ref.name,
+        icon: ref.fullRef === currentRefId ? 'target' : (REF_ICON_BY_TYPE[ref.type] ?? 'gitBranch'),
+        color: colorMap.has(ref.fullRef) ? (colorMap.get(ref.fullRef) ?? circleColor) : undefined,
+      }))
+      .sort((a, b) => getRefOrder(a, currentRefId, remoteRefId) - getRefOrder(b, currentRefId, remoteRefId));
+
+    viewModels.push({
+      commit,
+      kind: commit.sha === headSha ? 'HEAD' : 'node',
+      inputSwimlanes,
+      outputSwimlanes,
+      references,
+    });
+  }
+
+  return viewModels;
+};
+
+/**
+ * 把引用归并为行尾徽标（`HistoryItemRenderer._renderBadges` 的移植）：
+ * 排序后的首个有色引用单独成徽标并显示名称；其余有色引用按颜色、再按图标归组，只显示图标与数量；无色引用不显示。
+ *
+ * @param {Array<{ id: string, name: string, icon: string, color: string | undefined }>} references 已排序的行引用
+ * @returns {Array<{ color: string, icon: string, count: number, name: string | null }>} 按显示顺序排列的徽标（无副作用）
+ */
+export const groupHistoryItemBadges = (references) => {
+  const badges = [];
+  const rest = references.slice();
+  if (rest.length > 0 && rest[0].color) {
+    const [first] = rest.splice(0, 1);
+    badges.push({ color: first.color, icon: first.icon, count: 1, name: first.name });
+  }
+
+  const groups = new Map();
+  for (const ref of rest) {
+    if (!ref.color) continue;
+    const key = `${ref.color}\u0000${ref.icon}`;
+    const group = groups.get(key);
+    if (group) {
+      group.count += 1;
+    } else {
+      groups.set(key, { color: ref.color, icon: ref.icon, count: 1, name: null });
+    }
+  }
+  // 原实现先按颜色再按图标两级分组，展开顺序等价于按「颜色首次出现」排序
+  const colorOrder = [...new Set([...groups.values()].map((group) => group.color))];
+  for (const color of colorOrder) {
+    for (const group of groups.values()) {
+      if (group.color === color) badges.push(group);
+    }
+  }
+  return badges;
+};
+
+/**
+ * 计算提交圆点所在的泳道序号（`getHistoryItemIndex` 的移植）。
+ *
+ * @param {{ commit: { sha: string }, inputSwimlanes: Array<{ id: string }> }} viewModel 行视图模型
+ * @returns {number} 圆点泳道序号（无副作用）
+ */
+export const getHistoryItemIndex = (viewModel) => {
+  const inputIndex = viewModel.inputSwimlanes.findIndex((node) => node.id === viewModel.commit.sha);
+  return inputIndex !== -1 ? inputIndex : viewModel.inputSwimlanes.length;
+};
+
+const pathShape = (d, color, strokeWidth = 1) => ({ type: 'path', d, color, strokeWidth });
+
+const verticalLine = (x, y1, y2, color, strokeWidth = 1) => pathShape(`M ${x} ${y1} V ${y2}`, color, strokeWidth);
+
+const circleShape = (index, r, strokeWidth, fill) => ({
+  type: 'circle',
+  cx: SWIMLANE_WIDTH * (index + 1),
+  cy: SWIMLANE_WIDTH,
+  r,
+  strokeWidth,
+  fill,
+});
+
+/**
+ * 生成单个提交行的 SVG 图形描述（`renderSCMHistoryItemGraph` 的移植）。
+ * 形状顺序与原实现一致，样式表依赖「第一个/第二个/最后一个 circle」做悬停效果；
+ * 从圆点向下接续第一父提交的竖线标记 `isOutgoing`，展开提交时加粗。
+ *
+ * @param {ReturnType<typeof toHistoryItemViewModels>[number]} viewModel 行视图模型
+ * @returns {{
+ *   width: number,
+ *   shapes: Array<
+ *     { type: 'path', d: string, color: string, strokeWidth: number, isOutgoing?: true } |
+ *     { type: 'circle', cx: number, cy: number, r: number, strokeWidth: number, fill: string | undefined }
+ *   >
+ * }} SVG 宽度与按绘制顺序排列的形状（无副作用）
+ */
+export const computeHistoryItemGraph = (viewModel) => {
+  const { commit, kind, inputSwimlanes, outputSwimlanes } = viewModel;
+  const parentIds = commit.parents;
+  const shapes = [];
+
+  const inputIndex = inputSwimlanes.findIndex((node) => node.id === commit.sha);
+  const circleIndex = inputIndex !== -1 ? inputIndex : inputSwimlanes.length;
+  const circleColor = getCircleColor(commit, inputSwimlanes, outputSwimlanes, circleIndex);
+
+  let outputSwimlaneIndex = 0;
+  for (let index = 0; index < inputSwimlanes.length; index += 1) {
+    const color = inputSwimlanes[index].color;
+
+    if (inputSwimlanes[index].id === commit.sha) {
+      if (index !== circleIndex) {
+        // 同一提交的重复泳道：画 / 收拢后水平连到圆点
+        shapes.push(pathShape([
+          `M ${SWIMLANE_WIDTH * (index + 1)} 0`,
+          `A ${SWIMLANE_WIDTH} ${SWIMLANE_WIDTH} 0 0 1 ${SWIMLANE_WIDTH * index} ${SWIMLANE_WIDTH}`,
+          `H ${SWIMLANE_WIDTH * (circleIndex + 1)}`,
+        ].join(' '), color));
+      } else if (parentIds.length > 0) {
+        // 圆点泳道由第一父提交接续；根提交没有接续泳道，右侧泳道需整体左移
+        outputSwimlaneIndex += 1;
+      }
       continue;
     }
-    if (!seen.has(parentSha)) {
-      seen.add(parentSha);
-      visibleParents.push(parentSha);
+
+    if (outputSwimlaneIndex < outputSwimlanes.length
+      && inputSwimlanes[index].id === outputSwimlanes[outputSwimlaneIndex].id) {
+      if (index === outputSwimlaneIndex) {
+        shapes.push(verticalLine(SWIMLANE_WIDTH * (index + 1), 0, SWIMLANE_HEIGHT, color));
+      } else {
+        // 泳道左移：| 下行、/ 圆角、- 水平、/ 圆角、| 下行
+        shapes.push(pathShape([
+          `M ${SWIMLANE_WIDTH * (index + 1)} 0`,
+          'V 6',
+          `A ${SWIMLANE_CURVE_RADIUS} ${SWIMLANE_CURVE_RADIUS} 0 0 1 ${(SWIMLANE_WIDTH * (index + 1)) - SWIMLANE_CURVE_RADIUS} ${SWIMLANE_HEIGHT / 2}`,
+          `H ${(SWIMLANE_WIDTH * (outputSwimlaneIndex + 1)) + SWIMLANE_CURVE_RADIUS}`,
+          `A ${SWIMLANE_CURVE_RADIUS} ${SWIMLANE_CURVE_RADIUS} 0 0 0 ${SWIMLANE_WIDTH * (outputSwimlaneIndex + 1)} ${(SWIMLANE_HEIGHT / 2) + SWIMLANE_CURVE_RADIUS}`,
+          `V ${SWIMLANE_HEIGHT}`,
+        ].join(' '), color));
+      }
+      outputSwimlaneIndex += 1;
     }
   }
 
-  return { visibleParents, hasHiddenParent };
-};
+  for (let parentIndex = 1; parentIndex < parentIds.length; parentIndex += 1) {
+    const parentOutputIndex = findLastIndex(outputSwimlanes, parentIds[parentIndex]);
+    if (parentOutputIndex === -1) continue;
 
-const snapshotPassThroughBefore = (activeLanes) => {
-  const lanes = [];
-  for (let laneIndex = 0; laneIndex < activeLanes.length; laneIndex += 1) {
-    const slot = activeLanes[laneIndex];
-    if (slot === null) continue;
-    lanes.push({
-      lane: laneIndex,
-      colorIndex: slot.colorIndex,
-      color: LANE_COLORS[slot.colorIndex],
+    // 合并父提交：从圆点水平引出，再以 \ 圆弧拐入父提交泳道
+    shapes.push(pathShape([
+      `M ${SWIMLANE_WIDTH * parentOutputIndex} ${SWIMLANE_HEIGHT / 2}`,
+      `A ${SWIMLANE_WIDTH} ${SWIMLANE_WIDTH} 0 0 1 ${SWIMLANE_WIDTH * (parentOutputIndex + 1)} ${SWIMLANE_HEIGHT}`,
+      `M ${SWIMLANE_WIDTH * parentOutputIndex} ${SWIMLANE_HEIGHT / 2}`,
+      `H ${SWIMLANE_WIDTH * (circleIndex + 1)}`,
+    ].join(' '), outputSwimlanes[parentOutputIndex].color));
+  }
+
+  if (inputIndex !== -1) {
+    shapes.push(verticalLine(SWIMLANE_WIDTH * (circleIndex + 1), 0, SWIMLANE_HEIGHT / 2, inputSwimlanes[inputIndex].color));
+  }
+
+  if (parentIds.length > 0) {
+    shapes.push({
+      ...verticalLine(SWIMLANE_WIDTH * (circleIndex + 1), SWIMLANE_HEIGHT / 2, SWIMLANE_HEIGHT, circleColor),
+      isOutgoing: true,
     });
   }
-  return lanes;
-};
 
-const snapshotPassThroughAfter = (activeLanes) => {
-  const lanes = [];
-  for (let laneIndex = 0; laneIndex < activeLanes.length; laneIndex += 1) {
-    const slot = activeLanes[laneIndex];
-    if (slot === null) continue;
-    lanes.push({
-      lane: laneIndex,
-      expectedSha: slot.expectedSha,
-      colorIndex: slot.colorIndex,
-      color: LANE_COLORS[slot.colorIndex],
-    });
+  if (kind === 'HEAD') {
+    shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 3, CIRCLE_STROKE_WIDTH, circleColor));
+    shapes.push(circleShape(circleIndex, CIRCLE_STROKE_WIDTH, CIRCLE_RADIUS, undefined));
+  } else if (parentIds.length > 1) {
+    shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 2, CIRCLE_STROKE_WIDTH, circleColor));
+    shapes.push(circleShape(circleIndex, CIRCLE_RADIUS - 1, CIRCLE_STROKE_WIDTH, circleColor));
+  } else {
+    shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 1, CIRCLE_STROKE_WIDTH, circleColor));
   }
-  return lanes;
-};
-
-/**
- * 基于当前可见提交列表动态计算每一行的拓扑车道与连线关系。
- *
- * @param {Array<{ sha: string, parents?: string[] }>} commits 当前可见的提交数组（按拓扑显示顺序从新到旧排列）
- * @returns {Array<{
- *   sha: string,
- *   ownLane: number,
- *   ownColorIndex: number,
- *   ownColor: string,
- *   incomingOnOwnLane: boolean,
- *   passThroughLanesBefore: Array<{ lane: number, colorIndex: number, color: string }>,
- *   exitingLanes: Array<{ lane: number, fromLane: number, toLane: number, colorIndex: number, color: string }>,
- *   outgoingEdges: Array<{ fromLane: number, toLane: number, targetSha: string, colorIndex: number, color: string, isMerge: boolean }>,
- *   passThroughLanesAfter: Array<{ lane: number, expectedSha: string, colorIndex: number, color: string }>,
- *   hasHiddenParent: boolean,
- *   isMerge: boolean,
- *   laneCount: number
- * }>} 与输入 `commits` 一一对应的拓扑行描述数组（无副作用）
- */
-export const computeGraphTopology = (commits) => {
-  if (!Array.isArray(commits) || commits.length === 0) {
-    return [];
-  }
-
-  const visibleShaSet = new Set();
-  for (const commit of commits) {
-    if (commit && typeof commit.sha === 'string' && commit.sha) {
-      visibleShaSet.add(commit.sha);
-    }
-  }
-
-  const activeLanes = [];
-  let nextColorCursor = 0;
-
-  const allocateColorIndex = (avoidColorIndex = -1) => {
-    let candidate = nextColorCursor % LANE_COLORS.length;
-    nextColorCursor += 1;
-    if (candidate === avoidColorIndex && LANE_COLORS.length > 1) {
-      candidate = nextColorCursor % LANE_COLORS.length;
-      nextColorCursor += 1;
-    }
-    return candidate;
-  };
-
-  return commits.map((commit) => {
-    const sha = typeof commit?.sha === 'string' ? commit.sha : '';
-    const rawParents = Array.isArray(commit?.parents) ? commit.parents : [];
-
-    const matchingSlotIndices = [];
-    for (let laneIndex = 0; laneIndex < activeLanes.length; laneIndex += 1) {
-      const slot = activeLanes[laneIndex];
-      if (slot !== null && slot.expectedSha === sha) {
-        matchingSlotIndices.push(laneIndex);
-      }
-    }
-
-    let ownLane = 0;
-    let ownColorIndex = 0;
-    let incomingOnOwnLane = false;
-    const exitingLanes = [];
-
-    if (matchingSlotIndices.length > 0) {
-      ownLane = matchingSlotIndices[0];
-      ownColorIndex = activeLanes[ownLane].colorIndex;
-      incomingOnOwnLane = true;
-
-      for (let matchPos = 1; matchPos < matchingSlotIndices.length; matchPos += 1) {
-        const duplicateLane = matchingSlotIndices[matchPos];
-        const duplicateColorIndex = activeLanes[duplicateLane].colorIndex;
-        exitingLanes.push({
-          lane: duplicateLane,
-          fromLane: duplicateLane,
-          toLane: ownLane,
-          colorIndex: duplicateColorIndex,
-          color: LANE_COLORS[duplicateColorIndex],
-        });
-      }
-
-      // 命中节点后释放所有等待本提交的车道，后续再按可见父提交重新占槽
-      for (const matchedLane of matchingSlotIndices) {
-        activeLanes[matchedLane] = null;
-      }
-    } else {
-      ownLane = findFirstFreeLaneIndex(activeLanes);
-      ownColorIndex = allocateColorIndex();
-    }
-
-    const passThroughLanesBefore = snapshotPassThroughBefore(activeLanes);
-    const { visibleParents, hasHiddenParent } = collectVisibleParents(rawParents, visibleShaSet);
-    const outgoingEdges = [];
-
-    visibleParents.forEach((parentSha, parentOrder) => {
-      const existingLane = findLaneByExpectedSha(activeLanes, parentSha);
-
-      if (parentOrder === 0) {
-        if (existingLane === -1) {
-          activeLanes[ownLane] = { expectedSha: parentSha, colorIndex: ownColorIndex };
-          outgoingEdges.push({
-            fromLane: ownLane,
-            toLane: ownLane,
-            targetSha: parentSha,
-            colorIndex: ownColorIndex,
-            color: LANE_COLORS[ownColorIndex],
-            isMerge: false,
-          });
-          return;
-        }
-
-        if (existingLane < ownLane) {
-          // 已有更靠左的车道在等待该第一父提交，从当前车道向左收束并释放当前车道
-          outgoingEdges.push({
-            fromLane: ownLane,
-            toLane: existingLane,
-            targetSha: parentSha,
-            colorIndex: ownColorIndex,
-            color: LANE_COLORS[ownColorIndex],
-            isMerge: false,
-          });
-          return;
-        }
-
-        // 保留当前更靠左的主线车道，右侧重复槽位将在抵达该父提交时通过 exitingLanes 收束
-        activeLanes[ownLane] = { expectedSha: parentSha, colorIndex: ownColorIndex };
-        outgoingEdges.push({
-          fromLane: ownLane,
-          toLane: ownLane,
-          targetSha: parentSha,
-          colorIndex: ownColorIndex,
-          color: LANE_COLORS[ownColorIndex],
-          isMerge: false,
-        });
-        return;
-      }
-
-      if (existingLane !== -1) {
-        const targetColorIndex = activeLanes[existingLane].colorIndex;
-        outgoingEdges.push({
-          fromLane: ownLane,
-          toLane: existingLane,
-          targetSha: parentSha,
-          colorIndex: targetColorIndex,
-          color: LANE_COLORS[targetColorIndex],
-          isMerge: true,
-        });
-        return;
-      }
-
-      const forkLane = findFirstFreeLaneIndex(activeLanes);
-      const forkColorIndex = allocateColorIndex(ownColorIndex);
-      activeLanes[forkLane] = { expectedSha: parentSha, colorIndex: forkColorIndex };
-      outgoingEdges.push({
-        fromLane: ownLane,
-        toLane: forkLane,
-        targetSha: parentSha,
-        colorIndex: forkColorIndex,
-        color: LANE_COLORS[forkColorIndex],
-        isMerge: true,
-      });
-    });
-
-    trimTrailingEmptyLanes(activeLanes);
-    const passThroughLanesAfter = snapshotPassThroughAfter(activeLanes);
-
-    let maxUsedLane = ownLane;
-    for (const item of passThroughLanesBefore) {
-      if (item.lane > maxUsedLane) maxUsedLane = item.lane;
-    }
-    for (const item of exitingLanes) {
-      if (item.lane > maxUsedLane) maxUsedLane = item.lane;
-    }
-    for (const edge of outgoingEdges) {
-      if (edge.toLane > maxUsedLane) maxUsedLane = edge.toLane;
-    }
-    for (const item of passThroughLanesAfter) {
-      if (item.lane > maxUsedLane) maxUsedLane = item.lane;
-    }
-
-    return {
-      sha,
-      ownLane,
-      ownColorIndex,
-      ownColor: LANE_COLORS[ownColorIndex],
-      incomingOnOwnLane,
-      passThroughLanesBefore,
-      exitingLanes,
-      outgoingEdges,
-      passThroughLanesAfter,
-      hasHiddenParent,
-      isMerge: rawParents.length > 1,
-      laneCount: maxUsedLane + 1,
-    };
-  });
-};
-
-/**
- * 根据拓扑结果或车道数计算窄幅 SVG 泳道列的几何尺寸与坐标映射。
- * 车道数超过 `MAX_LANES`（6 列）时自动横向压缩间距，将总宽度限制在 `MAX_LANES * LANE_STEP`（72px）以内。
- *
- * @param {Array<{ laneCount?: number }> | number} topologyOrLaneCount `computeGraphTopology` 返回数组或总车道数
- * @param {{ padX?: number, rowHeight?: number }} [options] 可选左右留白与行高覆盖
- * @returns {{
- *   laneCount: number,
- *   width: number,
- *   laneStep: number,
- *   padX: number,
- *   rowHeight: number,
- *   getLaneX: (laneIndex: number) => number
- * }} 几何度量与车道 X 坐标换算函数（无副作用）
- */
-export const computeGraphMetrics = (topologyOrLaneCount, options = {}) => {
-  let rawLaneCount = 1;
-  if (typeof topologyOrLaneCount === 'number' && Number.isFinite(topologyOrLaneCount)) {
-    rawLaneCount = Math.max(1, Math.floor(topologyOrLaneCount));
-  } else if (Array.isArray(topologyOrLaneCount) && topologyOrLaneCount.length > 0) {
-    for (const row of topologyOrLaneCount) {
-      if (typeof row?.laneCount === 'number' && row.laneCount > rawLaneCount) {
-        rawLaneCount = row.laneCount;
-      }
-    }
-  }
-
-  const rowHeight = typeof options.rowHeight === 'number' && options.rowHeight > 0
-    ? options.rowHeight
-    : GRAPH_ROW_HEIGHT;
-  const maxWidth = MAX_LANES * LANE_STEP;
-  const padX = typeof options.padX === 'number' && options.padX >= 0
-    ? options.padX
-    : DEFAULT_PAD_X;
-
-  if (rawLaneCount === 1) {
-    const width = padX * 2;
-    return {
-      laneCount: 1,
-      width,
-      laneStep: LANE_STEP,
-      padX,
-      rowHeight,
-      getLaneX: () => padX,
-    };
-  }
-
-  const naturalWidth = padX * 2 + (rawLaneCount - 1) * LANE_STEP;
-  const width = Math.min(maxWidth, naturalWidth);
-  const effectivePadX = Math.max(2, Math.min(padX, Math.floor((width - rawLaneCount) / 2)));
-  const laneStep = (width - effectivePadX * 2) / (rawLaneCount - 1);
 
   return {
-    laneCount: rawLaneCount,
-    width,
-    laneStep,
-    padX: effectivePadX,
-    rowHeight,
-    getLaneX: (laneIndex) => Number((effectivePadX + laneIndex * laneStep).toFixed(2)),
+    width: SWIMLANE_WIDTH * (Math.max(inputSwimlanes.length, outputSwimlanes.length, 1) + 1),
+    shapes,
   };
 };
 
 /**
- * 生成起止两端均保持垂直切线的三阶贝塞尔连线路径 `d` 字符串，确保与上下行竖线平滑无折角衔接。
+ * 生成展开提交文件子行左侧的贯穿竖线：沿用所属提交的输出泳道，并加粗由它接续的第一父提交泳道。
+ * 根提交没有接续泳道，不加粗任何一条（圆点列已被右侧泳道左移占用）。
  *
- * @param {number} fromX 起点 X 坐标
- * @param {number} fromY 起点 Y 坐标
- * @param {number} toX 终点 X 坐标
- * @param {number} toY 终点 Y 坐标
- * @returns {string} SVG `<path>` 的 `d` 属性字符串（无副作用）
+ * @param {ReturnType<typeof toHistoryItemViewModels>[number]} viewModel 所属提交的行视图模型
+ * @returns {ReturnType<typeof computeGraphPlaceholder>} SVG 宽度与竖线形状（无副作用）
  */
-export const buildCurvePath = (fromX, fromY, toX, toY) => {
-  if (fromX === toX) {
-    return `M ${fromX} ${fromY} L ${toX} ${toY}`;
-  }
-  const midY = Number(((fromY + toY) / 2).toFixed(2));
-  return `M ${fromX} ${fromY} C ${fromX} ${midY}, ${toX} ${midY}, ${toX} ${toY}`;
-};
+export const computeCommitFilesPlaceholder = (viewModel) => computeGraphPlaceholder(
+  viewModel.outputSwimlanes,
+  viewModel.commit.parents.length > 0 ? getHistoryItemIndex(viewModel) : undefined,
+);
+
+/**
+ * 生成展开文件子行与「加载更多」行左侧的贯穿竖线（`renderSCMHistoryGraphPlaceholder` 的移植）。
+ *
+ * @param {Array<{ color: string }>} columns 需要贯穿的泳道（通常为所属提交的输出泳道）
+ * @param {number} [highlightIndex] 加粗显示的泳道序号（所属提交的圆点泳道）
+ * @returns {{ width: number, shapes: Array<{ type: 'path', d: string, color: string, strokeWidth: number }> }} SVG 宽度与竖线形状（无副作用）
+ */
+export const computeGraphPlaceholder = (columns, highlightIndex) => ({
+  width: SWIMLANE_WIDTH * (columns.length + 1),
+  shapes: columns.map((column, index) => verticalLine(
+    SWIMLANE_WIDTH * (index + 1),
+    0,
+    SWIMLANE_HEIGHT,
+    column.color,
+    index === highlightIndex ? 3 : 1,
+  )),
+});

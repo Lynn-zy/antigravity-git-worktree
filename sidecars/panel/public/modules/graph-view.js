@@ -1,14 +1,17 @@
 /**
  * Antigravity Git Graph 下区「图表」视图组件。
- * 负责单行紧凑顶栏、⋯ 三项溢出菜单、本地即时提交搜索、动态 SVG 拓扑车道、
- * 原地文件展开（含连续穿行竖线）、分页加载与最小遮挡悬浮提交详情卡。
+ * 行结构、泳道图形与引用徽标对齐 VS Code 源代码管理「图表」视图；
+ * 负责顶栏工具、⋯ 溢出菜单、本地即时提交搜索、原地文件展开、分页加载与提交详情悬浮卡。
  */
 
 import {
-  GRAPH_ROW_HEIGHT,
-  computeGraphTopology,
-  computeGraphMetrics,
-  buildCurvePath,
+  SWIMLANE_HEIGHT,
+  buildRefColorMap,
+  toHistoryItemViewModels,
+  computeHistoryItemGraph,
+  computeGraphPlaceholder,
+  computeCommitFilesPlaceholder,
+  groupHistoryItemBadges,
 } from './graph-layout.js';
 import {
   computeMinOcclusionPopoverStyle,
@@ -17,8 +20,6 @@ import {
 import { formatRelativeTime, formatAbsoluteTime } from './i18n.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const FILE_SUBROW_HEIGHT = 22;
-const MAX_VISIBLE_REFS = 2;
 const GRAPH_HARD_SOFT_LIMIT = 2000;
 
 const createSvgNode = (tagName, attrs = {}) => {
@@ -29,68 +30,45 @@ const createSvgNode = (tagName, attrs = {}) => {
   return el;
 };
 
-const classifyRef = (ref) => {
-  const fullRef = typeof ref?.fullRef === 'string' ? ref.fullRef : '';
-  const type = typeof ref?.type === 'string' ? ref.type : '';
-  if (type === 'head' || fullRef === 'HEAD') {
-    return { rank: 0, className: 'is-head' };
+const renderGraphSvg = ({ width, shapes }, className) => {
+  const svg = createSvgNode('svg', {
+    class: className,
+    width,
+    height: SWIMLANE_HEIGHT,
+    'aria-hidden': 'true',
+  });
+  for (const shape of shapes) {
+    if (shape.type === 'path') {
+      const pathEl = createSvgNode('path', {
+        d: shape.d,
+        fill: 'none',
+        'stroke-width': `${shape.strokeWidth}px`,
+        'stroke-linecap': 'round',
+      });
+      if (shape.isOutgoing) pathEl.setAttribute('class', 'gw-graph-outgoing');
+      pathEl.style.stroke = shape.color;
+      svg.append(pathEl);
+      continue;
+    }
+    // 圆点描边颜色由样式表按行状态（常态/悬停/选中）设置，形成与背景同色的间隙
+    const circleEl = createSvgNode('circle', { cx: shape.cx, cy: shape.cy, r: shape.r });
+    circleEl.style.strokeWidth = `${shape.strokeWidth}px`;
+    if (shape.fill) circleEl.style.fill = shape.fill;
+    svg.append(circleEl);
   }
-  if (type === 'branch' || fullRef.startsWith('refs/heads/')) {
-    return { rank: 1, className: 'is-branch' };
-  }
-  if (type === 'remote' || fullRef.startsWith('refs/remotes/')) {
-    return { rank: 2, className: 'is-remote' };
-  }
-  if (type === 'tag' || fullRef.startsWith('refs/tags/')) {
-    return { rank: 3, className: 'is-tag' };
-  }
-  return { rank: 4, className: 'is-remote' };
-};
-
-const sortCommitRefs = (refs) => {
-  if (!Array.isArray(refs) || refs.length === 0) return [];
-  const deduped = [];
-  const seen = new Set();
-  for (const ref of refs) {
-    if (!ref?.name) continue;
-    const classified = classifyRef(ref);
-    const key = `${classified.rank}:${ref.name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push({
-      name: ref.name,
-      fullRef: ref.fullRef || '',
-      ...classified,
-    });
-  }
-  return deduped.sort((a, b) => a.rank - b.rank);
+  return svg;
 };
 
 const matchesSearchQuery = (commit, normalizedQuery) => {
-  if (!normalizedQuery) return true;
   const haystacks = [
-    commit?.subject,
-    commit?.shortSha,
-    commit?.sha,
-    commit?.authorName,
-    commit?.authorEmail,
+    commit.subject,
+    commit.shortSha,
+    commit.sha,
+    commit.authorName,
+    commit.authorEmail,
+    ...(commit.refs ?? []).flatMap((ref) => [ref.name, ref.fullRef]),
   ];
-  for (const field of haystacks) {
-    if (typeof field === 'string' && field.toLowerCase().includes(normalizedQuery)) {
-      return true;
-    }
-  }
-  if (Array.isArray(commit?.refs)) {
-    for (const ref of commit.refs) {
-      if (typeof ref?.name === 'string' && ref.name.toLowerCase().includes(normalizedQuery)) {
-        return true;
-      }
-      if (typeof ref?.fullRef === 'string' && ref.fullRef.toLowerCase().includes(normalizedQuery)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return haystacks.some((field) => typeof field === 'string' && field.toLowerCase().includes(normalizedQuery));
 };
 
 const copyTextWithFallback = async (text) => {
@@ -119,156 +97,15 @@ const copyTextWithFallback = async (text) => {
   }
 };
 
-const buildCommitRowSvg = ({ topologyRow, metrics, isHead, isLastRow }) => {
-  const svg = createSvgNode('svg', {
-    class: 'gw-graph-svg',
-    width: metrics.width,
-    height: metrics.rowHeight,
-    viewBox: `0 0 ${metrics.width} ${metrics.rowHeight}`,
-    'aria-hidden': 'true',
-  });
-
-  const cy = metrics.rowHeight / 2;
-  const bottomY = metrics.rowHeight;
-  const ownX = metrics.getLaneX(topologyRow.ownLane);
-
-  for (const passLane of topologyRow.passThroughLanesBefore) {
-    const laneX = metrics.getLaneX(passLane.lane);
-    svg.append(
-      createSvgNode('line', {
-        x1: laneX,
-        y1: 0,
-        x2: laneX,
-        y2: bottomY,
-        stroke: passLane.color,
-        'stroke-width': '1.6',
-      }),
-    );
-  }
-
-  for (const exiting of topologyRow.exitingLanes) {
-    const fromX = metrics.getLaneX(exiting.fromLane);
-    const toX = metrics.getLaneX(exiting.toLane);
-    svg.append(
-      createSvgNode('path', {
-        d: buildCurvePath(fromX, 0, toX, cy),
-        stroke: exiting.color,
-        'stroke-width': '1.6',
-        fill: 'none',
-      }),
-    );
-  }
-
-  if (topologyRow.incomingOnOwnLane) {
-    svg.append(
-      createSvgNode('line', {
-        x1: ownX,
-        y1: 0,
-        x2: ownX,
-        y2: cy,
-        stroke: topologyRow.ownColor,
-        'stroke-width': '1.6',
-      }),
-    );
-  }
-
-  for (const edge of topologyRow.outgoingEdges) {
-    const fromX = metrics.getLaneX(edge.fromLane);
-    const toX = metrics.getLaneX(edge.toLane);
-    svg.append(
-      createSvgNode('path', {
-        d: buildCurvePath(fromX, cy, toX, bottomY),
-        stroke: edge.color,
-        'stroke-width': '1.6',
-        fill: 'none',
-      }),
-    );
-  }
-
-  // 仅在列表末尾分页截断边界绘制短淡出虚线，避免在中间提交跨行悬空
-  if (topologyRow.hasHiddenParent && topologyRow.outgoingEdges.length === 0 && isLastRow) {
-    svg.append(
-      createSvgNode('line', {
-        x1: ownX,
-        y1: cy,
-        x2: ownX,
-        y2: bottomY - 2,
-        stroke: topologyRow.ownColor,
-        'stroke-width': '1.6',
-        'stroke-opacity': '0.45',
-        'stroke-dasharray': '2 2',
-      }),
-    );
-  }
-
-  if (isHead) {
-    svg.append(
-      createSvgNode('circle', {
-        cx: ownX,
-        cy,
-        r: '4.5',
-        fill: 'var(--gw-bg)',
-        stroke: topologyRow.ownColor,
-        'stroke-width': '1.6',
-      }),
-    );
-    svg.append(
-      createSvgNode('circle', {
-        cx: ownX,
-        cy,
-        r: '2.1',
-        fill: topologyRow.ownColor,
-      }),
-    );
-  } else {
-    svg.append(
-      createSvgNode('circle', {
-        cx: ownX,
-        cy,
-        r: '3.5',
-        fill: topologyRow.ownColor,
-        stroke: 'var(--gw-bg)',
-        'stroke-width': '1',
-      }),
-    );
-  }
-
-  return svg;
-};
-
-const buildPassThroughSvg = (passThroughLanesAfter, metrics, height = FILE_SUBROW_HEIGHT) => {
-  const svg = createSvgNode('svg', {
-    class: 'gw-graph-svg',
-    width: metrics.width,
-    height,
-    viewBox: `0 0 ${metrics.width} ${height}`,
-    'aria-hidden': 'true',
-  });
-
-  for (const laneItem of passThroughLanesAfter) {
-    const laneX = metrics.getLaneX(laneItem.lane);
-    svg.append(
-      createSvgNode('line', {
-        x1: laneX,
-        y1: 0,
-        x2: laneX,
-        y2: height,
-        stroke: laneItem.color,
-        'stroke-width': '1.6',
-      }),
-    );
-  }
-
-  return svg;
-};
-
-const formatFileStatusClass = (status) => {
+const formatFileStatus = (status) => {
   const code = typeof status === 'string' && status.trim() ? status.trim()[0].toUpperCase() : 'M';
-  if (code === 'A') return 'is-added';
-  if (code === 'D') return 'is-deleted';
-  if (code === 'R') return 'is-renamed';
-  if (code === 'C') return 'is-copied';
-  return 'is-modified';
+  const classNameByCode = {
+    A: 'is-added',
+    D: 'is-deleted',
+    R: 'is-renamed',
+    C: 'is-copied',
+  };
+  return { code, className: classNameByCode[code] ?? 'is-modified' };
 };
 
 /**
@@ -284,11 +121,12 @@ const formatFileStatusClass = (status) => {
  * }} elements DOM 容器节点集合
  * @param {{
  *   createIcon: (name: string, className?: string) => SVGElement,
+ *   createFileIcon: (filePath: string) => HTMLImageElement,
  *   createSplitPath: (filePath: string, origPath?: string | null) => HTMLElement,
  *   captureFocus: (container: HTMLElement) => { focusId: string | null, wasFocusVisible: boolean } | null,
  *   restoreFocus: (container: HTMLElement, savedFocus: { focusId: string | null, wasFocusVisible: boolean } | null) => void,
- *   showToast: (message: string, variant?: 'info' | 'success' | 'warning' | 'error', detail?: string) => void,
- *   onOpenFile: (file: Record<string, any>) => void,
+ *   showToast: (message: string, variant?: 'info' | 'success' | 'warning' | 'error', options?: { detail?: string, anchor?: Element | null }) => void,
+ *   onOpenFile: (file: Record<string, any>, anchorEl: Element) => void,
  *   onToggleScope: (nextScope: 'auto' | 'all') => void,
  *   onFetch: (repo: Record<string, any>) => Promise<void>,
  *   onPull: (repo: Record<string, any>) => Promise<void>,
@@ -325,6 +163,7 @@ export const createGraphView = (elements, deps) => {
   let searchQuery = '';
   let moreMenuOpen = false;
   let latestRenderState = null;
+  let latestViewModelBySha = new Map();
   let lastPopoverSha = null;
 
   // 持久挂载搜索栏输入框，保证输入与 IME 期间不被后台刷新销毁
@@ -352,9 +191,11 @@ export const createGraphView = (elements, deps) => {
   searchFieldEl.append(searchIconEl, searchInputEl, searchClearBtn);
   searchBarEl.replaceChildren(searchFieldEl);
 
-  const findCommitBySha = (sha) => {
-    const commits = latestRenderState?.graph?.commits ?? [];
-    return commits.find((item) => item.sha === sha) ?? null;
+  const clearSearch = () => {
+    searchQuery = '';
+    searchInputEl.value = '';
+    searchClearBtn.classList.add('hidden');
+    if (latestRenderState) renderCommitList(latestRenderState);
   };
 
   const findCommitRowEl = (sha) => {
@@ -364,47 +205,61 @@ export const createGraphView = (elements, deps) => {
     return null;
   };
 
+  const createRefBadge = ({ color, icon, count, name }) => {
+    const badgeEl = doc.createElement('div');
+    badgeEl.className = 'gw-ref-badge';
+    badgeEl.style.backgroundColor = color;
+    if (count > 1) {
+      const countEl = doc.createElement('span');
+      countEl.className = 'gw-ref-badge-count';
+      countEl.textContent = String(count);
+      badgeEl.append(countEl);
+    }
+    badgeEl.append(deps.createIcon(icon, `gw-ref-badge-icon is-${icon}`));
+    if (name) {
+      const nameEl = doc.createElement('span');
+      nameEl.className = 'gw-ref-badge-name';
+      nameEl.textContent = name;
+      badgeEl.append(nameEl);
+    }
+    return badgeEl;
+  };
+
   const renderAndPositionPopover = (sha) => {
     if (!latestRenderState || !sha) return;
-    const commit = findCommitBySha(sha);
+    const viewModel = latestViewModelBySha.get(sha);
     const anchorEl = findCommitRowEl(sha);
-    if (!commit || !anchorEl) {
+    if (!viewModel || !anchorEl) {
       popoverController.close();
       return;
     }
 
+    const { commit } = viewModel;
     const { t, locale } = latestRenderState;
     const detail = commitDetailCache.get(sha);
     const isLoadingDetail = loadingDetailShas.has(sha);
     const popState = popoverController.getState();
+    const shortSha = commit.shortSha || sha.slice(0, 7);
 
     const headerEl = doc.createElement('div');
     headerEl.className = 'gw-popover-header';
 
-    const shaSpan = doc.createElement('span');
-    shaSpan.className = 'gw-popover-sha';
-    shaSpan.textContent = commit.shortSha || sha.slice(0, 7);
-
-    const actionsEl = doc.createElement('div');
-    actionsEl.className = 'gw-popover-actions';
-
-    const copyBtn = doc.createElement('button');
-    copyBtn.type = 'button';
-    copyBtn.className = 'gw-popover-copy-btn';
-    copyBtn.dataset.testid = 'popover-copy-sha-btn';
-    copyBtn.append(deps.createIcon('copy'));
-    const copyTextSpan = doc.createElement('span');
-    copyTextSpan.textContent = t('popover.copySha');
-    copyBtn.append(copyTextSpan);
-    copyBtn.addEventListener('click', () => {
-      void copyTextWithFallback(commit.sha).then((copied) => {
-        if (copied) {
-          deps.showToast(t('popover.copiedSha', { sha: commit.shortSha || sha.slice(0, 7) }), 'success');
-        }
-      });
-    });
-
-    actionsEl.append(copyBtn);
+    const authorEl = doc.createElement('div');
+    authorEl.className = 'gw-popover-author';
+    authorEl.append(deps.createIcon('account'));
+    const authorNameEl = doc.createElement('strong');
+    authorNameEl.textContent = commit.authorName || '';
+    if (commit.authorEmail) authorNameEl.title = commit.authorEmail;
+    authorEl.append(authorNameEl);
+    const relTime = formatRelativeTime(commit.timestamp, locale);
+    const absTime = formatAbsoluteTime(commit.timestamp, locale);
+    if (relTime || absTime) {
+      const timeEl = doc.createElement('span');
+      timeEl.className = 'gw-popover-time';
+      timeEl.textContent = relTime && absTime ? `, ${relTime} (${absTime})` : `, ${absTime || relTime}`;
+      authorEl.append(timeEl);
+    }
+    headerEl.append(authorEl);
 
     if (popState.pinned) {
       const closeBtn = doc.createElement('button');
@@ -415,57 +270,78 @@ export const createGraphView = (elements, deps) => {
       closeBtn.setAttribute('aria-label', t('popover.close'));
       closeBtn.append(deps.createIcon('close'));
       closeBtn.addEventListener('click', () => popoverController.close());
-      actionsEl.append(closeBtn);
+      headerEl.append(closeBtn);
     }
 
-    headerEl.append(shaSpan, actionsEl);
-
-    const subjectEl = doc.createElement('h3');
+    const subjectEl = doc.createElement('p');
     subjectEl.id = 'popover-subject';
     subjectEl.className = 'gw-popover-subject';
     subjectEl.textContent = detail?.subject || commit.subject || '';
 
-    const metaEl = doc.createElement('div');
-    metaEl.className = 'gw-popover-meta';
-
-    const authorLine = doc.createElement('div');
-    const authorText = commit.authorEmail
-      ? `${commit.authorName || ''} <${commit.authorEmail}>`
-      : (commit.authorName || '');
-    authorLine.textContent = `${t('popover.author')}: ${authorText}`;
-    metaEl.append(authorLine);
-
-    const relTime = formatRelativeTime(commit.timestamp, locale);
-    const absTime = formatAbsoluteTime(commit.timestamp, locale);
-    if (relTime || absTime) {
-      const timeLine = doc.createElement('div');
-      timeLine.textContent = relTime && absTime ? `${relTime} (${absTime})` : (absTime || relTime);
-      metaEl.append(timeLine);
-    }
-
-    const coAuthors = Array.isArray(detail?.coAuthors) ? detail.coAuthors : [];
-    if (coAuthors.length > 0) {
-      const coLine = doc.createElement('div');
-      const coText = coAuthors
-        .map((author) => (author.email ? `${author.name} <${author.email}>` : author.name))
-        .join(', ');
-      coLine.textContent = `${t('popover.coAuthors')}: ${coText}`;
-      metaEl.append(coLine);
-    }
-
-    const children = [headerEl, subjectEl, metaEl];
+    const children = [headerEl, subjectEl];
     const trimmedBody = typeof detail?.body === 'string' ? detail.body.trim() : '';
     if (isLoadingDetail && !detail) {
-      const bodyBox = doc.createElement('pre');
-      bodyBox.className = 'gw-popover-body is-empty';
-      bodyBox.textContent = t('graph.loadingDetail');
-      children.push(bodyBox);
+      const loadingEl = doc.createElement('p');
+      loadingEl.className = 'gw-popover-loading';
+      loadingEl.textContent = t('graph.loadingDetail');
+      children.push(loadingEl);
     } else if (trimmedBody) {
-      const bodyBox = doc.createElement('pre');
+      const bodyBox = doc.createElement('p');
       bodyBox.className = 'gw-popover-body';
       bodyBox.textContent = trimmedBody;
       children.push(bodyBox);
     }
+
+    const coAuthors = Array.isArray(detail?.coAuthors) ? detail.coAuthors : [];
+    if (coAuthors.length > 0) {
+      const coLine = doc.createElement('p');
+      coLine.className = 'gw-popover-meta';
+      const coText = coAuthors
+        .map((author) => (author.email ? `${author.name} <${author.email}>` : author.name))
+        .join(', ');
+      coLine.textContent = `${t('popover.coAuthors')}: ${coText}`;
+      children.push(coLine);
+    }
+
+    if (viewModel.references.length > 0) {
+      const refsEl = doc.createElement('div');
+      refsEl.className = 'gw-popover-section gw-popover-refs';
+      for (const ref of viewModel.references) {
+        const refEl = doc.createElement('span');
+        refEl.className = ref.color ? 'gw-popover-ref' : 'gw-popover-ref is-default';
+        if (ref.color) refEl.style.backgroundColor = ref.color;
+        refEl.title = ref.name;
+        refEl.append(deps.createIcon(ref.icon));
+        const refNameEl = doc.createElement('span');
+        refNameEl.textContent = ref.name;
+        refEl.append(refNameEl);
+        refsEl.append(refEl);
+      }
+      children.push(refsEl);
+    }
+
+    const footerEl = doc.createElement('div');
+    footerEl.className = 'gw-popover-section gw-popover-footer';
+    footerEl.append(deps.createIcon('gitCommit'));
+    const shaSpan = doc.createElement('span');
+    shaSpan.className = 'gw-popover-sha';
+    shaSpan.textContent = shortSha;
+    const copyBtn = doc.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'gw-icon-btn';
+    copyBtn.dataset.testid = 'popover-copy-sha-btn';
+    copyBtn.title = t('popover.copySha');
+    copyBtn.setAttribute('aria-label', t('popover.copySha'));
+    copyBtn.append(deps.createIcon('copy'));
+    copyBtn.addEventListener('click', () => {
+      void copyTextWithFallback(commit.sha).then((copied) => {
+        if (copied) {
+          deps.showToast(t('popover.copiedSha', { sha: shortSha }), 'success', { anchor: copyBtn });
+        }
+      });
+    });
+    footerEl.append(shaSpan, copyBtn);
+    children.push(footerEl);
 
     const isDifferentCommit = lastPopoverSha !== sha;
     lastPopoverSha = sha;
@@ -512,15 +388,11 @@ export const createGraphView = (elements, deps) => {
   };
 
   const syncActiveCommitHighlight = () => {
-    const activeSha = popoverController.getState().activeSha;
-    const pinned = popoverController.getState().pinned;
+    const { activeSha, pinned } = popoverController.getState();
     for (const row of bodyEl.querySelectorAll('.gw-commit-row')) {
       const isMatch = Boolean(activeSha && row.dataset.commitSha === activeSha);
       row.classList.toggle('is-popover-active', isMatch);
-      const btn = row.querySelector('.gw-commit-detail-btn');
-      if (btn) {
-        btn.classList.toggle('is-active', isMatch && pinned);
-      }
+      row.querySelector('.gw-commit-detail-btn')?.classList.toggle('is-active', isMatch && pinned);
     }
   };
 
@@ -556,8 +428,7 @@ export const createGraphView = (elements, deps) => {
       if (expandedCommits.has(sha) && latestRenderState) {
         renderCommitList(latestRenderState);
       }
-      const popState = popoverController.getState();
-      if (popState.activeSha === sha) {
+      if (popoverController.getState().activeSha === sha) {
         renderAndPositionPopover(sha);
       }
     }
@@ -610,7 +481,6 @@ export const createGraphView = (elements, deps) => {
     const items = [
       {
         id: 'toggle-search',
-        icon: 'search',
         label: t('graph.menu.toggleSearch'),
         action: () => {
           searchVisible = !searchVisible;
@@ -618,16 +488,12 @@ export const createGraphView = (elements, deps) => {
           if (searchVisible) {
             searchInputEl.focus();
           } else if (searchQuery) {
-            searchQuery = '';
-            searchInputEl.value = '';
-            searchClearBtn.classList.add('hidden');
-            if (latestRenderState) renderCommitList(latestRenderState);
+            clearSearch();
           }
         },
       },
       {
         id: 'collapse-all',
-        icon: 'collapseAll',
         label: t('graph.menu.collapseAll'),
         action: () => {
           expandedCommits.clear();
@@ -636,7 +502,6 @@ export const createGraphView = (elements, deps) => {
       },
       {
         id: 'switch-language',
-        icon: 'globe',
         label: t('graph.menu.switchLanguage'),
         action: () => {
           deps.onSwitchLanguage();
@@ -651,17 +516,7 @@ export const createGraphView = (elements, deps) => {
       btn.className = 'gw-menu-item';
       btn.setAttribute('role', 'menuitem');
       btn.dataset.testid = `graph-menu-${item.id}`;
-
-      const iconWrap = doc.createElement('span');
-      iconWrap.className = 'gw-menu-item-icon';
-      iconWrap.setAttribute('aria-hidden', 'true');
-      iconWrap.append(deps.createIcon(item.icon));
-
-      const labelSpan = doc.createElement('span');
-      labelSpan.className = 'gw-menu-item-text';
-      labelSpan.textContent = item.label;
-
-      btn.append(iconWrap, labelSpan);
+      btn.textContent = item.label;
       btn.addEventListener('click', () => {
         closeMoreMenu();
         item.action();
@@ -692,13 +547,8 @@ export const createGraphView = (elements, deps) => {
   });
 
   searchClearBtn.addEventListener('click', () => {
-    searchQuery = '';
-    searchInputEl.value = '';
-    searchClearBtn.classList.add('hidden');
+    clearSearch();
     searchInputEl.focus();
-    if (latestRenderState) {
-      renderCommitList(latestRenderState);
-    }
   });
 
   // 键盘上下浏览提交行，显式跳过表单控件与内层按钮
@@ -791,12 +641,15 @@ export const createGraphView = (elements, deps) => {
 
     const scopeBtn = doc.createElement('button');
     scopeBtn.type = 'button';
-    scopeBtn.className = graphScope === 'all' ? 'gw-scope-btn is-all gw-clip-focus' : 'gw-scope-btn gw-clip-focus';
+    scopeBtn.className = 'gw-action-label gw-scope-btn';
     scopeBtn.dataset.testid = 'graph-scope-btn';
     scopeBtn.dataset.focusId = 'graph-scope';
-    scopeBtn.textContent = graphScope === 'all' ? t('graph.scopeAll') : t('graph.scopeAuto');
     scopeBtn.title = t('graph.scopeToggleTitle');
     scopeBtn.disabled = !activeRepo;
+    const scopeTextEl = doc.createElement('span');
+    scopeTextEl.className = 'gw-scope-name';
+    scopeTextEl.textContent = graphScope === 'all' ? t('graph.scopeAll') : t('graph.scopeAuto');
+    scopeBtn.append(deps.createIcon('gitBranch'), scopeTextEl);
     scopeBtn.addEventListener('click', () => {
       deps.onToggleScope(graphScope === 'all' ? 'auto' : 'all');
     });
@@ -805,7 +658,7 @@ export const createGraphView = (elements, deps) => {
     const createToolbarIconBtn = ({ testid, focusId, icon, title, disabled, onClick }) => {
       const btn = doc.createElement('button');
       btn.type = 'button';
-      btn.className = 'gw-icon-btn';
+      btn.className = 'gw-action-label';
       btn.dataset.testid = testid;
       btn.dataset.focusId = focusId;
       btn.title = title;
@@ -818,9 +671,26 @@ export const createGraphView = (elements, deps) => {
 
     fragment.append(
       createToolbarIconBtn({
+        testid: 'graph-go-to-current-btn',
+        focusId: 'graph-go-to-current',
+        icon: 'target',
+        title: t('graph.action.goToCurrent'),
+        disabled: !activeRepo?.headOid || isUnborn,
+        onClick: () => {
+          if (searchQuery) clearSearch();
+          const headRow = findCommitRowEl(activeRepo.headOid);
+          if (!headRow) {
+            deps.showToast(t('graph.headNotLoaded'), 'info', { anchor: toolbarActionsEl });
+            return;
+          }
+          headRow.scrollIntoView({ block: 'nearest' });
+          headRow.focus();
+        },
+      }),
+      createToolbarIconBtn({
         testid: 'graph-fetch-btn',
         focusId: 'graph-fetch',
-        icon: 'fetch',
+        icon: 'repoFetch',
         title: t('graph.action.fetchTitle'),
         disabled: !activeRepo || isBusy,
         onClick: () => {
@@ -830,7 +700,7 @@ export const createGraphView = (elements, deps) => {
       createToolbarIconBtn({
         testid: 'graph-pull-btn',
         focusId: 'graph-pull',
-        icon: 'pull',
+        icon: 'repoPull',
         title: t('graph.action.pullTitle'),
         disabled: !activeRepo || isBare || isDetached || isUnborn || !activeRepo.upstream || isBusy,
         onClick: () => {
@@ -840,7 +710,7 @@ export const createGraphView = (elements, deps) => {
       createToolbarIconBtn({
         testid: 'graph-push-btn',
         focusId: 'graph-push',
-        icon: 'push',
+        icon: 'repoPush',
         title: (!activeRepo?.upstream && remotes.length > 0)
           ? t('graph.action.publishTitle')
           : t('graph.action.pushTitle'),
@@ -864,7 +734,7 @@ export const createGraphView = (elements, deps) => {
     const moreBtn = createToolbarIconBtn({
       testid: 'graph-more-btn',
       focusId: 'graph-more',
-      icon: 'more',
+      icon: 'ellipsis',
       title: t('graph.action.more'),
       disabled: false,
       onClick: () => {
@@ -884,18 +754,198 @@ export const createGraphView = (elements, deps) => {
     deps.restoreFocus(toolbarActionsEl, savedFocus);
   };
 
+  const renderQuietRow = (placeholder, text, className) => {
+    const rowEl = doc.createElement('div');
+    rowEl.className = className;
+    const spacerEl = doc.createElement('span');
+    spacerEl.className = 'gw-tree-indent';
+    const textEl = doc.createElement('span');
+    textEl.className = 'gw-quiet-row-text';
+    textEl.textContent = text;
+    rowEl.append(renderGraphSvg(placeholder, 'gw-graph-placeholder'), spacerEl, textEl);
+    return rowEl;
+  };
+
+  const renderCommitFiles = (viewModel, t) => {
+    const { commit } = viewModel;
+    const filesWrap = doc.createElement('div');
+    filesWrap.className = 'gw-commit-files';
+    filesWrap.dataset.testid = 'commit-files';
+    filesWrap.dataset.commitSha = commit.sha;
+
+    const placeholder = computeCommitFilesPlaceholder(viewModel);
+    const detail = commitDetailCache.get(commit.sha);
+    const detailErr = detailErrors.get(commit.sha);
+
+    if (loadingDetailShas.has(commit.sha) && !detail) {
+      filesWrap.append(renderQuietRow(placeholder, t('graph.loadingDetail'), 'gw-commit-file-loading'));
+      return filesWrap;
+    }
+    if (detailErr && !detail) {
+      filesWrap.append(renderQuietRow(placeholder, detailErr, 'gw-commit-file-empty'));
+      return filesWrap;
+    }
+    if (!detail?.files || detail.files.length === 0) {
+      filesWrap.append(renderQuietRow(placeholder, t('graph.emptyFiles'), 'gw-commit-file-empty'));
+      return filesWrap;
+    }
+
+    for (const file of detail.files) {
+      const exists = file.existsInWorktree !== false;
+      const fileBtn = doc.createElement('button');
+      fileBtn.type = 'button';
+      fileBtn.className = exists ? 'gw-commit-file-row' : 'gw-commit-file-row is-missing';
+      fileBtn.dataset.testid = 'commit-file-row';
+      fileBtn.dataset.filePath = file.path;
+      fileBtn.dataset.focusId = `commit-file:${commit.sha}:${file.path}`;
+      fileBtn.disabled = !exists;
+      if (!exists) {
+        fileBtn.setAttribute('aria-disabled', 'true');
+        fileBtn.title = t('graph.deletedFileDisabled');
+      } else {
+        fileBtn.title = file.origPath ? `${file.origPath} → ${file.path}` : file.path;
+        fileBtn.addEventListener('click', () => deps.onOpenFile(file, fileBtn));
+      }
+
+      const indentEl = doc.createElement('span');
+      indentEl.className = 'gw-tree-indent';
+      indentEl.setAttribute('aria-hidden', 'true');
+
+      const status = formatFileStatus(file.status);
+      const badge = doc.createElement('span');
+      badge.className = `gw-status-badge ${status.className}`;
+      badge.textContent = status.code;
+
+      fileBtn.append(
+        renderGraphSvg(placeholder, 'gw-graph-placeholder'),
+        indentEl,
+        deps.createFileIcon(file.path),
+        deps.createSplitPath(file.path, file.origPath),
+        badge,
+      );
+      filesWrap.append(fileBtn);
+    }
+    return filesWrap;
+  };
+
+  const renderCommitRow = (viewModel, { activeRepo, popState, t }) => {
+    const { commit } = viewModel;
+    const isExpanded = expandedCommits.has(commit.sha);
+    const isCurrent = viewModel.kind === 'HEAD';
+
+    const rowEl = doc.createElement('div');
+    rowEl.className = 'gw-commit-row';
+    rowEl.classList.toggle('is-expanded', isExpanded);
+    rowEl.classList.toggle('is-current', isCurrent);
+    rowEl.classList.toggle('is-popover-active', popState.activeSha === commit.sha);
+    rowEl.tabIndex = 0;
+    rowEl.setAttribute('role', 'listitem');
+    rowEl.setAttribute('aria-expanded', String(isExpanded));
+    rowEl.dataset.testid = 'commit-row';
+    rowEl.dataset.commitSha = commit.sha;
+    rowEl.dataset.focusId = `commit:${commit.sha}`;
+    // 提交行已有悬浮详情卡，仅写 aria-label 不写 title，避免浏览器原生文字 tooltip 与悬浮卡片重叠
+    rowEl.setAttribute('aria-label', `${commit.shortSha || commit.sha.slice(0, 7)} ${commit.subject || ''}`.trim());
+
+    const graphContainerEl = doc.createElement('span');
+    graphContainerEl.className = 'gw-graph-container';
+    graphContainerEl.append(renderGraphSvg(computeHistoryItemGraph(viewModel), 'gw-graph'));
+
+    const labelEl = doc.createElement('span');
+    labelEl.className = 'gw-commit-label';
+    const subjectEl = doc.createElement('span');
+    subjectEl.className = 'gw-commit-subject';
+    subjectEl.textContent = commit.subject || '';
+    const authorEl = doc.createElement('span');
+    authorEl.className = 'gw-commit-author';
+    authorEl.textContent = commit.authorName || '';
+    labelEl.append(subjectEl, authorEl);
+
+    rowEl.append(graphContainerEl, labelEl);
+
+    const badges = groupHistoryItemBadges(viewModel.references);
+    if (badges.length > 0) {
+      const refsWrap = doc.createElement('div');
+      refsWrap.className = 'gw-commit-refs';
+      for (const badge of badges) {
+        refsWrap.append(createRefBadge(badge));
+      }
+      rowEl.append(refsWrap);
+    }
+
+    const detailBtn = doc.createElement('button');
+    detailBtn.type = 'button';
+    detailBtn.className = popState.activeSha === commit.sha && popState.pinned
+      ? 'gw-icon-btn gw-commit-detail-btn is-active'
+      : 'gw-icon-btn gw-commit-detail-btn';
+    detailBtn.dataset.testid = 'commit-detail-btn';
+    detailBtn.dataset.focusId = `commit-detail:${commit.sha}`;
+    detailBtn.title = t('graph.openDetailCard');
+    detailBtn.setAttribute('aria-label', t('graph.openDetailCard'));
+    detailBtn.append(deps.createIcon('info'));
+    detailBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      popoverController.togglePin(commit.sha);
+    });
+    rowEl.append(detailBtn);
+
+    rowEl.addEventListener('click', () => {
+      void toggleCommitExpand(commit.sha);
+    });
+    rowEl.addEventListener('mouseenter', () => {
+      popoverController.enterAnchor(commit.sha);
+    });
+    rowEl.addEventListener('mouseleave', () => {
+      popoverController.leaveAnchor();
+    });
+
+    return rowEl;
+  };
+
+  const renderListFooter = ({ graph, allCommits, lastViewModel, loadingMore, t }) => {
+    const reachedSoftLimit = Boolean(graph?.reachedSoftLimit) || allCommits.length >= GRAPH_HARD_SOFT_LIMIT;
+    if (reachedSoftLimit) {
+      const noticeEl = doc.createElement('div');
+      noticeEl.className = 'gw-soft-limit-notice';
+      noticeEl.dataset.testid = 'graph-soft-limit-notice';
+      noticeEl.textContent = t('graph.softLimitNotice');
+      return noticeEl;
+    }
+    if (!graph?.hasMore) return null;
+
+    const rowEl = doc.createElement('div');
+    rowEl.className = 'gw-load-more-row';
+    const placeholder = computeGraphPlaceholder(lastViewModel.outputSwimlanes);
+    const loadMoreBtn = doc.createElement('button');
+    loadMoreBtn.type = 'button';
+    loadMoreBtn.className = 'gw-load-more-btn';
+    loadMoreBtn.dataset.testid = 'graph-load-more-btn';
+    loadMoreBtn.dataset.focusId = 'graph-load-more';
+    loadMoreBtn.disabled = Boolean(loadingMore);
+    const labelEl = doc.createElement('span');
+    labelEl.textContent = loadingMore ? t('graph.loadingMore') : t('graph.loadMore');
+    loadMoreBtn.append(deps.createIcon('foldDown'), labelEl);
+    loadMoreBtn.addEventListener('click', () => {
+      void deps.onLoadMore();
+    });
+    rowEl.append(renderGraphSvg(placeholder, 'gw-graph-placeholder is-fading'), loadMoreBtn);
+    return rowEl;
+  };
+
   const renderCommitList = (state) => {
-    const { activeRepo, graph, loadingMore, t } = state;
+    const { activeRepo, graph, graphScope, loadingMore, t } = state;
     const savedFocus = deps.captureFocus(bodyEl);
 
     if (!activeRepo) {
       popoverController.close();
+      latestViewModelBySha = new Map();
       bodyEl.replaceChildren();
       return;
     }
 
     if (activeRepo.isUnborn) {
       popoverController.close();
+      latestViewModelBySha = new Map();
       const unbornEl = doc.createElement('div');
       unbornEl.className = 'gw-quiet-empty';
       unbornEl.dataset.testid = 'graph-unborn-empty';
@@ -906,12 +956,13 @@ export const createGraphView = (elements, deps) => {
 
     const allCommits = Array.isArray(graph?.commits) ? graph.commits : [];
     const normalizedQuery = searchQuery.trim().toLowerCase();
-    const visibleCommits = normalizedQuery
+    const matchedCommits = normalizedQuery
       ? allCommits.filter((commit) => matchesSearchQuery(commit, normalizedQuery))
       : allCommits;
 
-    if (visibleCommits.length === 0) {
+    if (matchedCommits.length === 0) {
       popoverController.close();
+      latestViewModelBySha = new Map();
       const emptyEl = doc.createElement('div');
       emptyEl.className = 'gw-quiet-empty';
       emptyEl.dataset.testid = normalizedQuery ? 'graph-search-empty' : 'graph-empty';
@@ -920,214 +971,51 @@ export const createGraphView = (elements, deps) => {
       return;
     }
 
-    const topology = computeGraphTopology(visibleCommits);
-    const metrics = computeGraphMetrics(topology, { rowHeight: GRAPH_ROW_HEIGHT });
+    // 搜索结果只连接结果集内部的父子关系，否则每个被滤掉的父提交都会留下一条贯穿到底的泳道
+    let visibleCommits = matchedCommits;
+    if (normalizedQuery) {
+      const visibleShas = new Set(matchedCommits.map((commit) => commit.sha));
+      visibleCommits = matchedCommits.map((commit) => ({
+        ...commit,
+        parents: commit.parents.filter((parentSha) => visibleShas.has(parentSha)),
+      }));
+    }
+
+    const currentRefId = activeRepo.branch && !activeRepo.isDetached ? `refs/heads/${activeRepo.branch}` : null;
+    const remoteRefId = activeRepo.upstream ? `refs/remotes/${activeRepo.upstream}` : null;
+    const viewModels = toHistoryItemViewModels(visibleCommits, {
+      headSha: activeRepo.headOid ?? null,
+      currentRefId,
+      remoteRefId,
+      colorMap: buildRefColorMap({ currentRefId, remoteRefId, scope: graphScope, commits: visibleCommits }),
+    });
+    latestViewModelBySha = new Map(viewModels.map((viewModel) => [viewModel.commit.sha, viewModel]));
+
     const listEl = doc.createElement('div');
     listEl.className = 'gw-commit-list';
     listEl.dataset.testid = 'graph-commit-list';
     listEl.setAttribute('role', 'list');
 
     const popState = popoverController.getState();
-
-    visibleCommits.forEach((commit, index) => {
-      const topologyRow = topology[index];
-      const isExpanded = expandedCommits.has(commit.sha);
-      const isHead = commit.sha === activeRepo.headOid
-        || (Array.isArray(commit.refs) && commit.refs.some((ref) => ref.type === 'head' || ref.fullRef === 'HEAD'));
-
-      const rowEl = doc.createElement('div');
-      rowEl.className = 'gw-commit-row';
-      if (isExpanded) rowEl.classList.add('is-expanded');
-      if (popState.activeSha === commit.sha) rowEl.classList.add('is-popover-active');
-      rowEl.tabIndex = 0;
-      rowEl.setAttribute('role', 'listitem');
-      rowEl.setAttribute('aria-expanded', String(isExpanded));
-      rowEl.dataset.testid = 'commit-row';
-      rowEl.dataset.commitSha = commit.sha;
-      rowEl.dataset.focusId = `commit:${commit.sha}`;
-      // 提交行已有悬浮详情卡，仅写 aria-label 不写 title，避免浏览器原生文字 tooltip 与悬浮卡片重叠
-      rowEl.setAttribute('aria-label', `${commit.shortSha || commit.sha.slice(0, 7)} ${commit.subject || ''}`.trim());
-
-      rowEl.append(
-        buildCommitRowSvg({
-          topologyRow,
-          metrics,
-          isHead,
-          isLastRow: index === visibleCommits.length - 1,
-        }),
-      );
-
-      const subjectEl = doc.createElement('span');
-      subjectEl.className = 'gw-commit-subject';
-      subjectEl.textContent = commit.subject || '';
-      rowEl.append(subjectEl);
-
-      const sortedRefs = sortCommitRefs(commit.refs);
-      if (sortedRefs.length > 0) {
-        const refsWrap = doc.createElement('div');
-        refsWrap.className = 'gw-commit-refs';
-        const visibleRefs = sortedRefs.slice(0, MAX_VISIBLE_REFS);
-        const overflowRefs = sortedRefs.slice(MAX_VISIBLE_REFS);
-
-        for (const ref of visibleRefs) {
-          const pill = doc.createElement('span');
-          pill.className = `gw-ref-pill ${ref.className}`;
-          pill.textContent = ref.name;
-          pill.setAttribute('aria-label', ref.fullRef || ref.name);
-          refsWrap.append(pill);
-        }
-
-        if (overflowRefs.length > 0) {
-          const morePill = doc.createElement('span');
-          morePill.className = 'gw-ref-pill is-more';
-          morePill.textContent = t('graph.moreRefsLabel', { count: overflowRefs.length });
-          morePill.title = overflowRefs.map((ref) => ref.name).join(', ');
-          refsWrap.append(morePill);
-        }
-
-        rowEl.append(refsWrap);
+    for (const viewModel of viewModels) {
+      listEl.append(renderCommitRow(viewModel, { activeRepo, popState, t }));
+      if (expandedCommits.has(viewModel.commit.sha)) {
+        listEl.append(renderCommitFiles(viewModel, t));
       }
-
-      const detailBtn = doc.createElement('button');
-      detailBtn.type = 'button';
-      detailBtn.className = popState.activeSha === commit.sha && popState.pinned
-        ? 'gw-icon-btn gw-commit-detail-btn is-active'
-        : 'gw-icon-btn gw-commit-detail-btn';
-      detailBtn.dataset.testid = 'commit-detail-btn';
-      detailBtn.dataset.focusId = `commit-detail:${commit.sha}`;
-      detailBtn.title = t('graph.openDetailCard');
-      detailBtn.setAttribute('aria-label', t('graph.openDetailCard'));
-      detailBtn.append(deps.createIcon('fileText'));
-      detailBtn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        popoverController.togglePin(commit.sha);
-      });
-      rowEl.append(detailBtn);
-
-      rowEl.addEventListener('click', () => {
-        void toggleCommitExpand(commit.sha);
-      });
-      rowEl.addEventListener('mouseenter', () => {
-        popoverController.enterAnchor(commit.sha);
-      });
-      rowEl.addEventListener('mouseleave', () => {
-        popoverController.leaveAnchor();
-      });
-
-      listEl.append(rowEl);
-
-      if (isExpanded) {
-        const filesWrap = doc.createElement('div');
-        filesWrap.className = 'gw-commit-files';
-        filesWrap.dataset.testid = 'commit-files';
-        filesWrap.dataset.commitSha = commit.sha;
-
-        const detail = commitDetailCache.get(commit.sha);
-        const detailErr = detailErrors.get(commit.sha);
-        const isLoading = loadingDetailShas.has(commit.sha);
-
-        if (isLoading && !detail) {
-          const loadingRow = doc.createElement('div');
-          loadingRow.className = 'gw-commit-file-loading';
-          loadingRow.append(
-            buildPassThroughSvg(topologyRow.passThroughLanesAfter, metrics),
-            doc.createTextNode(t('graph.loadingDetail')),
-          );
-          filesWrap.append(loadingRow);
-        } else if (detailErr && !detail) {
-          const errRow = doc.createElement('div');
-          errRow.className = 'gw-commit-file-empty';
-          errRow.append(
-            buildPassThroughSvg(topologyRow.passThroughLanesAfter, metrics),
-            doc.createTextNode(detailErr),
-          );
-          filesWrap.append(errRow);
-        } else if (!detail?.files || detail.files.length === 0) {
-          const emptyFilesRow = doc.createElement('div');
-          emptyFilesRow.className = 'gw-commit-file-empty';
-          emptyFilesRow.append(
-            buildPassThroughSvg(topologyRow.passThroughLanesAfter, metrics),
-            doc.createTextNode(t('graph.emptyFiles')),
-          );
-          filesWrap.append(emptyFilesRow);
-        } else {
-          for (const file of detail.files) {
-            const exists = file.existsInWorktree !== false;
-            const fileBtn = doc.createElement('button');
-            fileBtn.type = 'button';
-            fileBtn.className = exists ? 'gw-commit-file-row' : 'gw-commit-file-row is-missing';
-            fileBtn.dataset.testid = 'commit-file-row';
-            fileBtn.dataset.filePath = file.path;
-            fileBtn.dataset.focusId = `commit-file:${commit.sha}:${file.path}`;
-            fileBtn.disabled = !exists;
-            if (!exists) {
-              fileBtn.setAttribute('aria-disabled', 'true');
-              fileBtn.title = t('graph.deletedFileDisabled');
-            } else {
-              fileBtn.title = file.origPath ? `${file.origPath} → ${file.path}` : file.path;
-              fileBtn.addEventListener('click', () => deps.onOpenFile(file));
-            }
-
-            const indent = doc.createElement('span');
-            indent.className = 'gw-commit-file-indent';
-            indent.setAttribute('aria-hidden', 'true');
-
-            const statusCode = typeof file.status === 'string' && file.status.trim()
-              ? file.status.trim()[0].toUpperCase()
-              : 'M';
-            const badge = doc.createElement('span');
-            badge.className = `gw-status-badge ${formatFileStatusClass(statusCode)}`;
-            badge.textContent = statusCode;
-
-            fileBtn.append(
-              buildPassThroughSvg(topologyRow.passThroughLanesAfter, metrics),
-              indent,
-              deps.createSplitPath(file.path, file.origPath),
-              badge,
-            );
-            filesWrap.append(fileBtn);
-          }
-        }
-
-        listEl.append(filesWrap);
-      }
-    });
-
-    const fragment = doc.createDocumentFragment();
-    fragment.append(listEl);
-
-    const reachedSoftLimit = Boolean(graph?.reachedSoftLimit) || allCommits.length >= GRAPH_HARD_SOFT_LIMIT;
-    if (graph?.hasMore && !reachedSoftLimit) {
-      const footerEl = doc.createElement('div');
-      footerEl.className = 'gw-graph-footer';
-      const loadMoreBtn = doc.createElement('button');
-      loadMoreBtn.type = 'button';
-      loadMoreBtn.className = 'gw-load-more-btn';
-      loadMoreBtn.dataset.testid = 'graph-load-more-btn';
-      loadMoreBtn.dataset.focusId = 'graph-load-more';
-      loadMoreBtn.disabled = Boolean(loadingMore);
-      loadMoreBtn.textContent = loadingMore ? t('graph.loadingMore') : t('graph.loadMore');
-      loadMoreBtn.addEventListener('click', () => {
-        void deps.onLoadMore();
-      });
-      footerEl.append(loadMoreBtn);
-      fragment.append(footerEl);
-    } else if (reachedSoftLimit) {
-      const footerEl = doc.createElement('div');
-      footerEl.className = 'gw-graph-footer';
-      const limitNotice = doc.createElement('div');
-      limitNotice.className = 'gw-soft-limit-notice';
-      limitNotice.dataset.testid = 'graph-soft-limit-notice';
-      limitNotice.textContent = t('graph.softLimitNotice');
-      footerEl.append(limitNotice);
-      fragment.append(footerEl);
     }
 
-    bodyEl.replaceChildren(fragment);
+    const footerEl = renderListFooter({
+      graph,
+      allCommits,
+      lastViewModel: viewModels.at(-1),
+      loadingMore,
+      t,
+    });
+    bodyEl.replaceChildren(...(footerEl ? [listEl, footerEl] : [listEl]));
     deps.restoreFocus(bodyEl, savedFocus);
 
     if (popState.activeSha) {
-      if (!findCommitBySha(popState.activeSha)) {
+      if (!latestViewModelBySha.has(popState.activeSha)) {
         popoverController.close();
       } else {
         renderAndPositionPopover(popState.activeSha);

@@ -13,6 +13,9 @@ import {
 import { createApiClient, ApiClientError } from './modules/api-client.js';
 import { createChangesView } from './modules/changes-view.js';
 import { createGraphView } from './modules/graph-view.js';
+import { CODICON_PATHS } from './modules/codicons.js';
+import { resolveFileIconUrl } from './modules/file-icons.js';
+import { createToastController } from './modules/toast.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const DEFAULT_SPLIT_RATIO = 0.42;
@@ -24,41 +27,15 @@ const GRAPH_SOFT_LIMIT = 2000;
 const EVENTS_WAIT_TIMEOUT_MS = 20000;
 const WORKSPACE_BOOTSTRAP_TIMEOUT_MS = 1200;
 
-const ICON_PATHS = Object.freeze({
-  chevronDown: ['M4 6 L8 10 L12 6'],
-  chevronRight: ['M6 4 L10 8 L6 12'],
-  gitBranch: ['M5 3 V11', 'M11 5 V7 C11 8.5 9.5 9.5 8 9.5 H5', 'M5 3 A1.5 1.5 0 1 0 5 6 A1.5 1.5 0 1 0 5 3', 'M5 10.5 A1.5 1.5 0 1 0 5 13.5 A1.5 1.5 0 1 0 5 10.5', 'M11 2.5 A1.5 1.5 0 1 0 11 5.5 A1.5 1.5 0 1 0 11 2.5'],
-  file: ['M4 2.5 H9.5 L12.5 5.5 V13.5 H4 Z', 'M9.5 2.5 V5.5 H12.5'],
-  fileText: ['M4 2.5 H9.5 L12.5 5.5 V13.5 H4 Z', 'M9.5 2.5 V5.5 H12.5', 'M6 8 H10.5', 'M6 10.5 H10.5'],
-  plus: ['M8 3.5 V12.5', 'M3.5 8 H12.5'],
-  minus: ['M3.5 8 H12.5'],
-  undo: ['M4 6.5 H10 A3.25 3.25 0 0 1 10 13 H6.5', 'M6.5 4 L4 6.5 L6.5 9'],
-  trash: ['M3.5 4.5 H12.5', 'M6 4.5 V3 H10 V4.5', 'M5 4.5 V13 H11 V4.5', 'M7 7 V10.5', 'M9 7 V10.5'],
-  openFile: ['M6.5 4 H3.5 V12.5 H12 V9.5', 'M9 3.5 H12.5 V7', 'M12.5 3.5 L7.5 8.5'],
-  fetch: ['M8 2.5 V10', 'M5 7 L8 10 L11 7', 'M3 12.5 H13'],
-  pull: ['M8 3 V12.5', 'M4.5 9 L8 12.5 L11.5 9'],
-  push: ['M8 13 V3.5', 'M4.5 7 L8 3.5 L11.5 7'],
-  refresh: ['M13 8 A5 5 0 1 1 11.4 4.3', 'M13 3 V5.8 H10.2'],
-  more: ['M4 8 A0.8 0.8 0 1 0 4.01 8', 'M8 8 A0.8 0.8 0 1 0 8.01 8', 'M12 8 A0.8 0.8 0 1 0 12.01 8'],
-  search: ['M7 11.5 A4.5 4.5 0 1 0 7 2.5 A4.5 4.5 0 1 0 7 11.5', 'M10.4 10.4 L13.5 13.5'],
-  collapseAll: ['M4.5 10.5 L8 7 L11.5 10.5', 'M4.5 5.5 L8 2 L11.5 5.5'],
-  globe: ['M8 14 A6 6 0 1 0 8 2 A6 6 0 1 0 8 14', 'M2 8 H14', 'M8 2 C9.8 4 9.8 12 8 14', 'M8 2 C6.2 4 6.2 12 8 14'],
-  copy: ['M6 6 H12.5 V13.5 H6 Z', 'M3.5 10 V3.5 H10'],
-  close: ['M4 4 L12 12', 'M12 4 L4 12'],
-  alert: ['M8 2.5 L14 13 H2 Z', 'M8 6.5 V9.5', 'M8 11.4 V11.6'],
-  info: ['M8 13.5 A5.5 5.5 0 1 0 8 2.5 A5.5 5.5 0 1 0 8 13.5', 'M8 7.5 V11', 'M8 5.2 V5.4'],
-  check: ['M3.5 8.5 L6.5 11.5 L12.5 4.5'],
-});
-
 const clampSplitRatio = (value) => {
   if (!Number.isFinite(value)) return DEFAULT_SPLIT_RATIO;
   return Math.max(MIN_SPLIT_RATIO, Math.min(MAX_SPLIT_RATIO, Number(value.toFixed(4))));
 };
 
 /**
- * 创建统一线性 16×16 SVG 图标元素（无全局状态副作用）。
+ * 创建 16×16 Codicon 填充图标元素（无全局状态副作用）。
  *
- * @param {string} name 图标名称键
+ * @param {string} name `CODICON_PATHS` 中的图标名
  * @param {string} [extraClass=''] 追加 CSS 类名
  * @returns {SVGElement} 内联矢量图标 DOM 节点
  */
@@ -67,13 +44,37 @@ export const createIcon = (name, extraClass = '') => {
   svg.setAttribute('viewBox', '0 0 16 16');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('class', extraClass ? `gw-icon ${extraClass}` : 'gw-icon');
-  const paths = ICON_PATHS[name] ?? ICON_PATHS.info;
-  for (const d of paths) {
+  for (const entry of CODICON_PATHS[name]) {
     const pathEl = document.createElementNS(SVG_NS, 'path');
-    pathEl.setAttribute('d', d);
+    if (typeof entry === 'string') {
+      pathEl.setAttribute('d', entry);
+    } else {
+      pathEl.setAttribute('d', entry.d);
+      pathEl.setAttribute('fill-rule', 'evenodd');
+      pathEl.setAttribute('clip-rule', 'evenodd');
+    }
     svg.append(pathEl);
   }
   return svg;
+};
+
+const currentThemeMode = () => (document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+
+/**
+ * 创建 16×16 文件类型图标（vscode-icons）元素，按当前明暗主题选取图标变体（无全局状态副作用）。
+ *
+ * @param {string} filePath 仓库内相对路径
+ * @returns {HTMLImageElement} 文件图标节点，`data-file-path` 供主题切换时重新解析
+ */
+export const createFileIcon = (filePath) => {
+  const img = document.createElement('img');
+  img.className = 'gw-file-icon';
+  img.alt = '';
+  img.width = 16;
+  img.height = 16;
+  img.dataset.filePath = filePath;
+  img.src = resolveFileIconUrl(filePath, currentThemeMode());
+  return img;
 };
 
 /**
@@ -161,6 +162,11 @@ const bootstrapPanel = () => {
   initThemeSync({
     root: document.documentElement,
     win: window,
+    onThemeChange: ({ mode }) => {
+      for (const img of document.querySelectorAll('img.gw-file-icon')) {
+        img.src = resolveFileIconUrl(img.dataset.filePath, mode);
+      }
+    },
   });
 
   const repoBarEl = document.getElementById('repo-bar');
@@ -180,7 +186,6 @@ const bootstrapPanel = () => {
   const changesCollapseBtnEl = document.getElementById('changes-collapse-btn');
   const changesChevronEl = document.getElementById('changes-collapse-chevron');
   const changesTitleEl = document.getElementById('changes-section-title');
-  const changesBadgeEl = document.getElementById('changes-total-badge');
   const changesBodyEl = document.getElementById('section-changes-body');
 
   const sashEl = document.getElementById('pane-sash');
@@ -189,6 +194,7 @@ const bootstrapPanel = () => {
   const graphCollapseBtnEl = document.getElementById('graph-collapse-btn');
   const graphChevronEl = document.getElementById('graph-collapse-chevron');
   const graphTitleEl = document.getElementById('graph-section-title');
+  const graphHeaderEl = document.getElementById('graph-section-header');
   const graphToolbarEl = document.getElementById('graph-toolbar-actions');
   const graphSearchBarEl = document.getElementById('graph-search-bar');
   const graphBodyEl = document.getElementById('section-graph-body');
@@ -232,60 +238,8 @@ const bootstrapPanel = () => {
     getWorkspaceUris: () => state.workspaceUris,
   });
 
-  // --- Toast 轻提示 ---
-  const showToast = (message, variant = 'info', detail = '') => {
-    while (toastContainerEl.children.length >= 3) {
-      toastContainerEl.firstElementChild?.remove();
-    }
-
-    const toastEl = document.createElement('div');
-    toastEl.className = `gw-toast is-${variant}`;
-    toastEl.dataset.testid = `toast-${variant}`;
-    toastEl.setAttribute('role', variant === 'error' ? 'alert' : 'status');
-
-    const iconName = variant === 'error' || variant === 'warning'
-      ? 'alert'
-      : (variant === 'success' ? 'check' : 'info');
-    const iconWrap = document.createElement('span');
-    iconWrap.className = 'gw-toast-icon';
-    iconWrap.setAttribute('aria-hidden', 'true');
-    iconWrap.append(createIcon(iconName));
-
-    const contentWrap = document.createElement('div');
-    contentWrap.className = 'gw-toast-content';
-    const msgDiv = document.createElement('div');
-    msgDiv.textContent = message;
-    contentWrap.append(msgDiv);
-
-    if (detail) {
-      const detailDiv = document.createElement('div');
-      detailDiv.className = 'gw-toast-detail';
-      detailDiv.textContent = detail;
-      contentWrap.append(detailDiv);
-    }
-
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'gw-icon-btn';
-    closeBtn.setAttribute('aria-label', 'Close');
-    closeBtn.append(createIcon('close'));
-
-    let timerId = null;
-    const dismiss = () => {
-      if (timerId !== null) {
-        window.clearTimeout(timerId);
-        timerId = null;
-      }
-      toastEl.remove();
-    };
-
-    closeBtn.addEventListener('click', dismiss);
-    toastEl.append(iconWrap, contentWrap, closeBtn);
-    toastContainerEl.append(toastEl);
-
-    const ttlMs = variant === 'error' || variant === 'warning' ? 5500 : 3400;
-    timerId = window.setTimeout(dismiss, ttlMs);
-  };
+  // --- Toast 轻提示：就近显示在触发操作的控件旁 ---
+  const { show: showToast } = createToastController({ layerEl: toastContainerEl, createIcon });
 
   // --- 界面内 DOM 对话框（严禁使用 window.confirm / alert / prompt） ---
   let activeModalCleanup = null;
@@ -320,7 +274,7 @@ const bootstrapPanel = () => {
     const iconEl = document.createElement('span');
     iconEl.className = 'gw-modal-icon';
     iconEl.setAttribute('aria-hidden', 'true');
-    iconEl.append(createIcon(variant === 'danger' ? 'alert' : 'info'));
+    iconEl.append(createIcon(variant === 'danger' ? 'warning' : 'info'));
 
     const titleEl = document.createElement('h3');
     titleEl.id = 'modal-title';
@@ -498,14 +452,14 @@ const bootstrapPanel = () => {
   };
 
   // --- 宿主文件打开 ---
-  const openFileInHost = (file) => {
+  const openFileInHost = (file, anchorEl) => {
     if (!file || file.existsInWorktree === false) return;
     const t = getT();
     if (typeof window.sidecar?.ui?.toggleAuxPane === 'function' && file.fileUri) {
       window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri: file.fileUri });
       return;
     }
-    showToast(t('graph.standaloneFilePreviewNotice'), 'info');
+    showToast(t('graph.standaloneFilePreviewNotice'), 'info', { anchor: anchorEl });
   };
 
   // --- 业务请求与状态刷新 ---
@@ -530,17 +484,25 @@ const bootstrapPanel = () => {
     }
   };
 
-  const handleApiError = (err) => {
+  const handleApiError = (err, anchor = null) => {
     if (err?.name === 'AbortError') return;
     if (err instanceof ApiClientError) {
-      showToast(err.message, 'error', err.detail);
+      showToast(err.message, 'error', { detail: err.detail, anchor });
       return;
     }
     const t = getT();
-    showToast(translateApiError({ message: err?.message }, t.locale), 'error');
+    showToast(translateApiError({ message: err?.message }, t.locale), 'error', { anchor });
   };
 
-  const runMutation = async (opName, fn) => {
+  /**
+   * 串行执行一次写操作并刷新快照；失败提示显示在 `anchor` 控件旁。
+   *
+   * @param {string} opName 写操作名（同时作为 `pendingOp` 驱动按钮忙碌态）
+   * @param {() => Promise<void>} fn 实际请求
+   * @param {Element | null} anchor 触发该操作的控件，提示就近显示
+   * @returns {Promise<boolean>} 请求是否成功
+   */
+  const runMutation = async (opName, fn, anchor) => {
     if (state.pendingOp) return false;
     state.pendingOp = opName;
     abortEventsWait();
@@ -549,10 +511,10 @@ const bootstrapPanel = () => {
     try {
       await fn();
       ranSnapshot = true;
-      await loadSnapshot({ forceRefresh: false });
+      await loadSnapshot({ forceRefresh: false, toastAnchor: anchor });
       return true;
     } catch (err) {
-      handleApiError(err);
+      handleApiError(err, anchor);
       if (!ranSnapshot) {
         restartEventsWaitLoop();
       }
@@ -563,11 +525,11 @@ const bootstrapPanel = () => {
     }
   };
 
-  const runPushOrPublish = (repo, explicitRemote = null) => {
+  const runPushOrPublish = (repo, anchor, explicitRemote = null) => {
     const t = getT();
     const remotes = Array.isArray(repo?.remotes) ? repo.remotes : [];
     if (remotes.length === 0) {
-      showToast(translateApiError({ code: 'NO_REMOTE' }, t.locale), 'error');
+      showToast(translateApiError({ code: 'NO_REMOTE' }, t.locale), 'error', { anchor });
       return;
     }
 
@@ -581,7 +543,7 @@ const bootstrapPanel = () => {
         selectOptions: remotes.map((remoteName) => ({ value: remoteName, label: remoteName })),
         onConfirm: (selectedRemote) => {
           if (selectedRemote) {
-            runPushOrPublish(repo, selectedRemote);
+            runPushOrPublish(repo, anchor, selectedRemote);
           }
         },
       });
@@ -595,38 +557,37 @@ const bootstrapPanel = () => {
         : { worktreePath: repo.worktreePath };
       await apiClient.pushBranch(payload);
       if (isPublish) {
-        showToast(t('remote.publishSuccess', { branch: repo.branch || '', remote: targetRemote }), 'success');
+        showToast(t('remote.publishSuccess', { branch: repo.branch || '', remote: targetRemote }), 'success', { anchor });
       } else {
-        showToast(t('remote.pushSuccess'), 'success');
+        showToast(t('remote.pushSuccess'), 'success', { anchor });
       }
-    });
+    }, anchor);
   };
 
   const changesView = createChangesView(
     {
       bodyEl: changesBodyEl,
-      totalBadgeEl: changesBadgeEl,
       sectionTitleEl: changesTitleEl,
     },
     {
       createIcon,
+      createFileIcon,
       createSplitPath,
       captureFocus,
       restoreFocus,
       openModal,
-      showToast,
       onOpenFile: openFileInHost,
       onStage: async ({ worktreePath, all, paths }) => {
         await runMutation('stage', async () => {
           const payload = all ? { worktreePath, all: true } : { worktreePath, all: false, paths };
           await apiClient.stageChanges(payload);
-        });
+        }, commitButtonEl);
       },
       onUnstage: async ({ worktreePath, all, paths }) => {
         await runMutation('unstage', async () => {
           const payload = all ? { worktreePath, all: true } : { worktreePath, all: false, paths };
           await apiClient.unstageChanges(payload);
-        });
+        }, commitButtonEl);
       },
       onDiscard: async ({ worktreePath, allTracked, paths, untracked }) => {
         await runMutation('discard', async () => {
@@ -634,7 +595,7 @@ const bootstrapPanel = () => {
             ? { worktreePath, allTracked: true, untracked: false }
             : { worktreePath, allTracked: false, paths, untracked };
           await apiClient.discardChanges(payload);
-        });
+        }, commitButtonEl);
       },
       onCommit: async ({ worktreePath, repoId, message, autoStageAll }) => {
         const t = getT();
@@ -643,34 +604,36 @@ const bootstrapPanel = () => {
           const res = await apiClient.commitChanges({ worktreePath, message, autoStageAll });
           changesView.clearDraft(repoId);
           committedSha = typeof res?.sha === 'string' ? res.sha : '';
-        });
+        }, commitButtonEl);
         if (ok) {
           const shortSha = (committedSha || state.snapshot?.activeRepo?.headOid || '').slice(0, 7);
           if (shortSha) {
-            showToast(t('commit.successToast', { sha: shortSha }), 'success');
+            showToast(t('commit.successToast', { sha: shortSha }), 'success', { anchor: commitButtonEl });
           }
         }
         return ok;
       },
-      onPublish: (repo) => runPushOrPublish(repo),
-      onPush: async (repo) => runPushOrPublish(repo),
+      onPublish: (repo) => runPushOrPublish(repo, commitButtonEl),
+      onPush: async (repo) => runPushOrPublish(repo, commitButtonEl),
       onPull: async (repo) => {
         const t = getT();
         await runMutation('pull', async () => {
           await apiClient.pullBranch({ worktreePath: repo.worktreePath });
-          showToast(t('remote.pullSuccess'), 'success');
-        });
+          showToast(t('remote.pullSuccess'), 'success', { anchor: commitButtonEl });
+        }, commitButtonEl);
       },
     },
   );
+  // 上区操作（提交、暂存、推送等）的提示统一显示在提交按钮下方
+  const commitButtonEl = document.getElementById('commit-primary-btn');
 
-  const handleManualRefresh = async () => {
+  const handleManualRefresh = async (anchor) => {
     if (state.pendingOp) return;
     const t = getT();
     graphView.clearDetailCache();
-    const ok = await loadSnapshot({ forceRefresh: true });
+    const ok = await loadSnapshot({ forceRefresh: true, toastAnchor: anchor });
     if (ok) {
-      showToast(t('remote.refreshed'), 'info');
+      showToast(t('remote.refreshed'), 'info', { anchor });
     }
   };
 
@@ -685,6 +648,7 @@ const bootstrapPanel = () => {
     },
     {
       createIcon,
+      createFileIcon,
       createSplitPath,
       captureFocus,
       restoreFocus,
@@ -695,7 +659,7 @@ const bootstrapPanel = () => {
         state.graphScope = nextScope;
         state.graphLimit = INITIAL_GRAPH_LIMIT;
         scheduleSavePreferences({ graphScope: nextScope }, 80);
-        void loadSnapshot({ forceRefresh: false });
+        void loadSnapshot({ forceRefresh: false, toastAnchor: graphHeaderEl });
       },
       onFetch: async (repo) => {
         const t = getT();
@@ -704,18 +668,18 @@ const bootstrapPanel = () => {
             worktreePath: repo.worktreePath ?? null,
             repoId: repo.id ?? null,
           });
-          showToast(t('remote.fetchSuccess'), 'success');
-        });
+          showToast(t('remote.fetchSuccess'), 'success', { anchor: graphHeaderEl });
+        }, graphHeaderEl);
       },
       onPull: async (repo) => {
         const t = getT();
         await runMutation('pull', async () => {
           await apiClient.pullBranch({ worktreePath: repo.worktreePath });
-          showToast(t('remote.pullSuccess'), 'success');
-        });
+          showToast(t('remote.pullSuccess'), 'success', { anchor: graphHeaderEl });
+        }, graphHeaderEl);
       },
-      onPushOrPublish: (repo) => runPushOrPublish(repo),
-      onRefresh: handleManualRefresh,
+      onPushOrPublish: (repo) => runPushOrPublish(repo, graphHeaderEl),
+      onRefresh: () => handleManualRefresh(graphHeaderEl),
       onLoadMore: async () => {
         if (state.loadingMore) return;
         state.loadingMore = true;
@@ -757,8 +721,8 @@ const bootstrapPanel = () => {
     changesCollapseBtnEl.setAttribute(
       'aria-label',
       changesExpanded
-        ? t('section.collapse', { section: t('section.sourceControl') })
-        : t('section.expand', { section: t('section.sourceControl') }),
+        ? t('section.collapse', { section: t('section.changes') })
+        : t('section.expand', { section: t('section.changes') }),
     );
     changesChevronEl.replaceChildren(createIcon(changesExpanded ? 'chevronDown' : 'chevronRight'));
 
@@ -910,7 +874,7 @@ const bootstrapPanel = () => {
     const iconWrap = document.createElement('span');
     iconWrap.className = 'gw-banner-icon';
     iconWrap.setAttribute('aria-hidden', 'true');
-    iconWrap.append(createIcon('alert'));
+    iconWrap.append(createIcon('warning'));
 
     const textEl = document.createElement('span');
     textEl.className = 'gw-banner-text';
@@ -929,7 +893,7 @@ const bootstrapPanel = () => {
     refreshLabel.textContent = t('graph.action.refresh');
     refreshBtn.append(refreshLabel);
     refreshBtn.addEventListener('click', () => {
-      void handleManualRefresh();
+      void handleManualRefresh(globalBannersEl);
     });
 
     bannerEl.append(iconWrap, textEl, refreshBtn);
@@ -1060,7 +1024,7 @@ const bootstrapPanel = () => {
     void poll();
   };
 
-  const loadSnapshot = async ({ forceRefresh = false } = {}) => {
+  const loadSnapshot = async ({ forceRefresh = false, toastAnchor = null } = {}) => {
     snapshotRequestSeq += 1;
     const reqSeq = snapshotRequestSeq;
     abortEventsWait();
@@ -1091,7 +1055,7 @@ const bootstrapPanel = () => {
         if (!controller.signal.aborted && err?.name !== 'AbortError') {
           state.hasLoadedInitial = true;
           renderAll();
-          handleApiError(err);
+          handleApiError(err, toastAnchor);
         }
         // 快照失败后仍需退避恢复长轮询，防止页面回切或瞬时异常后自动同步永久停摆
         scheduleEventsWaitRestart();

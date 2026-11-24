@@ -1,8 +1,17 @@
 /**
- * Antigravity Git Graph 上区「源代码管理」视图组件。
+ * Antigravity Git Graph 上区「更改」视图组件，布局对齐 VS Code 源代码管理「更改」视图。
  * 负责特殊状态横幅（冲突/游离 HEAD/裸仓/截断）、按 repo.id 内存保留的提交草稿、
  * 智能主按钮状态机、可折叠变更分组及三档 Discard 安全确认护栏。
  */
+
+const PRIMARY_ICON_BY_ACTION = Object.freeze({
+  commit: 'check',
+  'clean-disabled': 'check',
+  'conflict-blocked': 'warning',
+  publish: 'cloudUpload',
+  push: 'repoPush',
+  pull: 'repoPull',
+});
 
 const normalizeStatusMeta = (file, isConflicted, t) => {
   if (isConflicted) {
@@ -185,17 +194,16 @@ export const computePrimaryButtonState = ({ activeRepo, changes, pendingOp, t })
  *
  * @param {{
  *   bodyEl: HTMLElement,
- *   totalBadgeEl: HTMLElement,
  *   sectionTitleEl: HTMLElement
  * }} elements DOM 容器节点集合
  * @param {{
  *   createIcon: (name: string, className?: string) => SVGElement,
+ *   createFileIcon: (filePath: string) => HTMLImageElement,
  *   createSplitPath: (filePath: string, origPath?: string | null) => HTMLElement,
  *   captureFocus: (container: HTMLElement) => { focusId: string | null, wasFocusVisible: boolean, group?: string, index?: number } | null,
  *   restoreFocus: (container: HTMLElement, savedFocus: { focusId: string | null, wasFocusVisible: boolean, group?: string, index?: number } | null) => void,
  *   openModal: (config: Record<string, any>) => void,
- *   showToast: (message: string, variant?: 'info' | 'success' | 'warning' | 'error', detail?: string) => void,
- *   onOpenFile: (file: Record<string, any>) => void,
+ *   onOpenFile: (file: Record<string, any>, anchorEl: Element) => void,
  *   onStage: (payload: { worktreePath: string, all: boolean, paths?: string[] }) => Promise<void>,
  *   onUnstage: (payload: { worktreePath: string, all: boolean, paths?: string[] }) => Promise<void>,
  *   onDiscard: (payload: { worktreePath: string, allTracked: boolean, paths?: string[], untracked: boolean }) => Promise<void>,
@@ -210,8 +218,9 @@ export const computePrimaryButtonState = ({ activeRepo, changes, pendingOp, t })
  * }} 上区视图控制接口（有 DOM 读写与事件监听副作用）
  */
 export const createChangesView = (elements, deps) => {
-  const { bodyEl, totalBadgeEl, sectionTitleEl } = elements;
+  const { bodyEl, sectionTitleEl } = elements;
   const doc = bodyEl.ownerDocument;
+  const commitShortcut = /Mac|iPhone|iPad/.test(doc.defaultView.navigator.platform) ? 'Cmd+Enter' : 'Ctrl+Enter';
 
   const draftsByRepo = new Map();
   const groupCollapsed = {
@@ -236,7 +245,7 @@ export const createChangesView = (elements, deps) => {
   const textareaEl = doc.createElement('textarea');
   textareaEl.id = 'commit-message-input';
   textareaEl.className = 'gw-commit-input';
-  textareaEl.rows = 2;
+  textareaEl.rows = 1;
   textareaEl.dataset.testid = 'commit-message-input';
   textareaEl.dataset.focusId = 'commit-message';
 
@@ -251,6 +260,8 @@ export const createChangesView = (elements, deps) => {
   primaryBtnEl.className = 'gw-primary-btn';
   primaryBtnEl.dataset.testid = 'commit-primary-btn';
   primaryBtnEl.dataset.focusId = 'commit-primary';
+  const primaryLabelEl = doc.createElement('span');
+  primaryLabelEl.className = 'gw-primary-btn-label';
 
   const primaryHintEl = doc.createElement('div');
   primaryHintEl.className = 'gw-primary-hint hidden';
@@ -365,10 +376,10 @@ export const createChangesView = (elements, deps) => {
 
   primaryBtnEl.addEventListener('click', handlePrimaryAction);
 
-  const createActionButton = ({ iconName, title, focusId, danger = false, onClick }) => {
+  const createActionButton = ({ iconName, title, focusId, onClick }) => {
     const btn = doc.createElement('button');
     btn.type = 'button';
-    btn.className = danger ? 'gw-icon-btn is-danger' : 'gw-icon-btn';
+    btn.className = 'gw-icon-btn';
     btn.title = title;
     btn.setAttribute('aria-label', title);
     if (focusId) btn.dataset.focusId = focusId;
@@ -386,16 +397,16 @@ export const createChangesView = (elements, deps) => {
       items.push({ variant: 'info', icon: 'info', text: t('repo.bareNotice'), testid: 'banner-bare' });
     }
     if (activeRepo?.isDetached) {
-      items.push({ variant: 'warning', icon: 'alert', text: t('repo.detachedBanner'), testid: 'banner-detached' });
+      items.push({ variant: 'warning', icon: 'warning', text: t('repo.detachedBanner'), testid: 'banner-detached' });
     }
     if (changes?.truncated) {
-      items.push({ variant: 'warning', icon: 'alert', text: t('changes.truncatedBanner'), testid: 'banner-truncated' });
+      items.push({ variant: 'warning', icon: 'warning', text: t('changes.truncatedBanner'), testid: 'banner-truncated' });
     }
     const conflictedCount = changes?.conflicted?.length ?? 0;
     if (conflictedCount > 0) {
       items.push({
         variant: 'error',
-        icon: 'alert',
+        icon: 'error',
         text: t('changes.conflictBanner', { count: conflictedCount }),
         testid: 'banner-conflict',
       });
@@ -452,8 +463,8 @@ export const createChangesView = (elements, deps) => {
     chevron.append(deps.createIcon(isCollapsed ? 'chevronRight' : 'chevronDown'));
 
     const titleSpan = doc.createElement('span');
-    titleSpan.className = isConflicted ? 'gw-group-title is-conflict' : 'gw-group-title';
-    titleSpan.textContent = `${title} (${files.length})`;
+    titleSpan.className = 'gw-group-title';
+    titleSpan.textContent = title;
 
     toggleBtn.append(chevron, titleSpan);
     toggleBtn.addEventListener('click', () => {
@@ -470,7 +481,7 @@ export const createChangesView = (elements, deps) => {
       if (groupKey === 'staged') {
         groupActions.append(
           createActionButton({
-            iconName: 'minus',
+            iconName: 'remove',
             title: t('action.unstageAll'),
             focusId: 'group-act:staged:unstageAll',
             onClick: () => {
@@ -482,10 +493,9 @@ export const createChangesView = (elements, deps) => {
         const trackedFiles = files.filter((file) => !file.untracked);
         if (trackedFiles.length > 0) {
           const discardAllBtn = createActionButton({
-            iconName: 'undo',
+            iconName: 'discard',
             title: t('action.discardAll'),
             focusId: 'group-act:unstaged:discardAll',
-            danger: true,
             onClick: () => {
               deps.openModal({
                 title: t('modal.discardAll.title'),
@@ -508,7 +518,7 @@ export const createChangesView = (elements, deps) => {
         }
 
         const stageAllBtn = createActionButton({
-          iconName: 'plus',
+          iconName: 'add',
           title: t('action.stageAll'),
           focusId: 'group-act:unstaged:stageAll',
           onClick: () => {
@@ -521,6 +531,11 @@ export const createChangesView = (elements, deps) => {
 
       headerEl.append(groupActions);
     }
+
+    const countEl = doc.createElement('span');
+    countEl.className = 'gw-count-badge';
+    countEl.textContent = String(files.length);
+    headerEl.append(countEl);
 
     groupEl.append(headerEl);
 
@@ -543,29 +558,25 @@ export const createChangesView = (elements, deps) => {
         const fullTooltip = file.origPath ? `${file.origPath} → ${file.path}` : file.path;
         rowEl.title = fullTooltip;
 
-        const fileIcon = doc.createElement('span');
-        fileIcon.className = 'gw-file-row-icon';
-        fileIcon.setAttribute('aria-hidden', 'true');
-        fileIcon.append(deps.createIcon('file'));
-
-        const splitPathEl = deps.createSplitPath(file.path, file.origPath);
-        rowEl.append(fileIcon, splitPathEl);
+        const statusMeta = normalizeStatusMeta(file, isConflicted, t);
+        rowEl.classList.add(statusMeta.className);
+        rowEl.append(deps.createFileIcon(file.path), deps.createSplitPath(file.path, file.origPath));
 
         const rowActions = doc.createElement('div');
         rowActions.className = 'gw-row-actions';
 
         rowActions.append(
           createActionButton({
-            iconName: 'openFile',
+            iconName: 'goToFile',
             title: t('action.openFile'),
             focusId: `file-act:${groupKey}:open:${file.path}`,
-            onClick: () => deps.onOpenFile(file),
+            onClick: () => deps.onOpenFile(file, rowEl),
           }),
         );
 
         if (groupKey === 'staged') {
           const unstageBtn = createActionButton({
-            iconName: 'minus',
+            iconName: 'remove',
             title: t('action.unstage'),
             focusId: `file-act:${groupKey}:unstage:${file.path}`,
             onClick: () => {
@@ -581,10 +592,9 @@ export const createChangesView = (elements, deps) => {
         } else if (groupKey === 'unstaged') {
           const isUntracked = Boolean(file.untracked);
           const discardBtn = createActionButton({
-            iconName: isUntracked ? 'trash' : 'undo',
+            iconName: 'discard',
             title: isUntracked ? t('action.deleteUntracked') : t('action.discard'),
             focusId: `file-act:${groupKey}:discard:${file.path}`,
-            danger: isUntracked,
             onClick: () => {
               deps.openModal({
                 title: isUntracked
@@ -612,7 +622,7 @@ export const createChangesView = (elements, deps) => {
           discardBtn.dataset.testid = isUntracked ? 'file-delete-untracked-btn' : 'file-discard-btn';
 
           const stageBtn = createActionButton({
-            iconName: 'plus',
+            iconName: 'add',
             title: t('action.stage'),
             focusId: `file-act:${groupKey}:stage:${file.path}`,
             onClick: () => {
@@ -627,7 +637,6 @@ export const createChangesView = (elements, deps) => {
           rowActions.append(discardBtn, stageBtn);
         }
 
-        const statusMeta = normalizeStatusMeta(file, isConflicted, t);
         const statusBadge = doc.createElement('span');
         statusBadge.className = `gw-status-badge ${statusMeta.className}`;
         statusBadge.textContent = statusMeta.letter;
@@ -637,13 +646,13 @@ export const createChangesView = (elements, deps) => {
         rowEl.append(rowActions, statusBadge);
 
         rowEl.addEventListener('click', () => {
-          deps.onOpenFile(file);
+          deps.onOpenFile(file, rowEl);
         });
         rowEl.addEventListener('keydown', (event) => {
           if (event.target !== rowEl) return;
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
-            deps.onOpenFile(file);
+            deps.onOpenFile(file, rowEl);
           }
         });
 
@@ -660,10 +669,9 @@ export const createChangesView = (elements, deps) => {
     latestRenderState = state;
     const { activeRepo, changes, pendingOp, t } = state;
 
-    sectionTitleEl.textContent = t('section.sourceControl');
+    sectionTitleEl.textContent = t('section.changes');
 
     if (!activeRepo) {
-      totalBadgeEl.classList.add('hidden');
       bannersEl.classList.add('hidden');
       composerEl.classList.add('hidden');
       groupsEl.replaceChildren();
@@ -682,14 +690,6 @@ export const createChangesView = (elements, deps) => {
     const conflicted = changes?.conflicted ?? [];
     const staged = changes?.staged ?? [];
     const unstaged = changes?.unstaged ?? [];
-    const totalCount = conflicted.length + staged.length + unstaged.length;
-
-    if (!activeRepo.isBare && totalCount > 0) {
-      totalBadgeEl.textContent = String(totalCount);
-      totalBadgeEl.classList.remove('hidden');
-    } else {
-      totalBadgeEl.classList.add('hidden');
-    }
 
     renderBanners({ activeRepo, changes, t });
 
@@ -700,13 +700,18 @@ export const createChangesView = (elements, deps) => {
     }
 
     composerEl.classList.remove('hidden');
-    textareaEl.placeholder = t('commit.placeholder');
+    const canNameBranch = activeRepo.branch && !activeRepo.isDetached;
+    textareaEl.placeholder = canNameBranch
+      ? t('commit.placeholderWithBranch', { shortcut: commitShortcut, branch: activeRepo.branch })
+      : t('commit.placeholder', { shortcut: commitShortcut });
     textareaEl.setAttribute('aria-label', t('commit.inputAria'));
     textareaEl.disabled = pendingOp === 'commit';
     syncValidationUi(t);
 
     const btnState = computePrimaryButtonState({ activeRepo, changes, pendingOp, t });
-    primaryBtnEl.textContent = btnState.label;
+    const primaryIcon = PRIMARY_ICON_BY_ACTION[btnState.action];
+    primaryLabelEl.textContent = btnState.label;
+    primaryBtnEl.replaceChildren(...(primaryIcon ? [deps.createIcon(primaryIcon), primaryLabelEl] : [primaryLabelEl]));
     primaryBtnEl.title = btnState.title;
     primaryBtnEl.disabled = btnState.disabled;
     primaryBtnEl.dataset.actionState = btnState.action;
@@ -753,14 +758,6 @@ export const createChangesView = (elements, deps) => {
           t,
         }),
       );
-    }
-
-    if (totalCount === 0) {
-      const emptyEl = doc.createElement('div');
-      emptyEl.className = 'gw-quiet-empty';
-      emptyEl.dataset.testid = 'changes-clean-empty';
-      emptyEl.textContent = t('changes.empty');
-      fragment.append(emptyEl);
     }
 
     groupsEl.replaceChildren(fragment);

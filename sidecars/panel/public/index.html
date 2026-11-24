@@ -60,7 +60,6 @@
             <span id="changes-collapse-chevron" class="gw-chevron" aria-hidden="true"></span>
             <span id="changes-section-title" class="gw-section-title"></span>
           </button>
-          <span id="changes-total-badge" class="gw-count-pill hidden" data-testid="changes-total-badge"></span>
         </div>
         <div
           id="section-changes-body"
@@ -89,7 +88,7 @@
         data-testid="section-graph"
         aria-labelledby="graph-section-title"
       >
-        <div class="gw-section-header gw-graph-toolbar" data-testid="graph-section-header">
+        <div id="graph-section-header" class="gw-section-header gw-graph-toolbar" data-testid="graph-section-header">
           <button
             id="graph-collapse-btn"
             type="button"
@@ -137,9 +136,9 @@
     <div id="modal-dialog" class="gw-modal" data-testid="modal-dialog"></div>
   </div>
 
+  <!-- 轻提示挂载层：toast.js 在其中为每个触发控件创建固定定位的提示栈 -->
   <div
     id="toast-container"
-    class="gw-toast-container"
     data-testid="toast-container"
     aria-live="polite"
     aria-atomic="false"

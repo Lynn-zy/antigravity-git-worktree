@@ -17,6 +17,10 @@ export const PANEL_APP_MODULES = Object.freeze([
   'modules/api-client.js',
   'modules/changes-view.js',
   'modules/graph-view.js',
+  'modules/codicons.js',
+  'modules/file-icon-map.js',
+  'modules/file-icons.js',
+  'modules/toast.js',
   'app.js',
 ]);
 

@@ -14,8 +14,8 @@
 
 1. **被动跟随宿主工作区**：监听宿主 `workspace-change` 事件与本地 `.git`、工作区文件变化，自动同步当前对话 `Workspace` 命中的 `Repository`、`Worktree` 与当前分支状态。单仓库场景下顶部不占额外高度；当单个 `Workspace` 同时命中 2 个及以上 `Repository` 时，顶部显示一行紧凑仓库切换栏。
 2. **VS Code 风格上下可拖拽双区（无 Tab）**：
-   - **上区（源代码管理）**：原生提交说明输入框（支持 `Ctrl/Cmd + Enter`）、智能主按钮（工作区有改动时始终可点「提交」，未暂存时弹窗确认自动暂存全部并提交；工作区干净时随上游状态切换为「推送更改 N↑」「发布分支」或「拉取更改 N↓」）、可折叠的「暂存的更改」与「更改」文件列表（支持单文件与全部暂存、取消暂存，以及带确认护栏的放弃更改与未跟踪文件删除）。
-   - **下区（图表）**：单行紧凑顶栏（`自动 / 全部` 分支范围、`Fetch`、`Pull`、`Push / Publish`、`Refresh`、`⋯` 更多菜单）、`24px` 紧凑内联 SVG 提交拓扑树、点击提交行原地缩进展开改动文件列表、最小图表遮挡的悬浮提交详情卡。
+   - **上区（更改）**：原生提交说明输入框（支持 `Ctrl/Cmd + Enter`）、智能主按钮（工作区有改动时始终可点「提交」，未暂存时弹窗确认自动暂存全部并提交；工作区干净时随上游状态切换为「推送更改 N↑」「发布分支」或「拉取更改 N↓」）、可折叠的「暂存的更改」与「更改」文件列表（支持单文件与全部暂存、取消暂存，以及带确认护栏的放弃更改与未跟踪文件删除）。
+   - **下区（图表）**：单行紧凑顶栏（`自动 / 全部` 分支范围、转到当前提交、`Fetch`、`Pull`、`Push / Publish`、`Refresh`、`⋯` 更多菜单）、移植自 VS Code「图表」视图的 `22px` 内联 SVG 提交拓扑图、点击提交行原地展开改动文件列表、最小图表遮挡的悬浮提交详情卡。
 3. **宿主原生文件打开**：点击上区更改文件或下区展开的历史提交文件，统一调用 `window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri })` 在宿主辅助栏打开文件，插件内不自建 Diff 查看器。
 4. **外观与双语适配**：通过语义 CSS 变量与 1×1 Canvas 亮度检测同步宿主明暗主题，支持窄幅视口（`320px–560px`）零横向溢出，支持中英双语切换。
 
@@ -38,7 +38,7 @@
 /
 ├── plugin.json                         # Antigravity 插件清单
 ├── assets/
-│   └── logo.svg                        # 插件图标（轻量矢量 SVG）
+│   └── logo.svg                        # 插件图标（Codicons git-branch 字形，与无仓库空态图标一致）
 ├── sidecars/
 │   └── panel/
 │       ├── sidecar.json                # Auxiliary Pane Sidecar 清单
@@ -57,15 +57,20 @@
 │       │   └── mock-fixture.mjs        # Standalone ?fixture=mock 离线演示数据
 │       └── public/
 │           ├── index.html              # 面板文档骨架（保留 <script src="/preload.js">）
-│           ├── styles.css              # 宿主语义变量、窄幅 @container、双区与图谱样式
+│           ├── styles.css              # VS Code 源代码管理视图尺寸、宿主语义色映射与窄幅 @container
 │           ├── app.js                  # 顶层状态协调、宿主桥接、长轮询与事件绑定
+│           ├── file-icons/             # vscode-icons 文件类型 SVG（只含映射表用到的图标）与其 LICENSE
 │           └── modules/
 │               ├── api-client.js       # 统一 POST JSON 客户端（window.sidecar.fetch 回退 fetch）
 │               ├── theme.js            # MutationObserver + 1x1 Canvas 明暗检测与对比度校正
 │               ├── i18n.js             # 中英双语词典与相对/绝对时间格式化
-│               ├── graph-layout.js     # 动态 SVG 拓扑车道纯函数计算（computeGraphTopology）
+│               ├── graph-layout.js     # 泳道布局纯函数（移植自 VS Code scmHistory.ts）
+│               ├── codicons.js         # VS Code Codicons 图标路径（由源 SVG 机械转换）
+│               ├── file-icon-map.js    # 文件名、扩展名到 vscode-icons 图标的映射（机械生成）
+│               ├── file-icons.js       # 按 VS Code 图标主题顺序解析文件图标 URL
+│               ├── toast.js            # 轻提示就近定位纯函数与提示栈控制
 │               ├── popover.js          # 最小可见图表遮挡悬浮定位纯函数与详情卡控制
-│               ├── changes-view.js     # 上区源代码管理渲染与确认弹窗交互
+│               ├── changes-view.js     # 上区「更改」渲染与确认弹窗交互
 │               └── graph-view.js       # 下区提交图表、原地文件展开与顶栏交互
 ├── scripts/
 │   ├── install.ps1                     # Windows 安装脚本（默认拷贝，支持 -Link Junction 与 -Uninstall）
@@ -105,6 +110,7 @@
 | 路由类别 | HTTP 方法 | Sidecar 模式防护 | Standalone 模式防护 |
 | --- | --- | --- | --- |
 | 静态资源（`/`、`/styles.css`、`/app.js`、`/preload.js`） | `GET` | `SidecarApp.page()` 提供，绑定 `127.0.0.1` | 绑定 `127.0.0.1`，校验 `Host` 匹配 `/^(127\.0\.0\.1\|localhost)(:\d+)?$/` |
+| 文件类型图标（`/file-icons/<名称>.svg`） | `GET` | 启动时为 `public/file-icons/` 下每个 SVG 逐个注册 `SidecarApp.page()` | 按前缀匹配；名称只允许单层 `[a-z0-9_+-.]` 且以 `.svg` 结尾，其余一律 `404` |
 | 全部业务接口（`/api/*`） | 仅允许 `POST` | `SidecarApp.api(..., 'POST')` 强制校验 `X-Sidecar-Token`；前端经 `window.sidecar.fetch` 发送 | 校验 `Host` 白名单 + 强制 `Origin === http://${host}` + `Content-Type` 以 `application/json` 开头 + 请求体上限 `1 MiB` |
 
 补充约束：
@@ -404,28 +410,28 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 ## 7. 前端架构、交互与视觉规范
 
-> 正式编码阶段按 Antigravity 2.0 宿主 CSS 变量与视觉语言从零编写样式与线性 SVG 图标，不照搬原型阶段的临时外观；交互行为与布局骨架以本节及已验证原型结论为准。
+> 视觉对齐 VS Code 源代码管理视图。尺寸、间距、泳道图形与 Codicons 图标沿用 VS Code（来源与许可见 `THIRD_PARTY_NOTICES.md`），表面色取宿主 CSS 变量，宿主未注入时回退到 VS Code Dark Modern / Light Modern 默认值。交互行为与布局骨架以本节为准。
 
 ### 7.1 布局骨架与窄幅响应式（`320px–560px`）
 
 - **根结构**：全高 Flex 纵向布局（`100vh`，零页面级横向溢出），外层容器声明 `container: ag-git-pane / inline-size`。
-- **多仓顶部栏**：仅 `repositories.length >= 2` 时渲染一行 `28px` 紧凑仓库下拉条；单仓时不渲染。
+- **多仓顶部栏**：仅 `repositories.length >= 2` 时渲染一行 `30px` 紧凑仓库下拉条；单仓时不渲染。
 - **双区与中缝拖拽**：
-  - 上区 `∨ 源代码管理` 与下区 `∨ 图表` 各自独立支持点击标题栏折叠/展开。
-  - 双区均展开时中间显示 `4px` 可拖拽分隔条（指针拖动实时更新上区占比 `splitRatio`，范围 `0.15–0.85`，松手后写入 `/api/preferences`；双区各自内部 `overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain`）。
+  - 上区 `∨ 更改` 与下区 `∨ 图表` 为 `22px` 窗格标题栏，各自独立支持点击折叠/展开；下区标题栏上边框即两区分界线。
+  - 双区均展开时两区交界处有一条不占高度的 `4px` 拖拽条，悬停 `300ms` 后显示强调色（指针拖动实时更新上区占比 `splitRatio`，范围 `0.15–0.85`，松手后写入 `/api/preferences`；双区各自内部 `overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain`）。
   - 任一区折叠时，另一展开区自动撑满剩余高度。
 - **窄屏防溢出约束**：
   - Flex/Grid 文本列强制 `min-width: 0`，单行标题与路径使用 `overflow: hidden; text-overflow: ellipsis; white-space: nowrap`。
   - 长目录路径按目录/文件名拆分展示（优先保留文件名完整可见）。
-  - `@container ag-git-pane (max-width: 340px)` 下收紧左右内边距并隐藏次要辅助文字，仅保留带 `title` / `aria-label` 的紧凑图标按钮。
+  - `@container ag-git-pane (max-width: 340px)` 下隐藏多仓切换栏的分支元数据。
 
-### 7.2 上区：源代码管理（`Working Tree Changes`）
+### 7.2 上区：更改（`Working Tree Changes`）
 
 1. **特殊状态横幅**：
    - 存在 `conflicted.length > 0` 时置顶显示只读「合并冲突」告警分组，允许点击冲突文件打开宿主 `fileView` 审阅，在冲突清零前禁用提交按钮并说明原因。
    - 处于 `Detached HEAD` 时显示紧凑提示条。
 2. **提交输入区**：
-   - 使用原生 `<textarea>`（自动匹配 `preload.js` 文本编辑快捷键豁免，并保留宿主 `Cmd/Ctrl+B` 侧栏切换）。
+   - 使用原生 `<textarea>`（自动匹配 `preload.js` 文本编辑快捷键豁免，并保留宿主 `Cmd/Ctrl+B` 侧栏切换），单行起始、随内容增高至 10 行；占位文案为 `消息(Ctrl+Enter 在“<分支>”提交)`，游离 HEAD 时省略分支名。
    - 按 `repo.id` 在前端内存中保留未提交草稿（切换多仓不丢字，提交成功后清空）。
    - 监听 `keydown`：`Ctrl/Cmd + Enter` 时必须调用 `e.preventDefault()` 阻断 `preload.js` 转发，并触发智能主按钮提交逻辑。
 3. **智能主按钮状态机**（按以下优先级互斥判定）：
@@ -440,8 +446,9 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
      - 若 `ahead === 0 && behind > 0`：显示「拉取更改 N↓」（调用 `pull --ff-only`）。
      - 工作区干净且与上游同步（或无远端）：显示禁用态「提交」（或保持无待同步状态）。
 4. **可折叠文件分组与行操作**：
-   - 「暂存的更改 (N)」：悬停显示「打开文件」「取消暂存 (`−`)」；分组标题悬停显示「全部取消暂存」。
-   - 「更改 (N)」：合并未暂存与未跟踪文件，右侧显示单字母状态徽标（`M`/`A`/`D`/`R`/`U`）。悬停显示「打开文件」「放弃更改 (`↶`)」「暂存更改 (`+`)」；分组标题悬停显示「全部放弃更改」「全部暂存」。
+   - 分组行行尾显示文件数徽标；文件行依次为文件类型图标（与分组标题文字左对齐，距左缘 `30px`）、文件名、淡色目录，行尾为按 Git 装饰色着色的单字母状态（`M`/`A`/`D`/`R`/`U`/`!`），已删除文件加删除线。工作区干净时列表留空，不显示占位文案。
+   - 「暂存的更改」：悬停显示「打开文件」「取消暂存 (`−`)」；分组行悬停显示「全部取消暂存」。
+   - 「更改」：合并未暂存与未跟踪文件。悬停显示「打开文件」「放弃更改 (`↶`)」「暂存更改 (`+`)」；分组行悬停显示「全部放弃更改」「全部暂存」。
    - `MM` 双态文件同时出现在两组中，对「更改」组执行放弃更改仅调用 `git restore --worktree`，保留暂存区内容。
 5. **安全确认护栏**：
    - `Stage` / `Unstage`（单文件与全部）免确认直接执行。
@@ -451,34 +458,31 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 1. **单行紧凑顶栏**：
    - 左侧标题 `∨ 图表`（可折叠）。
-   - 右侧紧凑动作组：`自动 / 全部` 范围切换、`Fetch`（提取）、`Pull`（拉取）、`Push`（推送/发布）、`Refresh`（刷新）、`⋯`（更多菜单）。
+   - 右侧紧凑动作组：`自动 / 全部` 范围切换、转到当前提交（定位并聚焦 `HEAD` 行）、`Fetch`（提取）、`Pull`（拉取）、`Push`（推送/发布）、`Refresh`（刷新）、`⋯`（更多菜单）。
    - `⋯` 菜单固定包含 3 项：**本地提交搜索栏显隐**（按提交标题、短 SHA、作者与分支名即时过滤已加载节点，不发后端请求）、**折叠全部已展开提交**、**切换界面语言（中文 / English）**。
 2. **紧凑提交行与原地展开**：
-   - 每条提交行固定 `24px` 高度：左侧为内联 SVG 拓扑列，中间为单行截断提交标题，右侧按优先级（`HEAD` > 本地分支 > 远端分支 > Tag）内联最多 `2–3` 个紧凑 Pill，超出折叠为 `+N`，悬停行末显示文档详情图标。
-   - 点击提交行（或按 `Enter`/`Space`）调用 `/api/commit/detail` 并在该行下方原地缩进展开文件列表（按 `A/M/D/R` 标记）。展开的文件行左侧保留穿行 SVG 泳道竖线，确保拓扑连线不断裂。
-   - 列表底部在 `hasMore === true` 且未达软上限时显示「加载更多 (+200)」按钮；达到 `2000` 条软上限时显示提示引导切换为 `自动` 范围。
+   - 行结构对齐 VS Code「图表」视图。每行固定 `22px`，左侧 SVG 图形列宽度按本行泳道数计算（`11px × (泳道数 + 1)`），标题紧随其后，作者以淡色小字附在标题后，`HEAD` 行加粗；行尾为引用徽标，悬停时显示详情图标。窄栏下泳道极多时，图形列在右侧裁切，至少给标题留出 `96px`。
+   - 引用徽标按当前分支 > 上游 > 其他有色引用排序；首个有色引用显示图标与名称，其余按颜色、图标归组只显示图标（多于 1 个时带数量）。`自动` 范围只显示当前分支与上游；`全部` 范围的其余引用取所在泳道颜色。图标为当前分支 `target`、本地分支 `git-branch`、远程分支 `cloud`、标签 `tag`。
+   - 点击提交行（或按 `Enter`/`Space`）调用 `/api/commit/detail` 并在该行下方原地展开文件列表（按 `A/M/D/R` 标记）。文件行左侧绘制所属提交的输出泳道竖线，并加粗该提交向下接续第一父提交的泳道（根提交没有接续泳道，不加粗），提交行自身的下行线同步加粗；文件图标位于泳道列之后 `8px`。
+   - 列表底部在 `hasMore === true` 且未达软上限时显示「加载更多...」行（左侧泳道向下淡出）；达到 `2000` 条软上限时显示提示引导切换为 `自动` 范围。
 3. **文件打开契约（上区与下区统一）**：
    - Sidecar 模式下点击有效文件调用 `window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri: file.fileUri })`。
    - 历史提交中 `existsInWorktree === false` 的文件（例如已删除或已重命名的旧路径）以置灰样式展示、禁止点击，并在 `title` 中提示「该文件在当前工作区已不存在」。
    - Standalone 模式下无宿主 `toggleAuxPane`，点击文件显示轻量提示「文件预览仅在 Antigravity 桌面端辅助栏内可用」。
 
-### 7.4 SVG 动态拓扑车道算法（`graph-layout.js`）
+### 7.4 SVG 泳道布局（`graph-layout.js`）
 
-采用纯函数 `computeGraphTopology(commits)` 对当前可见提交数组逐行计算车道结构，不硬编码主干通道：
+逐段移植 VS Code `scmHistory.ts` 的 `toISCMHistoryItemViewModelArray`、`renderSCMHistoryItemGraph` 与 `renderSCMHistoryGraphPlaceholder`，以纯函数输出图形描述，由 `graph-view.js` 生成 SVG 节点。
 
-1. 维护当前活跃车道槽位数组 `activeLanes`（每槽保存该车道正在等待匹配的 `expectedSha` 与分配的颜色索引 `colorIndex`）。
-2. 处理第 `i` 条提交 `commit` 时：
-   - **定位自有车道**：查找 `activeLanes` 中所有 `expectedSha === commit.sha` 的槽位；若存在多个（多条分支指向同一祖先，汇入该节点），取最左侧槽位作为 `ownLane`，其余重复槽位记为 `exitingLanes`（本行上半段收束至 `ownLane` 并释放）。若不存在（新的分支顶端），在最左空闲槽位（或数组末尾）分配 `ownLane`。
-   - **记录上半段与穿行车道**：`incomingOnOwnLane` 标记 `ownLane` 在进入本行前是否已有上游连线（顶端提交为 `false`，中间/祖先提交为 `true`）；`passThroughLanes` 记录除 `ownLane` 与 `exitingLanes` 外所有持续向下穿行的活跃车道（提交展开文件子行时，直接按下一行前活跃车道绘制垂直延伸线，保证连续无断口）。
-   - **处理父提交与下半段出边（`outgoingEdges`）**：
-     - 仅跟踪**存在于当前可见 `commits` 集合中**的父提交（防止 `自动` 模式或分页边界产生指向未知节点的悬空线头，同时在分页截断边界允许单条继续向下的淡出短尾）。
-     - 第一个可见父提交优先沿用 `ownLane`（若已有其他车道在等待该父提交，则从 `ownLane` 画合并弧线汇入该既有车道并释放 `ownLane`）。
-     - 其余可见父提交（Merge Commit 的第二及更多父提交）若已有车道在等待则直接连曲线汇入，否则分配新空闲车道并记入 `outgoingEdges` 绘出三阶贝塞尔分叉曲线。
-3. **可视宽度限制**：泳道间距 `12px`、圆点半径 `3.5px`（`HEAD` 双环 `4.5px`）、曲线线宽 `1.6px`，最大泳道槽位宽度上限 `72px`（6 列，超出时横向压缩间距或折叠边缘槽位），保障 `320px` 窄栏下提交标题可读。
+1. **泳道模型**：每行有输入、输出两组泳道，每条泳道以它等待的提交 sha 标识，上一行的输出就是下一行的输入。处理一条提交时，输入中第一条等待它的泳道改为等待第一父提交，其余等待它的泳道在本行收拢到圆点；其余父提交依次追加到输出末尾。泳道数组始终紧凑，某条泳道结束后右侧泳道左移一列。
+2. **颜色**：当前分支引用所在泳道固定蓝色（`--gw-graph-ref`），上游引用所在泳道固定紫色（`--gw-graph-remote-ref`），其余新泳道在 `--gw-graph-1..5` 五色间轮换。
+3. **图形**：泳道间距 `11px`、线宽 `1px`；泳道左移用两段半径 `5px` 的圆角，合并与收拢用半径 `11px` 的圆弧。普通提交为半径 `5px` 的实心圆，合并提交为同心圆，`HEAD` 为空心圆环；圆点用与行背景同色的 `2px` 描边切开穿过的连线。
+4. **列表边界**：父提交不在已加载列表内时，泳道一直延伸到列表末尾，由「加载更多」行的淡出竖线承接。本地搜索时只连接结果集内部的父子关系。
+5. **与 VS Code 原实现的差异**：根提交处保留其余泳道（原实现会丢弃，多根仓库会断线）；未实现 Incoming / Outgoing Changes 虚拟节点。
 
 ### 7.5 最小遮挡悬浮提交详情卡（`popover.js`）
 
-鼠标悬停提交行（延迟 `260ms` 打开，移入卡片区域保活，移出 `180ms` 关闭）或点击行末文档图标（固定开启直至点击外部或按 `Escape`）显示 VS Code 风格提交详情卡，包含：作者名、相对时间与本地绝对时间（如 `1 天前 (2026-11-20 11:17)`）、共同创作者列表（若有）、完整提交正文 `%B` 与一键复制完整 SHA 按钮。
+鼠标悬停提交行（延迟 `260ms` 打开，移入卡片区域保活，移出 `180ms` 关闭）或点击行末文档图标（固定开启直至点击外部或按 `Escape`）显示 VS Code 风格提交详情卡，自上而下为：作者名与相对、绝对时间（如 `1 天前 (2026-11-20 11:17)`）、提交标题与完整正文 `%B`、共同创作者列表（若有）、引用列表，以及短 SHA 与复制完整 SHA 按钮。
 
 定位由纯函数 `computeMinOcclusionPopoverStyle(anchorRect, cardSize, graphContentRect, viewportRect)` 计算：
 
@@ -491,7 +495,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 若上下两个可行位置的 `occludedGraphPx` 相等（如悬停在图表区中部），默认选**下方**。
    - 若某一方向在 `iframe` 视口内空间不足，自动翻转至另一方向并严格钳制在 `viewportRect` 内，确保内容可内部纵向滚动且绝不被 `iframe` 裁切。
 
-### 7.6 主题、字体、快捷键与无障碍
+### 7.6 主题、字体、图标、提示、快捷键与无障碍
 
 1. **纯语义 CSS 变量与 `!important` 覆盖**：
    - 仅消费宿主语义变量（`--background`、`--card`、`--secondary`、`--muted`、`--accent`、`--foreground`、`--muted-foreground`、`--placeholder`、`--border`、`--primary`、`--primary-foreground`、`--error`、`--ring`、`--font-family`、`--editor-font-family`），并为 `--success`、`--warning` 与 `--vscode-editor-font-family` / `--font-mono` 提供本地亮暗双态回退。
@@ -504,7 +508,16 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 全局快捷键（如在图表列表内用 `ArrowUp`/`ArrowDown`/`Enter` 浏览）显式跳过表单控件 `input, select, textarea, button, [contenteditable]`。
    - 隐藏鼠标焦点框，为键盘操作统一提供 `:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }`（贴边与溢出裁切容器内改用 `outline-offset: -2px`）。
    - 列表局部重渲染前记录 `:focus-visible` 元素标识，重渲染后恢复焦点（`focus({ preventScroll: true })`）。
-4. **双语 i18n**：
+4. **文件类型图标**：
+   - 上区文件行与图表展开的文件行使用 vscode-icons 图标，以 `<img src="/file-icons/<名称>.svg">` 按需加载。
+   - 匹配顺序与 VS Code 文件图标主题一致：完整文件名优先，其次从最长到最短的多段扩展名（如 `d.ts` 先于 `ts`），都不命中时用默认文件图标；不区分大小写。
+   - 浅色主题下，有浅色变体的图标改用 `file_type_light_*.svg`；主题切换时就地替换已渲染图标的 `src`。
+5. **就近轻提示**：
+   - 位置在提示出现时按触发控件计算。提示贴在控件下方；下方剩余空间不足 `96px` 时放到上下两侧中空间较大的一侧；控件不可见（折叠、滚出视口或已移除）时停靠面板底部。提示存续期间不随列表滚动移动。
+   - 提示条除关闭按钮外点击穿透，压在列表行上时不妨碍继续操作这些行。
+   - 上区操作（提交、暂存、取消暂存、放弃、发布、推送、拉取）锚定提交按钮；图表顶栏操作（范围切换、提取、拉取、推送、刷新）锚定图表标题栏；打开文件、复制 SHA 等锚定被点击的行或按钮；后台同步失败等无明确来源的提示停靠底部。
+6. **禁用态**：所有禁用按钮悬停时显示 `not-allowed` 光标。
+7. **双语 i18n**：
    - 内置 `zh-CN` 与 `en` 完整词典，默认 `locale: 'auto'` 按 `navigator.language` 匹配（`zh` 前缀用中文，其余用英文）；在 `⋯` 菜单中切换后持久化保存。
 
 ## 8. 插件清单、安装脚本与验证体系

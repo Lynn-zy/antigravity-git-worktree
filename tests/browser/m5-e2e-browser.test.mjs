@@ -879,12 +879,18 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { description: 'switch back to repoA' },
   );
 
-  // 验证超过 3 个 ref 标签折叠出 +N pill
-  const moreRefPillText = await page.evaluate(`(() => {
+  // 验证 auto 范围引用徽标：当前分支带名称，上游只显示云图标，标签等无关引用不显示
+  const autoBadges = await page.evaluate(`(() => {
     const row = document.querySelector('[data-testid="commit-row"][data-commit-sha="${fixtures.taggedSha}"]');
-    return row?.querySelector('.gw-ref-pill.is-more')?.textContent ?? '';
+    return [...row.querySelectorAll('.gw-ref-badge')].map((badge) => ({
+      icon: [...badge.querySelector('.gw-ref-badge-icon').classList].find((name) => name.startsWith('is-')),
+      name: badge.querySelector('.gw-ref-badge-name')?.textContent ?? null,
+    }));
   })()`);
-  assert.match(moreRefPillText, /^\+\d+$/, '超过 3 个 ref 标签应折叠显示 +N');
+  assert.deepEqual(autoBadges, [
+    { icon: 'is-target', name: 'main' },
+    { icon: 'is-cloud', name: null },
+  ]);
 
   // 验证双区分隔条可拖拽、上下折叠切换正常
   const beforeDrag = await page.evaluate(`(() => ({
@@ -1015,11 +1021,22 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   await page.clickSelector('[data-testid="modal-confirm-btn"]');
 
   await page.waitFor(
-    'document.querySelector("[data-testid=changes-clean-empty]") && document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "push"',
+    'document.querySelectorAll("[data-testid^=change-file-]").length === 0 && document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "push"',
     { description: 'post-commit clean state and Push 1 button' },
   );
   const pushBtnText = await page.evaluate('document.querySelector("[data-testid=commit-primary-btn]").textContent');
   assert.equal(pushBtnText, '推送更改 1↑');
+
+  // 提交成功提示就近显示：紧贴在提交按钮下方 4px，而不是停靠面板底部
+  await page.waitFor('Boolean(document.querySelector("[data-testid=toast-success]"))', {
+    description: 'commit success toast',
+  });
+  const commitToastGap = await page.evaluate(`(() => {
+    const toastTop = document.querySelector('[data-testid="toast-success"]').getBoundingClientRect().top;
+    const buttonBottom = document.querySelector('[data-testid="commit-primary-btn"]').getBoundingClientRect().bottom;
+    return Math.round(toastTop - buttonBottom);
+  })()`);
+  assert.equal(commitToastGap, 4, '提交成功提示应紧贴在提交按钮下方');
   assert.equal(await execGit(['log', '-1', '--pretty=%s'], fixtures.repoA), 'feat: 浏览器端到端自动暂存提交');
 
   // 点击推送更改 1↑ -> 真实推到 Bare 远端并恢复干净禁用态
@@ -1044,8 +1061,8 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     const deletedRow = fileRows.find((r) => r.dataset.filePath === 'legacy/已删除文件.txt');
     const existingRow = fileRows.find((r) => r.dataset.filePath === '目录/中文文件.txt');
     const lineCountsPerRow = fileRows.map((row) => {
-      const lines = [...row.querySelectorAll('svg.gw-graph-svg line')];
-      const continuous = lines.every((ln) => ln.getAttribute('y1') === '0' && ln.getAttribute('y2') === '22' && ln.getAttribute('x1') === ln.getAttribute('x2'));
+      const lines = [...row.querySelectorAll('svg.gw-graph-placeholder path')];
+      const continuous = lines.every((ln) => /^M \\d+ 0 V 22$/.test(ln.getAttribute('d')));
       return { count: lines.length, continuous };
     });
     return {
@@ -1067,7 +1084,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   // 验证提交列表项及可见分支标签不挂原生 title，避免 hover 弹出原生文字 tooltip 遮挡悬浮卡片
   const nativeTooltipCheck = await page.evaluate(`(() => {
     const rowsWithTitle = [...document.querySelectorAll('[data-testid="commit-row"]')].filter((el) => el.hasAttribute('title')).length;
-    const pillsWithTitle = [...document.querySelectorAll('[data-testid="commit-row"] .gw-ref-pill:not(.is-more)')].filter((el) => el.hasAttribute('title')).length;
+    const pillsWithTitle = [...document.querySelectorAll('[data-testid="commit-row"] .gw-ref-badge')].filter((el) => el.hasAttribute('title')).length;
     return { rowsWithTitle, pillsWithTitle };
   })()`);
   assert.deepEqual(nativeTooltipCheck, { rowsWithTitle: 0, pillsWithTitle: 0 });
@@ -1126,7 +1143,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       `悬浮详情卡宽度应随侧边栏自适应: actual=${placementInfo.width}, expected=${placementInfo.expectedMaxWidth}`,
     );
     assert.equal(placementInfo.scrollTop, 0, '打开提交详情卡时应位于顶部');
-    assert.equal(placementInfo.headerVisible, true, '提交详情卡顶部 SHA 与复制操作栏必须完整可见');
+    assert.equal(placementInfo.headerVisible, true, '提交详情卡顶部作者与关闭操作栏必须完整可见');
     assert.equal(placementInfo.fullText.includes('无更多提交正文'), false, '无提交正文时不得显示占位文案');
     if (expectBody === false) {
       assert.equal(placementInfo.hasBodyEl, false, '无提交正文时不得渲染 .gw-popover-body');
@@ -1175,6 +1192,20 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   });
   const allCount = await page.evaluate('document.querySelectorAll("[data-testid=commit-row]").length');
   assert.ok(allCount > autoCount);
+  // 全部范围下 4 个标签：首个带名称单独显示，其余 3 个同色同图标归并为一个带数量的徽标
+  const allScopeTagBadges = await page.evaluate(`(() => {
+    const row = document.querySelector('[data-testid="commit-row"][data-commit-sha="${fixtures.taggedSha}"]');
+    return [...row.querySelectorAll('.gw-ref-badge')]
+      .filter((badge) => badge.querySelector('.gw-ref-badge-icon.is-tag'))
+      .map((badge) => ({
+        name: badge.querySelector('.gw-ref-badge-name')?.textContent ?? null,
+        count: badge.querySelector('.gw-ref-badge-count')?.textContent ?? null,
+      }));
+  })()`);
+  assert.equal(allScopeTagBadges.length, 2);
+  assert.match(allScopeTagBadges[0].name, /^v1\.0\.[0-3]$/);
+  assert.equal(allScopeTagBadges[0].count, null);
+  assert.deepEqual(allScopeTagBadges[1], { name: null, count: '3' });
   await page.clickSelector('[data-testid="graph-scope-btn"]');
   await page.waitFor('!document.body.innerText.includes("仅全部视图可见实验提交")', {
     description: 'auto scope hides side branch commit',
@@ -1205,7 +1236,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     graphTitle: document.getElementById('graph-section-title').textContent,
     scopeText: document.querySelector('[data-testid="graph-scope-btn"]').textContent,
   })`);
-  assert.deepEqual(enLabels, { changesTitle: 'Source Control', graphTitle: 'Graph', scopeText: 'Auto' });
+  assert.deepEqual(enLabels, { changesTitle: 'Changes', graphTitle: 'Graph', scopeText: 'Auto' });
 
   await page.clickSelector('[data-testid="graph-more-btn"]');
   await page.clickSelector('[data-testid="graph-menu-switch-language"]');
@@ -1475,6 +1506,12 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     hasSidecar: true,
     localStorageBlocked: true,
   });
+
+  // 文件类型图标在 opaque srcdoc iframe 中经 <base href> 解析并真实加载
+  await page.waitFor(
+    '(() => { const icons = [...document.querySelectorAll("img.gw-file-icon")]; return icons.length > 0 && icons.every((img) => img.complete && img.naturalWidth > 0); })()',
+    { sessionId: iframeSessionId, description: 'file type icons load inside opaque iframe' },
+  );
 
   // 通过 postMessage 测试 theme-change 切换到暗色主题（含低对比度 --error 验证 WCAG 4.5:1 校正）并截图
   await page.evaluate(`(() => {

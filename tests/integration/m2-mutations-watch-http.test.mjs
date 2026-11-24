@@ -930,6 +930,16 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
   const rawModuleRes = await fetch(`${server.url}/modules/i18n.js`);
   assert.equal(rawModuleRes.status, 404);
 
+  // 文件类型图标只按单层 *.svg 文件名提供，编码后的路径穿越、非 SVG 与不存在的文件一律 404
+  const iconRes = await fetch(`${server.url}/file-icons/file_type_js.svg`);
+  assert.equal(iconRes.status, 200);
+  assert.equal(iconRes.headers.get('content-type'), 'image/svg+xml');
+  assert.match(await iconRes.text(), /<svg\b/);
+  for (const badName of ['%2e%2e%2fmain.mjs', '..%2F..%2Fmain.mjs', 'LICENSE', 'missing_icon.svg']) {
+    const badRes = await fetch(`${server.url}/file-icons/${badName}`);
+    assert.equal(badRes.status, 404, `/file-icons/${badName} must be 404`);
+  }
+
   // 6) ?fixture=mock 完整提交流转（多分支 Merge、中文路径、MM、未跟踪、领先上游）
   const mockSnap = await postApi(server.url, '/api/snapshot?fixture=mock', {});
   assert.equal(mockSnap.response.status, 200);
@@ -1017,6 +1027,12 @@ test('集成测试：Standalone 安全边界、GET /preload.js、?fixture=mock �
       assert.match(htmlText, /<script defer src="\/app\.js\?v=[a-f0-9]{12}"><\/script>/);
     }
   }
+  const iconPage = registeredPages.get('/file-icons/file_type_js.svg');
+  assert.ok(iconPage, 'Sidecar mode must register file icon page routes');
+  const iconResp = await iconPage();
+  assert.equal(iconResp.status, 200);
+  assert.equal(iconResp.contentType, 'image/svg+xml');
+  assert.equal(registeredPages.has('/file-icons/LICENSE'), false);
   for (const apiRoute of API_ROUTES) {
     const entry = registeredApis.get(apiRoute);
     assert.ok(entry, `Missing Sidecar API route: ${apiRoute}`);

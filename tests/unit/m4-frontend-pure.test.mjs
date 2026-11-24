@@ -14,13 +14,17 @@ import {
 } from '../../sidecars/panel/public/modules/api-client.js';
 
 import {
-  GRAPH_ROW_HEIGHT,
-  LANE_STEP,
-  MAX_LANES,
+  SWIMLANE_HEIGHT,
+  SWIMLANE_WIDTH,
   LANE_COLORS,
-  computeGraphTopology,
-  computeGraphMetrics,
-  buildCurvePath,
+  HISTORY_ITEM_REF_COLOR,
+  HISTORY_ITEM_REMOTE_REF_COLOR,
+  buildRefColorMap,
+  toHistoryItemViewModels,
+  computeHistoryItemGraph,
+  computeCommitFilesPlaceholder,
+  getHistoryItemIndex,
+  groupHistoryItemBadges,
 } from '../../sidecars/panel/public/modules/graph-layout.js';
 
 import {
@@ -51,153 +55,177 @@ import {
   formatAbsoluteTime,
 } from '../../sidecars/panel/public/modules/i18n.js';
 
+import { resolveFileIconUrl } from '../../sidecars/panel/public/modules/file-icons.js';
+import {
+  FILE_ICON_NAMES,
+  FILE_ICON_EXTENSIONS,
+  FILE_ICON_LIGHT_VARIANTS,
+} from '../../sidecars/panel/public/modules/file-icon-map.js';
+import { computeToastPlacement } from '../../sidecars/panel/public/modules/toast.js';
+import fs from 'node:fs';
+
 /**
- * 验证图谱拓扑在任意相邻提交行（含原地展开文件子行）之间 100% 连续无断口，
- * 且每条可见父提交关系都在 outgoingEdges 中存在精确对应。
+ * 解析泳道 path（仅含 M/V/H/A 绝对指令），收集落在行顶（y=0）与行底（y=行高）的连线端点及其颜色。
  */
-const assertGraphContinuity = (commits, topology) => {
-  assert.equal(topology.length, commits.length);
-  const visibleShas = new Set(commits.map((commit) => commit.sha));
-
-  for (let rowIndex = 0; rowIndex < commits.length; rowIndex += 1) {
-    const commit = commits[rowIndex];
-    const row = topology[rowIndex];
-
-    assert.equal(row.sha, commit.sha);
-
-    // 验证所有可见父提交均出现在 outgoingEdges 中，不可见父提交绝不占槽
-    const visibleParents = (commit.parents ?? []).filter((parentSha) => visibleShas.has(parentSha));
-    const hiddenCount = (commit.parents ?? []).length - visibleParents.length;
-    assert.equal(row.hasHiddenParent, hiddenCount > 0);
-    assert.deepEqual(
-      new Set(row.outgoingEdges.map((edge) => edge.targetSha)),
-      new Set(visibleParents),
-    );
-    for (const edge of row.outgoingEdges) {
-      assert.equal(edge.fromLane, row.ownLane);
-      assert.ok(visibleShas.has(edge.targetSha), `不应为不可见父提交 ${edge.targetSha} 建立出边`);
-    }
-
-    // 验证本行底部所有连线出口（穿行线 + outgoingEdges 终点）与 passThroughLanesAfter 完全一致
-    const bottomSockets = new Map();
-    for (const laneItem of row.passThroughLanesBefore) {
-      bottomSockets.set(laneItem.lane, laneItem.colorIndex);
-    }
-    for (const edge of row.outgoingEdges) {
-      if (!bottomSockets.has(edge.toLane)) {
-        bottomSockets.set(edge.toLane, edge.colorIndex);
+const collectBoundarySockets = (shapes) => {
+  const top = new Map();
+  const bottom = new Map();
+  for (const shape of shapes) {
+    if (shape.type !== 'path') continue;
+    const tokens = shape.d.trim().split(/\s+/);
+    let x = 0;
+    let y = 0;
+    for (let index = 0; index < tokens.length;) {
+      const command = tokens[index];
+      if (command === 'M') {
+        x = Number(tokens[index + 1]);
+        y = Number(tokens[index + 2]);
+        index += 3;
+      } else if (command === 'V') {
+        y = Number(tokens[index + 1]);
+        index += 2;
+      } else if (command === 'H') {
+        x = Number(tokens[index + 1]);
+        index += 2;
+      } else if (command === 'A') {
+        x = Number(tokens[index + 6]);
+        y = Number(tokens[index + 7]);
+        index += 8;
+      } else {
+        throw new Error(`unexpected path command ${command} in ${shape.d}`);
       }
-    }
-    const afterSockets = new Map(
-      row.passThroughLanesAfter.map((laneItem) => [laneItem.lane, laneItem.colorIndex]),
-    );
-    assert.deepEqual(
-      new Set(bottomSockets.keys()),
-      new Set(afterSockets.keys()),
-      `行 ${commit.sha} 底部出口与 passThroughLanesAfter 车道不一致`,
-    );
-
-    // 验证相邻行边界（含提交展开文件列表行的垂直穿行线）无缝衔接
-    if (rowIndex + 1 < commits.length) {
-      const nextRow = topology[rowIndex + 1];
-      const nextTopSockets = new Map();
-      if (nextRow.incomingOnOwnLane) {
-        nextTopSockets.set(nextRow.ownLane, nextRow.ownColorIndex);
-      }
-      for (const exiting of nextRow.exitingLanes) {
-        nextTopSockets.set(exiting.lane, exiting.colorIndex);
-      }
-      for (const pass of nextRow.passThroughLanesBefore) {
-        nextTopSockets.set(pass.lane, pass.colorIndex);
-      }
-
-      assert.deepEqual(
-        afterSockets,
-        nextTopSockets,
-        `行 ${commit.sha} 底部到行 ${commits[rowIndex + 1].sha} 顶部之间存在断口或颜色不匹配`,
-      );
+      if (y === 0) top.set(x, shape.color);
+      if (y === SWIMLANE_HEIGHT) bottom.set(x, shape.color);
     }
   }
+  return { top, bottom };
 };
+
+const laneX = (laneIndex) => SWIMLANE_WIDTH * (laneIndex + 1);
+
+const buildViewModels = (commits, { headSha = null, currentRefId = null, remoteRefId = null, scope = 'auto' } = {}) =>
+  toHistoryItemViewModels(commits, {
+    headSha,
+    currentRefId,
+    remoteRefId,
+    colorMap: buildRefColorMap({ currentRefId, remoteRefId, scope, commits }),
+  });
+
+/**
+ * 断言相邻提交行在行边界处的连线端点位置与颜色完全一致（无断口、无悬空线头），
+ * 且每行底部端点恰好对应它的输出泳道，最后一行的泳道继续向下延伸给「加载更多」行。
+ */
+const assertGraphContinuity = (viewModels) => {
+  const sockets = viewModels.map((viewModel) => collectBoundarySockets(computeHistoryItemGraph(viewModel).shapes));
+  viewModels.forEach((viewModel, rowIndex) => {
+    const expectedBottom = new Map(viewModel.outputSwimlanes.map((node, laneIndex) => [laneX(laneIndex), node.color]));
+    assert.deepEqual(sockets[rowIndex].bottom, expectedBottom, `行 ${viewModel.commit.sha} 底部端点与输出泳道不一致`);
+    if (rowIndex + 1 < viewModels.length) {
+      assert.deepEqual(
+        sockets[rowIndex + 1].top,
+        sockets[rowIndex].bottom,
+        `行 ${viewModel.commit.sha} 与行 ${viewModels[rowIndex + 1].commit.sha} 之间存在断口或颜色不匹配`,
+      );
+    }
+  });
+};
+
+const findCircles = (viewModel) => computeHistoryItemGraph(viewModel).shapes.filter((shape) => shape.type === 'circle');
 
 test('纯模块在无 window/document 的 Node.js 环境下直接导入且无顶层副作用', () => {
   assert.equal(typeof globalThis.window, 'undefined');
   assert.equal(typeof globalThis.document, 'undefined');
-  assert.equal(GRAPH_ROW_HEIGHT, 24);
-  assert.equal(LANE_STEP, 12);
-  assert.equal(MAX_LANES, 6);
-  assert.equal(LANE_COLORS.length, 6);
-  for (const color of LANE_COLORS) {
-    assert.match(color, /^var\(--lane-\d,\s*#[0-9a-f]{6}\)$/i);
-  }
+  assert.equal(SWIMLANE_HEIGHT, 22);
+  assert.equal(SWIMLANE_WIDTH, 11);
+  assert.deepEqual(LANE_COLORS, [
+    'var(--gw-graph-1)',
+    'var(--gw-graph-2)',
+    'var(--gw-graph-3)',
+    'var(--gw-graph-4)',
+    'var(--gw-graph-5)',
+  ]);
 });
 
-test('graph-layout: 线性提交与边界空输入', () => {
-  assert.deepEqual(computeGraphTopology([]), []);
+test('graph-layout: 线性提交单泳道、行宽与 HEAD 空心圆点', () => {
+  assert.deepEqual(buildViewModels([]), []);
 
   const commits = [
     { sha: 'c3', parents: ['c2'] },
     { sha: 'c2', parents: ['c1'] },
     { sha: 'c1', parents: [] },
   ];
-  const topology = computeGraphTopology(commits);
-  assertGraphContinuity(commits, topology);
+  const viewModels = buildViewModels(commits, { headSha: 'c3' });
+  assertGraphContinuity(viewModels);
 
-  assert.equal(topology[0].ownLane, 0);
-  assert.equal(topology[0].incomingOnOwnLane, false);
-  assert.equal(topology[1].incomingOnOwnLane, true);
-  assert.equal(topology[2].incomingOnOwnLane, true);
-  assert.deepEqual(topology[2].outgoingEdges, []);
-  assert.deepEqual(topology[2].passThroughLanesAfter, []);
-});
-
-test('graph-layout: 合并分支（含主干靠左保持与 exitingLanes 收束）连续无断口', () => {
-  // 场景 A：经典 Merge Commit 后先遍历 main 新提交再遍历 feature 分支
-  const commitsMainFirst = [
-    { sha: 'm2', parents: ['m1', 'f1'] },
-    { sha: 'm1', parents: ['m0'] },
-    { sha: 'f1', parents: ['m0'] },
-    { sha: 'm0', parents: [] },
-  ];
-  const topoA = computeGraphTopology(commitsMainFirst);
-  assertGraphContinuity(commitsMainFirst, topoA);
-  assert.equal(topoA[0].isMerge, true);
-  assert.equal(topoA[0].outgoingEdges.length, 2);
-  assert.deepEqual(
-    topoA[0].passThroughLanesAfter.map((item) => item.lane),
-    [0, 1],
-  );
-  // f1 合并回早已在 lane 0 等待的 m0，立即释放 lane 1
-  assert.deepEqual(topoA[2].outgoingEdges, [
-    {
-      fromLane: 1,
-      toLane: 0,
-      targetSha: 'm0',
-      colorIndex: topoA[2].ownColorIndex,
-      color: topoA[2].ownColor,
-      isMerge: false,
-    },
+  for (const viewModel of viewModels) {
+    assert.equal(computeHistoryItemGraph(viewModel).width, 22, '单泳道行宽为 11 × (1 + 1)');
+    assert.equal(getHistoryItemIndex(viewModel), 0);
+  }
+  assert.deepEqual(viewModels.map((viewModel) => viewModel.kind), ['HEAD', 'node', 'node']);
+  assert.deepEqual(findCircles(viewModels[0]).map((circle) => [circle.r, circle.strokeWidth, circle.fill]), [
+    [7, 2, viewModels[0].outputSwimlanes[0].color],
+    [2, 4, undefined],
   ]);
-  assert.deepEqual(topoA[2].passThroughLanesAfter.map((item) => item.lane), [0]);
-
-  // 场景 B：git log --topo-order 先遍历侧分支 f1 再遍历 m1，测试主线留在 lane 0 且 m0 通过 exitingLanes 收束 lane 1
-  const commitsSideFirst = [
-    { sha: 'm2', parents: ['m1', 'f1'] },
-    { sha: 'f1', parents: ['m0'] },
-    { sha: 'm1', parents: ['m0'] },
-    { sha: 'm0', parents: [] },
-  ];
-  const topoB = computeGraphTopology(commitsSideFirst);
-  assertGraphContinuity(commitsSideFirst, topoB);
-  assert.equal(topoB[1].ownLane, 1);
-  assert.equal(topoB[2].ownLane, 0);
-  assert.equal(topoB[3].ownLane, 0);
-  assert.equal(topoB[3].exitingLanes.length, 1);
-  assert.equal(topoB[3].exitingLanes[0].lane, 1);
-  assert.equal(topoB[3].exitingLanes[0].toLane, 0);
+  assert.deepEqual(findCircles(viewModels[1]).map((circle) => [circle.cx, circle.cy, circle.r]), [[11, 11, 5]]);
+  assert.deepEqual(viewModels[2].outputSwimlanes, []);
 });
 
-test('graph-layout: 交叉多分支、章鱼合并、多独立根节点与复用释放槽位连续性', () => {
+test('graph-layout: 合并提交画同心圆与圆弧拐入，侧分支在共同祖先处以圆弧收拢', () => {
+  for (const commits of [
+    [
+      { sha: 'm2', parents: ['m1', 'f1'] },
+      { sha: 'm1', parents: ['m0'] },
+      { sha: 'f1', parents: ['m0'] },
+      { sha: 'm0', parents: [] },
+    ],
+    [
+      { sha: 'm2', parents: ['m1', 'f1'] },
+      { sha: 'f1', parents: ['m0'] },
+      { sha: 'm1', parents: ['m0'] },
+      { sha: 'm0', parents: [] },
+    ],
+  ]) {
+    const viewModels = buildViewModels(commits);
+    assertGraphContinuity(viewModels);
+
+    const mergeGraph = computeHistoryItemGraph(viewModels[0]);
+    assert.ok(
+      mergeGraph.shapes.some((shape) => shape.d === 'M 11 11 A 11 11 0 0 1 22 22 M 11 11 H 11'),
+      '第二父提交从圆点水平引出并以半径 11 的圆弧拐入右侧泳道',
+    );
+    assert.deepEqual(findCircles(viewModels[0]).map((circle) => circle.r), [6, 3], '合并节点为外 6 内 3 的同心圆');
+    assert.equal(mergeGraph.width, 33);
+
+    const rootGraph = computeHistoryItemGraph(viewModels[3]);
+    assert.ok(
+      rootGraph.shapes.some((shape) => shape.d === 'M 22 0 A 11 11 0 0 1 11 11 H 11'),
+      '等待同一祖先的右侧泳道以圆弧收拢到圆点',
+    );
+  }
+});
+
+test('graph-layout: 泳道结束后右侧泳道以两段半径 5 的圆角左移', () => {
+  const commits = [
+    { sha: 'h1', parents: ['a1', 'b1'] },
+    { sha: 'h2', parents: ['c1'] },
+    { sha: 'b1', parents: ['a1'] },
+    { sha: 'a1', parents: ['z'] },
+    { sha: 'c1', parents: ['z'] },
+    { sha: 'z', parents: [] },
+  ];
+  const viewModels = buildViewModels(commits);
+  assertGraphContinuity(viewModels);
+
+  assert.equal(getHistoryItemIndex(viewModels[1]), 2, '不在已有泳道上的新分支提交追加到最右侧');
+  assert.ok(
+    computeHistoryItemGraph(viewModels[3]).shapes.some(
+      (shape) => shape.d === 'M 33 0 V 6 A 5 5 0 0 1 28 11 H 27 A 5 5 0 0 0 22 16 V 22',
+    ),
+    'a1 收拢后 c1 泳道从第 3 列平移到第 2 列',
+  );
+});
+
+test('graph-layout: 章鱼合并与多个独立根提交的泳道连续，根提交不截断其他泳道', () => {
   const commits = [
     { sha: 'oct', parents: ['a2', 'b1', 'c1'] },
     { sha: 'tip-independent', parents: ['b1'] },
@@ -209,59 +237,121 @@ test('graph-layout: 交叉多分支、章鱼合并、多独立根节点与复用
     { sha: 'orphan-tip', parents: ['orphan-root'] },
     { sha: 'orphan-root', parents: [] },
   ];
-  const topology = computeGraphTopology(commits);
-  assertGraphContinuity(commits, topology);
+  assertGraphContinuity(buildViewModels(commits));
 
-  // 确认独立分支末端也未发生车道碰撞
-  assert.notEqual(topology[1].ownLane, topology[0].ownLane);
-  // 确认独立第二个历史根节点不会和前面的根连线，且重新复用最左槽位 0
-  assert.equal(topology[7].ownLane, 0);
-  assert.equal(topology[7].incomingOnOwnLane, false);
-  assert.notEqual(topology[7].ownColorIndex, topology[0].ownColorIndex);
-  assert.equal(topology[8].incomingOnOwnLane, true);
-});
-
-test('graph-layout: auto 过滤视图与分页截断对不可见父提交不画悬空线头', () => {
-  const autoCommits = [
-    { sha: 'head-2', parents: ['head-1', 'hidden-topic'] },
-    { sha: 'head-1', parents: ['hidden-ancestor'] },
+  const interleavedRoots = [
+    { sha: 't1', parents: ['r1'] },
+    { sha: 't2', parents: ['r2'] },
+    { sha: 'r1', parents: [] },
+    { sha: 'r2', parents: [] },
   ];
-  const topology = computeGraphTopology(autoCommits);
-  assertGraphContinuity(autoCommits, topology);
-
-  assert.equal(topology[0].hasHiddenParent, true);
-  assert.equal(topology[0].outgoingEdges.length, 1);
-  assert.equal(topology[0].outgoingEdges[0].targetSha, 'head-1');
-  assert.deepEqual(topology[0].passThroughLanesAfter.map((item) => item.lane), [0]);
-
-  assert.equal(topology[1].hasHiddenParent, true);
-  assert.deepEqual(topology[1].outgoingEdges, []);
-  assert.deepEqual(topology[1].passThroughLanesAfter, []);
+  const viewModels = buildViewModels(interleavedRoots);
+  assertGraphContinuity(viewModels);
+  assert.deepEqual(viewModels[2].outputSwimlanes.map((node) => node.id), ['r2'], '根提交 r1 处保留等待 r2 的泳道');
+  assert.equal(getHistoryItemIndex(viewModels[3]), 0);
+  const rootShapes = computeHistoryItemGraph(viewModels[2]).shapes;
+  assert.equal(
+    rootShapes.find((shape) => shape.type === 'circle').fill,
+    rootShapes.find((shape) => shape.d === 'M 11 0 V 11').color,
+    '根提交圆点与进入它的泳道同色，而不是左移过来的相邻泳道颜色',
+  );
 });
 
-test('graph-layout: 泳道宽度上限 72px 压缩与三阶贝塞尔路径切线生成', () => {
-  const metrics6 = computeGraphMetrics(6);
-  assert.equal(metrics6.laneCount, 6);
-  assert.equal(metrics6.laneStep, 12);
-  assert.equal(metrics6.width, 72);
+test('graph-layout: 父提交不在列表内时泳道延伸到列表末尾', () => {
+  const viewModels = buildViewModels([
+    { sha: 'head-2', parents: ['head-1', 'next-page-topic'] },
+    { sha: 'head-1', parents: ['next-page-ancestor'] },
+  ]);
+  assertGraphContinuity(viewModels);
+  assert.deepEqual(viewModels[1].outputSwimlanes.map((node) => node.id), ['next-page-ancestor', 'next-page-topic']);
+});
 
-  const metrics10 = computeGraphMetrics(10);
-  assert.equal(metrics10.laneCount, 10);
-  assert.equal(metrics10.width, 72);
-  assert.ok(metrics10.laneStep < 12);
-  assert.ok(metrics10.getLaneX(9) < metrics10.width);
+test('graph-layout: 当前分支泳道固定蓝色、上游泳道固定紫色，其余泳道按 5 色轮换', () => {
+  const commits = [
+    { sha: 'h', parents: ['u', 'side'], refs: [{ type: 'head', name: 'main', fullRef: 'refs/heads/main' }] },
+    { sha: 'side', parents: ['u'] },
+    { sha: 'u', parents: ['root'], refs: [{ type: 'remote', name: 'origin/main', fullRef: 'refs/remotes/origin/main' }] },
+    { sha: 'root', parents: [] },
+  ];
+  const viewModels = buildViewModels(commits, {
+    headSha: 'h',
+    currentRefId: 'refs/heads/main',
+    remoteRefId: 'refs/remotes/origin/main',
+  });
+  assertGraphContinuity(viewModels);
+  assert.deepEqual(viewModels[0].outputSwimlanes.map((node) => node.color), [HISTORY_ITEM_REF_COLOR, LANE_COLORS[0]]);
+  assert.equal(viewModels[2].outputSwimlanes[0].color, HISTORY_ITEM_REMOTE_REF_COLOR, '上游提交以下的泳道换成远程色');
+});
 
-  // 极大量并发车道（rawLaneCount > 72）时 effectivePadX 与各车道坐标仍保持正值且不越界
-  const metrics80 = computeGraphMetrics(80);
-  assert.equal(metrics80.laneCount, 80);
-  assert.equal(metrics80.width, 72);
-  assert.ok(metrics80.padX >= 2);
-  assert.ok(metrics80.laneStep > 0);
-  assert.ok(metrics80.getLaneX(0) >= 2);
-  assert.ok(metrics80.getLaneX(79) <= metrics80.width - 2);
+test('graph-layout: 引用徽标按 VS Code 规则排序、着色与归组，auto 范围隐藏无关引用', () => {
+  // 与 git log --decorate 输出顺序一致：HEAD -> 当前分支总在最前
+  const refs = [
+    { type: 'head', name: 'main', fullRef: 'refs/heads/main' },
+    { type: 'tag', name: 'v1', fullRef: 'refs/tags/v1' },
+    { type: 'remote', name: 'origin/main', fullRef: 'refs/remotes/origin/main' },
+    { type: 'branch', name: 'feature', fullRef: 'refs/heads/feature' },
+    { type: 'tag', name: 'v1.0.1', fullRef: 'refs/tags/v1.0.1' },
+  ];
+  const commits = [{ sha: 'h', parents: ['p'], refs }, { sha: 'p', parents: [] }];
+  const options = { headSha: 'h', currentRefId: 'refs/heads/main', remoteRefId: 'refs/remotes/origin/main' };
 
-  assert.equal(buildCurvePath(6, 12, 6, 24), 'M 6 12 L 6 24');
-  assert.equal(buildCurvePath(6, 12, 18, 24), 'M 6 12 C 6 18, 18 18, 18 24');
+  const [autoRow] = buildViewModels(commits, { ...options, scope: 'auto' });
+  assert.deepEqual(autoRow.references.map((ref) => ref.name).slice(0, 2), ['main', 'origin/main']);
+  assert.deepEqual(groupHistoryItemBadges(autoRow.references), [
+    { color: HISTORY_ITEM_REF_COLOR, icon: 'target', count: 1, name: 'main' },
+    { color: HISTORY_ITEM_REMOTE_REF_COLOR, icon: 'cloud', count: 1, name: null },
+  ]);
+
+  const [allRow] = buildViewModels(commits, { ...options, scope: 'all' });
+  assert.deepEqual(groupHistoryItemBadges(allRow.references), [
+    { color: HISTORY_ITEM_REF_COLOR, icon: 'target', count: 1, name: 'main' },
+    { color: HISTORY_ITEM_REMOTE_REF_COLOR, icon: 'cloud', count: 1, name: null },
+    { color: HISTORY_ITEM_REF_COLOR, icon: 'tag', count: 2, name: null },
+    { color: HISTORY_ITEM_REF_COLOR, icon: 'gitBranch', count: 1, name: null },
+  ]);
+
+  const detachedRefs = [{ type: 'head', name: 'HEAD', fullRef: 'HEAD' }];
+  const [detachedRow] = buildViewModels([{ sha: 'd', parents: [], refs: detachedRefs }], { headSha: 'd', scope: 'all' });
+  assert.deepEqual(detachedRow.references, [], '游离 HEAD 不显示 HEAD 徽标');
+});
+
+test('graph-layout: 文件子行贯穿泳道加粗所属提交接续的泳道，与展开提交的加粗下行线同列', () => {
+  const viewModels = buildViewModels([
+    { sha: 'm', parents: ['a', 'b'] },
+    { sha: 'b', parents: ['a'] },
+    { sha: 'a', parents: [] },
+  ]);
+  const placeholder = computeCommitFilesPlaceholder(viewModels[1]);
+  assert.equal(placeholder.width, 33);
+  assert.deepEqual(
+    placeholder.shapes.map((shape) => [shape.d, shape.strokeWidth]),
+    [['M 11 0 V 22', 1], ['M 22 0 V 22', 3]],
+  );
+  assert.deepEqual(
+    computeHistoryItemGraph(viewModels[1]).shapes.filter((shape) => shape.isOutgoing).map((shape) => shape.d),
+    ['M 22 11 V 22'],
+    '展开时加粗的下行线与文件子行加粗泳道同在第 2 列',
+  );
+  assert.deepEqual(
+    collectBoundarySockets(placeholder.shapes).top,
+    collectBoundarySockets(computeHistoryItemGraph(viewModels[2]).shapes).top,
+    '文件子行竖线与下一提交行顶部端点对齐',
+  );
+});
+
+test('graph-layout: 展开根提交时不加粗任何泳道（圆点列已被其他分支泳道左移占用）', () => {
+  const viewModels = buildViewModels([
+    { sha: 't1', parents: ['r1'] },
+    { sha: 't2', parents: ['r2'] },
+    { sha: 'r1', parents: [] },
+    { sha: 'r2', parents: [] },
+  ]);
+  const rootRow = viewModels[2];
+  assert.deepEqual(
+    computeCommitFilesPlaceholder(rootRow).shapes.map((shape) => [shape.d, shape.strokeWidth]),
+    [['M 11 0 V 22', 1]],
+  );
+  assert.equal(computeHistoryItemGraph(rootRow).shapes.some((shape) => shape.isOutgoing), false);
 });
 
 test('popover: 第 1、2 行借用上区向上弹出且遮挡图表像素最小', () => {
@@ -705,4 +795,50 @@ test('api-client: 仓库级请求自动透传非空 workspaceUris，且不污染
   assert.equal('workspaceUris' in captured[4].body, false);
   assert.equal('workspaceUris' in captured[5].body, false);
   assert.equal('workspaceUris' in captured[6].body, false);
+});
+
+test('file-icons: 按 VS Code 图标主题顺序解析：完整文件名 > 最长扩展名 > 默认图标，大小写不敏感', () => {
+  assert.equal(resolveFileIconUrl('sidecars/panel/package.json', 'dark'), '/file-icons/file_type_npm.svg', '文件名优先于 json 扩展名');
+  assert.equal(resolveFileIconUrl('src/types/index.d.ts', 'dark'), '/file-icons/file_type_typescriptdef.svg', 'd.ts 优先于 ts');
+  assert.equal(resolveFileIconUrl('src/app.ts', 'dark'), '/file-icons/file_type_typescript.svg');
+  assert.equal(resolveFileIconUrl('tests/unit/panel.test.mjs', 'dark'), '/file-icons/file_type_testjs.svg');
+  assert.equal(resolveFileIconUrl('docs/Dockerfile', 'dark'), '/file-icons/file_type_docker.svg');
+  assert.equal(resolveFileIconUrl('README.MD', 'dark'), '/file-icons/file_type_readme.svg');
+  assert.equal(resolveFileIconUrl('notes/unknown.zzqq', 'dark'), '/file-icons/default_file.svg');
+  assert.equal(resolveFileIconUrl('constructor', 'dark'), '/file-icons/default_file.svg', '不得命中 Object 原型属性');
+  assert.equal(resolveFileIconUrl('a.hasownproperty', 'dark'), '/file-icons/default_file.svg');
+});
+
+test('file-icons: 浅色主题使用浅色变体，没有浅色变体的图标在两种主题下相同', () => {
+  assert.equal(resolveFileIconUrl('.babelrc', 'light'), '/file-icons/file_type_light_babel.svg');
+  assert.equal(resolveFileIconUrl('.babelrc', 'dark'), '/file-icons/file_type_babel.svg');
+  assert.equal(resolveFileIconUrl('main.py', 'light'), resolveFileIconUrl('main.py', 'dark'));
+});
+
+test('file-icons: 映射表引用的每个图标（含浅色变体）都随插件分发', () => {
+  const iconsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sidecars/panel/public/file-icons');
+  const shipped = new Set(fs.readdirSync(iconsDir));
+  const missing = [];
+  for (const icon of new Set([...Object.values(FILE_ICON_NAMES), ...Object.values(FILE_ICON_EXTENSIONS)])) {
+    if (!shipped.has(`file_type_${icon}.svg`)) missing.push(`file_type_${icon}.svg`);
+  }
+  for (const icon of FILE_ICON_LIGHT_VARIANTS) {
+    if (!shipped.has(`file_type_light_${icon}.svg`)) missing.push(`file_type_light_${icon}.svg`);
+  }
+  if (!shipped.has('default_file.svg')) missing.push('default_file.svg');
+  assert.deepEqual(missing, []);
+});
+
+test('toast: 锚点下方放得下时贴在下方，放不下时改到上方，无锚点或锚点不可见时停靠底部', () => {
+  const viewportHeight = 800;
+  assert.deepEqual(computeToastPlacement({ top: 100, bottom: 126, width: 300, height: 26 }, viewportHeight), { edge: 'top', offset: 130 });
+  assert.deepEqual(computeToastPlacement({ top: 740, bottom: 762, width: 300, height: 22 }, viewportHeight), { edge: 'bottom', offset: 64 });
+  assert.deepEqual(computeToastPlacement(null, viewportHeight), { edge: 'bottom', offset: 8 });
+  assert.deepEqual(computeToastPlacement({ top: 0, bottom: 0, width: 0, height: 0 }, viewportHeight), { edge: 'bottom', offset: 8 }, '折叠隐藏的锚点');
+  assert.deepEqual(computeToastPlacement({ top: -40, bottom: -14, width: 300, height: 26 }, viewportHeight), { edge: 'bottom', offset: 8 }, '滚出视口的锚点');
+  assert.deepEqual(
+    computeToastPlacement({ top: 10, bottom: 70, width: 300, height: 60 }, 150),
+    { edge: 'top', offset: 74 },
+    '矮面板里上下都放不下时选空间更大的下方，不把提示推出视口顶部',
+  );
 });

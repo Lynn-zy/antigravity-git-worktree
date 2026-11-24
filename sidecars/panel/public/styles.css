@@ -1,32 +1,65 @@
 /*
  * Antigravity 2.0 Auxiliary Pane Git Graph 样式表
- * 仅消费宿主语义 CSS 变量（--background / --card / --foreground / --primary / --border / --ring / --font-family / --editor-font-family 等）
- * 及 theme.js 运行时校正输出的 --gw-* 变量，同时提供完整的亮暗本地回退值。
+ *
+ * 尺寸、间距与结构对齐 VS Code 源代码管理视图（scm.css、paneview.css、tree.css、actionbar.css、button.css 等，
+ * Copyright (c) Microsoft Corporation，MIT 许可，见仓库根目录 THIRD_PARTY_NOTICES.md）。
+ * 表面色取自宿主语义变量（--background / --foreground / --primary ...）与 theme.js 校正后的 --gw-* 变量，
+ * 宿主未注入时回退到 VS Code Dark Modern / Light Modern 默认值；图表泳道与 Git 装饰色直接沿用 VS Code 默认值。
  */
 
 :root {
   color-scheme: light;
-  --gw-bg: var(--background, #f7f7f8);
+
+  /* 宿主表面色（Light Modern 回退） */
+  --gw-bg: var(--background, #f8f8f8);
+  --gw-fg: var(--foreground, #3b3b3b);
+  --gw-fg-muted: var(--muted-foreground, #717171);
   --gw-card: var(--card, #ffffff);
-  --gw-secondary: var(--secondary, #e6e7e9);
-  --gw-muted: var(--muted, #eff0f1);
-  --gw-accent: var(--accent, #e4e7ec);
-  --gw-fg: var(--foreground, #1d1f21);
-  --gw-fg-muted: var(--muted-foreground, #5d676f);
-  --gw-placeholder: var(--placeholder, #8c959d);
-  --gw-border: var(--border, color-mix(in srgb, var(--gw-fg) 11%, transparent));
-  --gw-primary: var(--primary, #0969da);
+  --gw-primary: var(--primary, #005fb8);
   --gw-primary-fg: var(--primary-foreground, #ffffff);
-  --gw-ring: var(--ring, color-mix(in srgb, var(--gw-primary) 72%, transparent));
+  --gw-placeholder: var(--placeholder, #767676);
+
+  /* VS Code 工作台语义色 */
+  --gw-list-hover: color-mix(in srgb, var(--gw-fg) 5%, var(--gw-bg));
+  --gw-list-active: color-mix(in srgb, var(--gw-primary) 14%, var(--gw-bg));
+  --gw-focus-border: var(--gw-primary);
+  --gw-toolbar-hover: color-mix(in srgb, var(--gw-fg) 10%, transparent);
+  --gw-toolbar-active: color-mix(in srgb, var(--gw-fg) 16%, transparent);
+  --gw-section-border: color-mix(in srgb, var(--gw-fg) 11%, var(--gw-bg));
+  --gw-input-bg: var(--gw-card);
+  --gw-input-border: color-mix(in srgb, var(--gw-fg) 20%, var(--gw-bg));
+  --gw-button-hover: color-mix(in srgb, var(--gw-primary) 88%, #000000);
+  --gw-button-secondary-bg: color-mix(in srgb, var(--gw-fg) 9%, var(--gw-bg));
+  --gw-button-secondary-hover: color-mix(in srgb, var(--gw-fg) 14%, var(--gw-bg));
+  --gw-badge-bg: color-mix(in srgb, var(--gw-fg) 22%, var(--gw-bg));
+  --gw-badge-fg: var(--gw-fg);
+  --gw-widget-bg: var(--gw-card);
+  --gw-widget-border: color-mix(in srgb, var(--gw-fg) 22%, var(--gw-card));
+  --gw-widget-shadow: rgba(0, 0, 0, 0.16);
+  --gw-link: var(--gw-primary);
+  --gw-description-opacity: 0.95;
+  --gw-scrollbar: rgba(100, 100, 100, 0.4);
+  --gw-scrollbar-hover: rgba(100, 100, 100, 0.7);
 
   --gw-status-success: var(--gw-success, #1a7f37);
   --gw-status-warning: var(--gw-warning, #9a6700);
   --gw-status-error: var(--gw-error, var(--error, #cf222e));
 
-  --gw-hover: color-mix(in srgb, var(--gw-fg) 5.5%, transparent);
-  --gw-press: color-mix(in srgb, var(--gw-fg) 9.5%, transparent);
-  --gw-field: color-mix(in srgb, var(--gw-fg) 4%, transparent);
-  --gw-line: color-mix(in srgb, var(--gw-fg) 10%, transparent);
+  /* 源代码管理图表（scmGraph.*）与 Git 装饰（gitDecoration.*） */
+  --gw-graph-1: #ffb000;
+  --gw-graph-2: #dc267f;
+  --gw-graph-3: #994f00;
+  --gw-graph-4: #40b0a6;
+  --gw-graph-5: #b66dff;
+  --gw-graph-ref: #1a85ff;
+  --gw-graph-remote-ref: #652d90;
+  --gw-graph-badge-fg: var(--gw-bg);
+  --gw-git-modified: #895503;
+  --gw-git-added: #587c0c;
+  --gw-git-deleted: #ad0707;
+  --gw-git-untracked: #007100;
+  --gw-git-renamed: #007100;
+  --gw-git-conflicting: #ad0707;
 
   --gw-font-ui-resolved: var(
     --gw-font-ui,
@@ -37,47 +70,48 @@
     var(--editor-font-family, var(--vscode-editor-font-family, var(--font-mono, ui-monospace, "Cascadia Mono", "Consolas", monospace)))
   );
 
-  --lane-0: #0969da;
-  --lane-1: #1a7f37;
-  --lane-2: #8250df;
-  --lane-3: #9a6700;
-  --lane-4: #0e8a7d;
-  --lane-5: #cf222e;
-
-  --gw-pad-x: 10px;
-  --gw-sash-size: 4px;
   --gw-split-ratio: 0.42;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --gw-bg: var(--background, #18181a);
-  --gw-card: var(--card, #202024);
-  --gw-secondary: var(--secondary, #2a2a2f);
-  --gw-muted: var(--muted, #232328);
-  --gw-accent: var(--accent, #2f3136);
-  --gw-fg: var(--foreground, #e4e4e7);
-  --gw-fg-muted: var(--muted-foreground, #a1a1aa);
-  --gw-placeholder: var(--placeholder, #71717a);
-  --gw-border: var(--border, color-mix(in srgb, var(--gw-fg) 12%, transparent));
-  --gw-primary: var(--primary, #3794ff);
-  --gw-primary-fg: var(--primary-foreground, #ffffff);
+
+  /* 宿主表面色（Dark Modern 回退） */
+  --gw-bg: var(--background, #181818);
+  --gw-fg: var(--foreground, #cccccc);
+  --gw-fg-muted: var(--muted-foreground, #9d9d9d);
+  --gw-card: var(--card, #202020);
+  --gw-primary: var(--primary, #0078d4);
+  --gw-placeholder: var(--placeholder, #989898);
+
+  --gw-list-hover: color-mix(in srgb, var(--gw-fg) 9%, var(--gw-bg));
+  --gw-list-active: color-mix(in srgb, var(--gw-primary) 26%, var(--gw-bg));
+  --gw-toolbar-hover: color-mix(in srgb, var(--gw-fg) 14%, transparent);
+  --gw-toolbar-active: color-mix(in srgb, var(--gw-fg) 20%, transparent);
+  --gw-section-border: color-mix(in srgb, var(--gw-fg) 9%, var(--gw-bg));
+  --gw-input-bg: color-mix(in srgb, var(--gw-fg) 11%, var(--gw-bg));
+  --gw-input-border: color-mix(in srgb, var(--gw-fg) 17%, var(--gw-bg));
+  --gw-button-hover: color-mix(in srgb, var(--gw-primary) 90%, #000000);
+  --gw-badge-bg: color-mix(in srgb, var(--gw-fg) 38%, var(--gw-bg));
+  --gw-badge-fg: #f8f8f8;
+  --gw-widget-border: color-mix(in srgb, var(--gw-fg) 26%, var(--gw-card));
+  --gw-widget-shadow: rgba(0, 0, 0, 0.36);
+  --gw-description-opacity: 0.7;
+  --gw-scrollbar: rgba(121, 121, 121, 0.4);
+  --gw-scrollbar-hover: rgba(100, 100, 100, 0.7);
 
   --gw-status-success: var(--gw-success, #73c991);
-  --gw-status-warning: var(--gw-warning, #e2b969);
-  --gw-status-error: var(--gw-error, var(--error, #f87171));
+  --gw-status-warning: var(--gw-warning, #cca700);
+  --gw-status-error: var(--gw-error, var(--error, #f14c4c));
 
-  --gw-hover: color-mix(in srgb, var(--gw-fg) 7%, transparent);
-  --gw-press: color-mix(in srgb, var(--gw-fg) 12%, transparent);
-  --gw-field: color-mix(in srgb, var(--gw-fg) 6%, transparent);
-  --gw-line: color-mix(in srgb, var(--gw-fg) 11%, transparent);
-
-  --lane-0: #3794ff;
-  --lane-1: #73c991;
-  --lane-2: #c586c0;
-  --lane-3: #e2b969;
-  --lane-4: #4ec9b0;
-  --lane-5: #f48771;
+  --gw-graph-ref: #3794ff;
+  --gw-graph-remote-ref: #b180d7;
+  --gw-git-modified: #e2c08d;
+  --gw-git-added: #81b88b;
+  --gw-git-deleted: #c74e39;
+  --gw-git-untracked: #73c991;
+  --gw-git-renamed: #73c991;
+  --gw-git-conflicting: #e4676b;
 }
 
 *,
@@ -98,14 +132,13 @@ body {
   background: var(--gw-bg) !important;
   color: var(--gw-fg) !important;
   font-family: var(--gw-font-ui-resolved) !important;
-  font-size: 12.5px;
+  font-size: 13px;
   line-height: 1.4;
   height: 100vh;
   height: 100dvh;
   width: 100%;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
 }
 
 .hidden {
@@ -124,65 +157,68 @@ button {
   cursor: pointer;
 }
 
+button:disabled {
+  cursor: not-allowed;
+}
+
 :focus {
   outline: none;
 }
 
 :focus-visible {
-  outline: 2px solid var(--gw-ring);
-  outline-offset: 1px;
+  outline: 1px solid var(--gw-focus-border);
+  outline-offset: 2px;
 }
 
+/* 列表行与紧凑控件的焦点框画在内侧，避免被滚动容器裁切 */
 .gw-clip-focus:focus-visible,
 .gw-icon-btn:focus-visible,
+.gw-action-label:focus-visible,
 .gw-section-toggle:focus-visible,
 .gw-group-toggle:focus-visible,
 .gw-file-row:focus-visible,
 .gw-commit-row:focus-visible,
 .gw-commit-file-row:focus-visible,
+.gw-load-more-btn:focus-visible,
 .gw-menu-item:focus-visible,
-.gw-sash:focus-visible,
 .gw-repo-select:focus-visible {
-  outline: 2px solid var(--gw-ring);
-  outline-offset: -2px;
+  outline: 1px solid var(--gw-focus-border);
+  outline-offset: -1px;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--gw-primary) 28%, transparent);
+  background: color-mix(in srgb, var(--gw-primary) 35%, transparent);
 }
 
-/* 细滚动条样式与防抖动沟槽 */
+/* 滚动条：VS Code 10px 方形滑块 */
 * {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--gw-fg) 22%, transparent) transparent;
+  scrollbar-color: var(--gw-scrollbar) transparent;
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--gw-fg) 20%, transparent);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-  border-radius: 8px;
+  background: var(--gw-scrollbar);
 }
 
-::-webkit-scrollbar-track {
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gw-scrollbar-hover);
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
   background: transparent;
 }
 
 .gw-icon {
-  width: 14px;
-  height: 14px;
-  flex: none;
   display: block;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 /* 面板主外壳声明容器查询，保障 320px–560px 零横向溢出 */
@@ -197,16 +233,15 @@ button {
   background: var(--gw-bg);
 }
 
-/* 多仓库顶部切换条（>= 2 仓时显示） */
+/* 多仓库切换条（>= 2 仓时显示） */
 .gw-repo-bar {
   display: flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
-  flex: 0 0 28px;
-  padding: 0 var(--gw-pad-x);
-  border-bottom: 1px solid var(--gw-line);
-  background: var(--gw-muted);
+  flex: 0 0 auto;
+  height: 30px;
+  padding: 0 12px 0 8px;
+  border-bottom: 1px solid var(--gw-section-border);
   min-width: 0;
   overflow: hidden;
 }
@@ -221,9 +256,8 @@ button {
 
 .gw-repo-bar-icon {
   display: inline-flex;
-  align-items: center;
-  color: var(--gw-fg-muted);
   flex: none;
+  color: var(--gw-fg);
 }
 
 .gw-repo-select {
@@ -231,22 +265,16 @@ button {
   min-width: 0;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
+  border: 1px solid var(--gw-input-border);
+  border-radius: 2px;
+  background: var(--gw-input-bg);
   color: var(--gw-fg);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: 13px;
   text-overflow: ellipsis;
-  cursor: pointer;
-}
-
-.gw-repo-select:hover {
-  background: var(--gw-hover);
 }
 
 .gw-repo-select option {
-  background: var(--gw-card);
+  background: var(--gw-widget-bg);
   color: var(--gw-fg);
 }
 
@@ -257,12 +285,12 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11px;
-  color: var(--gw-fg-muted);
-  font-family: var(--gw-font-mono-resolved);
+  font-size: 12px;
+  color: var(--gw-fg);
+  opacity: var(--gw-description-opacity);
 }
 
-/* 横幅提示栈 */
+/* 状态横幅 */
 .gw-banner-stack {
   display: flex;
   flex-direction: column;
@@ -274,22 +302,45 @@ button {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  padding: 6px var(--gw-pad-x);
-  font-size: 11.5px;
-  line-height: 1.35;
-  border-bottom: 1px solid var(--gw-line);
+  padding: 5px 12px 5px 19px;
+  font-size: 12px;
+  line-height: 18px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
 .gw-banner-icon {
   flex: none;
-  margin-top: 1px;
+  padding-top: 1px;
 }
 
 .gw-banner-text {
   flex: 1 1 0;
   min-width: 0;
+}
+
+.gw-banner.is-warning {
+  background: color-mix(in srgb, var(--gw-status-warning) 14%, var(--gw-bg));
+}
+
+.gw-banner.is-warning .gw-banner-icon {
+  color: var(--gw-status-warning);
+}
+
+.gw-banner.is-error {
+  background: color-mix(in srgb, var(--gw-status-error) 14%, var(--gw-bg));
+}
+
+.gw-banner.is-error .gw-banner-icon {
+  color: var(--gw-status-error);
+}
+
+.gw-banner.is-info {
+  background: color-mix(in srgb, var(--gw-primary) 12%, var(--gw-bg));
+}
+
+.gw-banner.is-info .gw-banner-icon {
+  color: var(--gw-primary);
 }
 
 .gw-banner-action {
@@ -298,83 +349,46 @@ button {
   gap: 4px;
   flex: none;
   align-self: center;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid color-mix(in srgb, var(--gw-fg) 20%, transparent);
+  padding: 2px 6px;
+  border: 1px solid transparent;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--gw-card) 72%, transparent);
+  background: var(--gw-button-secondary-bg);
   color: var(--gw-fg);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1;
+  font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
-  transition: background-color 100ms ease, border-color 100ms ease;
-}
-
-.gw-banner-action .gw-icon {
-  width: 12px;
-  height: 12px;
 }
 
 .gw-banner-action:hover:not(:disabled) {
-  background: var(--gw-card);
-  border-color: color-mix(in srgb, var(--gw-fg) 32%, transparent);
-}
-
-.gw-banner-action:active:not(:disabled) {
-  background: var(--gw-press);
+  background: var(--gw-button-secondary-hover);
 }
 
 .gw-banner-action:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.gw-banner.is-warning {
-  background: color-mix(in srgb, var(--gw-status-warning) 12%, transparent);
-  color: var(--gw-fg);
-}
-
-.gw-banner.is-warning .gw-banner-icon {
-  color: var(--gw-status-warning);
-}
-
-.gw-banner.is-error {
-  background: color-mix(in srgb, var(--gw-status-error) 12%, transparent);
-  color: var(--gw-fg);
-}
-
-.gw-banner.is-error .gw-banner-icon {
-  color: var(--gw-status-error);
-}
-
-.gw-banner.is-info {
-  background: color-mix(in srgb, var(--gw-primary) 10%, transparent);
-  color: var(--gw-fg);
-}
-
-.gw-banner.is-info .gw-banner-icon {
-  color: var(--gw-primary);
+  opacity: 0.4;
 }
 
 /* 首屏加载态与零仓库空态 */
-.gw-loading-state {
+.gw-loading-state,
+.gw-empty-state {
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-align: center;
-  padding: 24px 16px;
   gap: 10px;
   min-height: 0;
-  color: var(--gw-fg-muted);
+  padding: 24px 20px;
+  text-align: center;
+}
+
+.gw-empty-state {
+  overflow: auto;
 }
 
 .gw-loading-spinner {
-  width: 18px;
-  height: 18px;
-  border: 2px solid var(--gw-line);
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--gw-section-border);
   border-top-color: var(--gw-primary);
   border-radius: 50%;
   animation: gw-spin 0.8s linear infinite;
@@ -382,8 +396,8 @@ button {
 
 .gw-loading-text {
   margin: 0;
-  font-size: 12px;
-  color: var(--gw-fg-muted);
+  color: var(--gw-fg);
+  opacity: var(--gw-description-opacity);
 }
 
 @keyframes gw-spin {
@@ -398,50 +412,30 @@ button {
   }
 }
 
-.gw-empty-state {
-  flex: 1 1 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 24px 16px;
-  gap: 8px;
-  min-height: 0;
-  overflow: auto;
-}
-
 .gw-empty-icon {
-  width: 32px;
-  height: 32px;
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: var(--gw-field);
-  color: var(--gw-fg-muted);
+  color: var(--gw-fg);
+  opacity: 0.6;
 }
 
 .gw-empty-icon .gw-icon {
-  width: 18px;
-  height: 18px;
+  width: 32px;
+  height: 32px;
 }
 
 .gw-empty-title {
   margin: 0;
   font-size: 13px;
   font-weight: 600;
-  color: var(--gw-fg);
 }
 
 .gw-empty-desc {
   margin: 0;
   max-width: 280px;
-  font-size: 12px;
-  color: var(--gw-fg-muted);
+  opacity: var(--gw-description-opacity);
 }
 
-/* 双区布局容器 */
+/* 双区布局容器（VS Code 视图窗格） */
 .gw-dual-pane {
   display: flex;
   flex-direction: column;
@@ -460,7 +454,7 @@ button {
 }
 
 .gw-section-changes {
-  flex: 0 0 calc((100% - var(--gw-sash-size)) * var(--gw-split-ratio));
+  flex: 0 0 calc(100% * var(--gw-split-ratio));
 }
 
 .gw-section-graph {
@@ -480,107 +474,92 @@ button {
   flex: 1 1 0;
 }
 
-/* 分区标题栏 */
+/* 窗格标题栏：22px、11px 粗体大写 */
 .gw-section-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  height: 28px;
-  flex: 0 0 28px;
-  padding: 0 var(--gw-pad-x);
-  background: var(--gw-bg);
-  border-bottom: 1px solid var(--gw-line);
-  user-select: none;
+  flex: 0 0 22px;
+  height: 22px;
+  padding-left: 5px;
   min-width: 0;
   overflow: hidden;
+  font-size: 11px;
+  font-weight: bold;
+  line-height: 22px;
+  user-select: none;
+}
+
+.gw-section-graph .gw-section-header {
+  border-top: 1px solid var(--gw-section-border);
 }
 
 .gw-section-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 4px;
   flex: 1 1 auto;
-  min-width: 0;
-  height: 24px;
-  padding: 0 4px 0 0;
+  min-width: 3ch;
+  height: 22px;
+  padding: 0;
   border: 0;
-  border-radius: 4px;
   background: transparent;
   color: var(--gw-fg);
+  font-weight: inherit;
   text-align: left;
 }
 
-.gw-section-toggle:hover {
-  background: var(--gw-hover);
+.gw-section-toggle .gw-chevron {
+  margin: 0 2px;
 }
 
 .gw-chevron {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
   flex: none;
-  color: var(--gw-fg-muted);
 }
 
 .gw-section-title {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-transform: uppercase;
 }
 
-.gw-count-pill {
-  flex: none;
-  min-width: 18px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: var(--gw-field);
-  color: var(--gw-fg-muted);
-  font-size: 10.5px;
-  font-weight: 600;
-  line-height: 16px;
-  text-align: center;
-}
-
-/* 双区滚动体 */
+/* 窗格滚动体：稳定沟槽 + 2px 右内边距 = VS Code 12px 右侧留白 */
 .gw-section-body {
   flex: 1 1 0;
   min-height: 0;
   min-width: 0;
-  overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-gutter: stable;
+  overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
-/* 4px 可拖拽分隔条 */
+/*
+ * 窗格分隔（VS Code sash）：4px 拖拽条以负外边距骑在两区交界上，不占布局高度；
+ * 分区边线由下方窗格标题的上边框绘制，悬停 300ms 或拖拽、聚焦时整条显示强调色。
+ */
 .gw-sash {
-  flex: 0 0 var(--gw-sash-size);
-  height: var(--gw-sash-size);
-  background: var(--gw-line);
-  cursor: ns-resize;
   position: relative;
+  z-index: 2;
+  flex: 0 0 4px;
+  height: 4px;
+  margin: -2px 0;
+  background: transparent;
+  cursor: ns-resize;
   touch-action: none;
-  transition: background-color 120ms ease;
+  transition: background-color 100ms ease-out;
 }
 
-.gw-sash::before {
-  content: "";
-  position: absolute;
-  inset: -3px 0;
+.gw-sash:hover {
+  background: var(--gw-focus-border);
+  transition-delay: 300ms;
 }
 
-.gw-sash:hover,
 .gw-sash.is-dragging,
 .gw-sash:focus-visible {
-  background: var(--gw-primary);
+  background: var(--gw-focus-border);
+  outline: none;
+  transition-delay: 0s;
 }
 
 body.is-resizing-panes {
@@ -588,68 +567,86 @@ body.is-resizing-panes {
   user-select: none;
 }
 
-/* 紧凑图标按钮 */
-.gw-icon-btn {
+/* 操作栏图标按钮（VS Code action-label：16px 图标 + 2px 内边距） */
+.gw-icon-btn,
+.gw-action-label {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--gw-fg-muted);
   flex: none;
-  transition: background-color 100ms ease, color 100ms ease;
-}
-
-.gw-icon-btn:hover:not(:disabled) {
-  background: var(--gw-hover);
+  padding: 2px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
   color: var(--gw-fg);
 }
 
-.gw-icon-btn:active:not(:disabled) {
-  background: var(--gw-press);
+.gw-icon-btn:hover:not(:disabled),
+.gw-action-label:hover:not(:disabled) {
+  background: var(--gw-toolbar-hover);
 }
 
-.gw-icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.gw-icon-btn:active:not(:disabled),
+.gw-action-label:active:not(:disabled) {
+  background: var(--gw-toolbar-active);
 }
 
-.gw-icon-btn.is-danger:hover:not(:disabled) {
-  color: var(--gw-status-error);
-  background: color-mix(in srgb, var(--gw-status-error) 12%, transparent);
+.gw-icon-btn:disabled,
+.gw-action-label:disabled {
+  opacity: 0.5;
 }
 
 .gw-icon-btn.is-active {
-  color: var(--gw-primary);
-  background: color-mix(in srgb, var(--gw-primary) 12%, transparent);
+  background: var(--gw-toolbar-active);
 }
 
-/* 上区：提交说明与智能主按钮 */
+.gw-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin: 0 8px 0 4px;
+  font-weight: normal;
+}
+
+/* 图表引用范围选择（scm-graph-history-item-picker） */
+.gw-scope-btn {
+  gap: 2px;
+  padding: 2px 3px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.gw-scope-name {
+  max-width: 100px;
+  padding-right: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 上区：提交输入框与操作按钮（scm-input / button-container） */
 .gw-composer {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px var(--gw-pad-x);
-  border-bottom: 1px solid var(--gw-line);
+  padding: 5px 2px 5px 19px;
 }
 
 .gw-commit-input {
+  display: block;
   width: 100%;
   min-width: 0;
-  min-height: 52px;
-  max-height: 140px;
-  padding: 6px 8px;
-  border: 1px solid var(--gw-border);
-  border-radius: 5px;
-  background: var(--gw-field);
+  min-height: 26px;
+  max-height: 190px;
+  field-sizing: content;
+  padding: 3px 6px;
+  border: 1px solid var(--gw-input-border);
+  border-radius: 4px;
+  background: var(--gw-input-bg);
   color: var(--gw-fg);
-  font-size: 12px;
-  line-height: 1.45;
-  resize: vertical;
+  font-size: 13px;
+  line-height: 18px;
+  resize: none;
 }
 
 .gw-commit-input::placeholder {
@@ -657,170 +654,150 @@ body.is-resizing-panes {
 }
 
 .gw-commit-input:focus {
-  border-color: var(--gw-primary);
+  outline: 1px solid var(--gw-focus-border);
+  outline-offset: -1px;
 }
 
 .gw-commit-input.has-error {
-  border-color: var(--gw-status-error);
+  outline: 1px solid var(--gw-status-error);
+  outline-offset: -1px;
 }
 
 .gw-validation-msg {
-  font-size: 11px;
-  color: var(--gw-status-error);
-  line-height: 1.3;
+  padding: 2px 4px;
+  border: 1px solid var(--gw-status-error);
+  border-top: 0;
+  border-radius: 0 0 2px 2px;
+  background: color-mix(in srgb, var(--gw-status-error) 18%, var(--gw-bg));
+  font-size: 0.9em;
 }
 
 .gw-primary-btn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   width: 100%;
   min-width: 0;
-  height: 28px;
-  padding: 0 10px;
+  margin-top: 10px;
+  padding: 4px 8px;
   border: 1px solid transparent;
-  border-radius: 5px;
+  border-radius: 4px;
   background: var(--gw-primary);
   color: var(--gw-primary-fg);
   font-size: 12px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: filter 100ms ease, opacity 100ms ease;
+  line-height: 16px;
 }
 
 .gw-primary-btn:hover:not(:disabled) {
-  filter: brightness(1.06);
-}
-
-.gw-primary-btn:active:not(:disabled) {
-  filter: brightness(0.95);
+  background: var(--gw-button-hover);
 }
 
 .gw-primary-btn:disabled {
-  background: var(--gw-secondary);
-  color: var(--gw-fg-muted);
-  border-color: var(--gw-line);
-  cursor: not-allowed;
+  opacity: 0.4;
 }
 
-.gw-primary-btn.is-conflict-blocked:disabled {
-  background: color-mix(in srgb, var(--gw-status-error) 12%, transparent);
-  color: var(--gw-status-error);
-  border-color: color-mix(in srgb, var(--gw-status-error) 30%, transparent);
+.gw-primary-btn .gw-icon {
+  margin: 0 0.2em;
 }
 
-.gw-primary-hint {
-  font-size: 11px;
-  color: var(--gw-status-warning);
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-/* 上区：变更文件分组与文件行 */
-.gw-changes-groups {
-  display: flex;
-  flex-direction: column;
+.gw-primary-btn-label {
   min-width: 0;
-}
-
-.gw-change-group {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.gw-group-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  height: 24px;
-  padding: 0 var(--gw-pad-x);
-  min-width: 0;
-  user-select: none;
-}
-
-.gw-group-header:hover {
-  background: var(--gw-hover);
-}
-
-.gw-group-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 1 1 0;
-  min-width: 0;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--gw-fg);
-  text-align: left;
-}
-
-.gw-group-title {
-  font-size: 11.5px;
-  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.gw-group-title.is-conflict {
-  color: var(--gw-status-error);
+.gw-primary-hint {
+  padding-top: 4px;
+  font-size: 12px;
+  color: var(--gw-status-warning);
+  overflow-wrap: anywhere;
 }
 
-.gw-group-actions {
-  display: none;
-  align-items: center;
-  gap: 2px;
-  flex: none;
-}
-
-.gw-group-header:hover .gw-group-actions,
-.gw-group-header:focus-within .gw-group-actions {
-  display: inline-flex;
-}
-
+/* 上区：资源分组与文件行（树缩进 8px，展开箭头 16px + 6px 间距） */
+.gw-changes-groups,
+.gw-change-group,
 .gw-group-list {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
+.gw-group-header,
 .gw-file-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 var(--gw-pad-x) 0 calc(var(--gw-pad-x) + 12px);
+  height: 22px;
   min-width: 0;
+  padding-right: 2px;
+  line-height: 22px;
   cursor: pointer;
 }
 
+.gw-group-header:hover,
 .gw-file-row:hover {
-  background: var(--gw-hover);
+  background: var(--gw-list-hover);
 }
 
-.gw-file-row-icon {
-  color: var(--gw-fg-muted);
-  flex: none;
-  display: inline-flex;
+.gw-group-toggle {
+  display: flex;
   align-items: center;
+  flex: 1 1 0;
+  min-width: 0;
+  height: 22px;
+  padding: 0 0 0 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
 
-/* 路径拆段展示：目录先收缩截断，优先保持文件名完整可见 */
+.gw-group-toggle .gw-chevron {
+  margin-right: 6px;
+  transform: translateX(3px);
+}
+
+.gw-group-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-count-badge {
+  flex: none;
+  min-width: 18px;
+  height: 18px;
+  margin: 0 3px 0 6px;
+  padding: 0 5px;
+  border-radius: 11px;
+  background: var(--gw-badge-bg);
+  color: var(--gw-badge-fg);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  text-align: center;
+}
+
+.gw-file-row {
+  padding-left: 30px;
+}
+
+/* vscode-icons 文件类型图标（<img>） */
+.gw-file-icon {
+  display: block;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+}
+
+/* 文件名与目录描述同行：目录先截断，名称尽量完整 */
 .gw-split-path {
   display: flex;
-  align-items: baseline;
-  gap: 5px;
   flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
+  white-space: pre;
 }
 
 .gw-file-name {
@@ -828,147 +805,121 @@ body.is-resizing-panes {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--gw-fg);
 }
 
 .gw-file-dir {
   flex: 1 999 auto;
   min-width: 0;
+  margin-left: 0.5em;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: var(--gw-fg-muted);
+  font-size: 0.9em;
+  opacity: var(--gw-description-opacity);
 }
 
+.gw-file-row.is-deleted .gw-split-path,
+.gw-commit-file-row.is-missing .gw-split-path {
+  text-decoration: line-through;
+}
+
+.gw-group-actions,
 .gw-row-actions {
   display: none;
   align-items: center;
-  gap: 1px;
+  gap: 0;
   flex: none;
+  margin-left: 4px;
 }
 
+.gw-group-header:hover .gw-group-actions,
+.gw-group-header:focus-within .gw-group-actions,
 .gw-file-row:hover .gw-row-actions,
 .gw-file-row:focus-within .gw-row-actions {
-  display: inline-flex;
+  display: flex;
 }
 
 @media (hover: none) {
   .gw-group-actions,
   .gw-row-actions,
   .gw-commit-detail-btn {
-    display: inline-flex !important;
+    display: flex !important;
   }
 }
 
+/* Git 状态字母装饰：16px 列、右侧 3px，与分组计数徽标中线对齐 */
 .gw-status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  width: 14px;
-  text-align: center;
-  font-family: var(--gw-font-mono-resolved);
-  font-size: 11px;
-  font-weight: 700;
+  min-width: 16px;
+  height: 16px;
+  margin: 0 3px 0 5px;
+  font-size: 90%;
+  font-weight: 600;
+  opacity: 0.75;
+  color: var(--gw-git-modified);
 }
 
-.gw-status-badge.is-modified {
-  color: var(--gw-status-warning);
+.gw-status-badge.is-added {
+  color: var(--gw-git-added);
 }
 
-.gw-status-badge.is-added,
 .gw-status-badge.is-untracked {
-  color: var(--gw-status-success);
+  color: var(--gw-git-untracked);
 }
 
-.gw-status-badge.is-deleted,
-.gw-status-badge.is-conflicted {
-  color: var(--gw-status-error);
+.gw-status-badge.is-deleted {
+  color: var(--gw-git-deleted);
 }
 
 .gw-status-badge.is-renamed,
 .gw-status-badge.is-copied {
-  color: var(--gw-primary);
+  color: var(--gw-git-renamed);
+}
+
+.gw-status-badge.is-conflicted {
+  color: var(--gw-git-conflicting);
 }
 
 .gw-quiet-empty {
-  padding: 16px var(--gw-pad-x);
-  font-size: 12px;
-  color: var(--gw-fg-muted);
+  padding: 8px 20px;
+  color: var(--gw-fg);
+  opacity: var(--gw-description-opacity);
   text-align: center;
 }
 
-/* 下区：图表紧凑顶栏与搜索栏 */
-.gw-graph-toolbar {
-  gap: 4px;
-}
-
-.gw-toolbar-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  flex: none;
-}
-
-.gw-scope-btn {
-  height: 20px;
-  padding: 0 7px;
-  margin-right: 2px;
-  border: 1px solid var(--gw-border);
-  border-radius: 999px;
-  background: var(--gw-field);
-  color: var(--gw-fg);
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 18px;
-  white-space: nowrap;
-  transition: background-color 100ms ease, border-color 100ms ease;
-}
-
-.gw-scope-btn:hover:not(:disabled) {
-  background: var(--gw-hover);
-  border-color: color-mix(in srgb, var(--gw-fg) 24%, transparent);
-}
-
-.gw-scope-btn.is-all {
-  background: color-mix(in srgb, var(--gw-primary) 14%, transparent);
-  border-color: color-mix(in srgb, var(--gw-primary) 42%, transparent);
-  color: var(--gw-primary);
-}
-
+/* 下区：提交搜索栏 */
 .gw-search-bar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px var(--gw-pad-x);
-  border-bottom: 1px solid var(--gw-line);
-  background: var(--gw-muted);
   flex: 0 0 auto;
   min-width: 0;
+  padding: 4px 12px 4px 8px;
 }
 
 .gw-search-field {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   flex: 1 1 0;
   min-width: 0;
   height: 24px;
-  padding: 0 6px;
-  border: 1px solid var(--gw-border);
-  border-radius: 4px;
-  background: var(--gw-bg);
+  padding: 0 2px 0 6px;
+  border: 1px solid var(--gw-input-border);
+  border-radius: 2px;
+  background: var(--gw-input-bg);
 }
 
 .gw-search-field:focus-within {
-  border-color: var(--gw-primary);
-  box-shadow: 0 0 0 1px var(--gw-primary);
+  outline: 1px solid var(--gw-focus-border);
+  outline-offset: -1px;
 }
 
 .gw-search-icon {
-  color: var(--gw-fg-muted);
-  flex: none;
   display: inline-flex;
+  flex: none;
+  opacity: 0.8;
 }
 
 .gw-search-input {
@@ -977,8 +928,7 @@ body.is-resizing-panes {
   border: 0;
   background: transparent;
   color: var(--gw-fg);
-  font-size: 12px;
-  outline: none;
+  font-size: 13px;
 }
 
 .gw-search-input:focus-visible {
@@ -989,7 +939,7 @@ body.is-resizing-panes {
   color: var(--gw-placeholder);
 }
 
-/* 下区：24px 紧凑提交行与拓扑图 */
+/* 下区：提交行（history-item：图形列 + 标题/作者 + 引用徽标 + 行内操作） */
 .gw-commit-list {
   display: flex;
   flex-direction: column;
@@ -997,102 +947,133 @@ body.is-resizing-panes {
 }
 
 .gw-commit-row {
+  --gw-row-bg: var(--gw-bg);
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 var(--gw-pad-x);
+  height: 22px;
   min-width: 0;
-  overflow: hidden;
+  padding-right: 2px;
+  line-height: 22px;
   cursor: pointer;
   user-select: none;
+  overflow: hidden;
 }
 
 .gw-commit-row:hover {
-  background: var(--gw-hover);
-}
-
-.gw-commit-row.is-expanded {
-  background: color-mix(in srgb, var(--gw-fg) 4%, transparent);
+  --gw-row-bg: var(--gw-list-hover);
 }
 
 .gw-commit-row.is-popover-active {
-  background: color-mix(in srgb, var(--gw-primary) 10%, transparent);
+  --gw-row-bg: var(--gw-list-active);
 }
 
-.gw-graph-svg {
-  flex: none;
+.gw-commit-row:hover,
+.gw-commit-row.is-popover-active {
+  background: var(--gw-row-bg);
+}
+
+/*
+ * VS Code 的图形列不设宽度上限；窄栏下泳道极多时这里在右侧裁切，至少给标题留出 96px。
+ * 常见泳道数远达不到该上限，此时与 VS Code 一致。
+ */
+.gw-graph-container {
+  display: flex;
+  flex-shrink: 0;
+  max-width: calc(100% - 96px);
+  height: 22px;
+  overflow: hidden;
+}
+
+.gw-graph,
+.gw-graph-placeholder {
   display: block;
-  overflow: visible;
+  flex: none;
 }
 
-.gw-commit-subject {
-  flex: 1 1 60px;
+.gw-graph-placeholder {
+  max-width: calc(100% - 96px);
+}
+
+/* 圆点描边取行背景色，在连线上切出间隙；悬停时外圈描边透明、内圈跟随悬停背景 */
+.gw-graph > circle {
+  stroke: var(--gw-row-bg);
+}
+
+.gw-commit-row.is-current .gw-graph > circle:last-child {
+  fill: var(--gw-row-bg);
+}
+
+.gw-commit-row:hover .gw-graph > circle:first-of-type {
+  stroke: transparent;
+}
+
+/* 展开的提交加粗向下连线，与文件子行加粗泳道衔接 */
+.gw-commit-row.is-expanded .gw-graph-outgoing {
+  stroke-width: 3px;
+}
+
+.gw-commit-label {
+  flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.gw-commit-author {
+  margin-left: 0.5em;
+  font-size: 0.9em;
+  opacity: var(--gw-description-opacity);
+}
+
+.gw-commit-row.is-current .gw-commit-subject,
+.gw-commit-row.is-current .gw-commit-author {
+  font-weight: 600;
+}
+
+.gw-commit-refs {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  margin-left: 4px;
+}
+
+.gw-ref-badge {
+  display: flex;
+  align-items: center;
+  border-radius: 10px;
+  color: var(--gw-graph-badge-fg);
+  line-height: 18px;
+}
+
+.gw-ref-badge-count {
+  padding-left: 4px;
+  font-size: 12px;
+}
+
+.gw-ref-badge-icon {
+  box-sizing: content-box;
+  padding: 1px;
+}
+
+.gw-ref-badge-icon.is-gitBranch {
+  width: 12px;
+  height: 12px;
+  padding: 3px;
+}
+
+.gw-ref-badge-name {
+  max-width: 100px;
+  padding-right: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: var(--gw-fg);
-}
-
-.gw-commit-refs {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 48%;
-  overflow: hidden;
-}
-
-.gw-ref-pill {
-  display: inline-block;
-  flex: 0 1 auto;
-  max-width: 84px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
-  font-size: 10.5px;
-  font-weight: 500;
-  line-height: 15px;
-  border: 1px solid var(--gw-line);
-  background: var(--gw-field);
-  color: var(--gw-fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gw-ref-pill.is-head {
-  background: color-mix(in srgb, var(--gw-primary) 15%, transparent);
-  border-color: color-mix(in srgb, var(--gw-primary) 45%, transparent);
-  color: var(--gw-primary);
-  font-weight: 600;
-}
-
-.gw-ref-pill.is-branch {
-  background: color-mix(in srgb, var(--gw-status-success) 13%, transparent);
-  border-color: color-mix(in srgb, var(--gw-status-success) 35%, transparent);
-  color: var(--gw-status-success);
-}
-
-.gw-ref-pill.is-tag {
-  background: color-mix(in srgb, var(--gw-status-warning) 13%, transparent);
-  border-color: color-mix(in srgb, var(--gw-status-warning) 35%, transparent);
-  color: var(--gw-status-warning);
-}
-
-.gw-ref-pill.is-more {
-  flex: none;
-  font-family: var(--gw-font-mono-resolved);
 }
 
 .gw-commit-detail-btn {
   display: none;
-  width: 20px;
-  height: 20px;
-  flex: none;
+  margin-left: 4px;
 }
 
 .gw-commit-row:hover .gw-commit-detail-btn,
@@ -1101,244 +1082,259 @@ body.is-resizing-panes {
   display: inline-flex;
 }
 
-/* 原地展开的提交文件子行 */
+/* 展开的提交文件子行（history-item-change：贯穿泳道 + 22px 树缩进） */
 .gw-commit-files {
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
-.gw-commit-file-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 22px;
-  padding: 0 var(--gw-pad-x);
-  min-width: 0;
-  overflow: hidden;
-  border: 0;
-  background: color-mix(in srgb, var(--gw-fg) 2.5%, transparent);
-  text-align: left;
-  width: 100%;
-}
-
-.gw-commit-file-row:hover:not(:disabled) {
-  background: var(--gw-hover);
-}
-
-.gw-commit-file-row.is-missing {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.gw-commit-file-row.is-missing .gw-file-name {
-  text-decoration: line-through;
-}
-
-.gw-commit-file-indent {
-  width: 10px;
-  flex: none;
-  border-left: 1px dashed var(--gw-line);
-  height: 12px;
-  margin-left: 4px;
-}
-
+.gw-commit-file-row,
 .gw-commit-file-loading,
 .gw-commit-file-empty {
   display: flex;
   align-items: center;
-  gap: 6px;
+  width: 100%;
   height: 22px;
-  padding: 0 var(--gw-pad-x);
-  font-size: 11px;
-  color: var(--gw-fg-muted);
-  background: color-mix(in srgb, var(--gw-fg) 2.5%, transparent);
+  min-width: 0;
+  padding: 0 2px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--gw-fg);
+  line-height: 22px;
+  text-align: left;
+  overflow: hidden;
 }
 
-.gw-graph-footer {
-  padding: 8px var(--gw-pad-x) 12px;
+.gw-commit-file-row:hover:not(:disabled) {
+  background: var(--gw-list-hover);
+}
+
+.gw-commit-file-row.is-missing {
+  opacity: 0.6;
+}
+
+.gw-tree-indent {
+  flex: none;
+  width: 8px;
+}
+
+.gw-quiet-row-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: var(--gw-description-opacity);
+}
+
+/* 「加载更多」行：泳道向下淡出 + 居中链接 */
+.gw-load-more-row {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: center;
+  height: 22px;
+}
+
+.gw-load-more-row:hover {
+  background: var(--gw-list-hover);
+}
+
+.gw-graph-placeholder.is-fading {
+  mask-image: linear-gradient(black, transparent);
 }
 
 .gw-load-more-btn {
-  height: 26px;
-  padding: 0 12px;
-  border: 1px solid var(--gw-border);
-  border-radius: 5px;
-  background: var(--gw-field);
-  color: var(--gw-fg);
-  font-size: 11.5px;
-  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--gw-link);
+  line-height: 22px;
 }
 
-.gw-load-more-btn:hover:not(:disabled) {
-  background: var(--gw-hover);
+.gw-load-more-btn .gw-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .gw-load-more-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .gw-soft-limit-notice {
-  font-size: 11px;
-  color: var(--gw-fg-muted);
+  padding: 6px 20px 10px;
+  font-size: 12px;
   text-align: center;
-  line-height: 1.4;
+  opacity: var(--gw-description-opacity);
 }
 
-/* ⋯ 更多菜单浮层 */
+/* ⋯ 菜单（monaco-menu） */
 .gw-dropdown-menu {
   position: fixed;
   z-index: 70;
-  min-width: 196px;
-  max-width: calc(100vw - 16px);
-  padding: 4px;
-  border: 1px solid var(--gw-border);
-  border-radius: 6px;
-  background: var(--gw-card);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  min-width: 160px;
+  max-width: calc(100vw - 16px);
+  padding: 4px 0;
+  border: 1px solid var(--gw-widget-border);
+  border-radius: 5px;
+  background: var(--gw-widget-bg);
+  box-shadow: 0 2px 8px var(--gw-widget-shadow);
 }
 
 .gw-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 8px;
+  display: block;
+  width: auto;
+  height: 2em;
+  margin: 0 4px;
+  padding: 0 2em;
   border: 0;
-  border-radius: 4px;
+  border-radius: 3px;
   background: transparent;
   color: var(--gw-fg);
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 2em;
   text-align: left;
-}
-
-.gw-menu-item:hover {
-  background: var(--gw-hover);
-}
-
-.gw-menu-item-icon {
-  color: var(--gw-fg-muted);
-  flex: none;
-  display: inline-flex;
-}
-
-.gw-menu-item-text {
-  flex: 1 1 0;
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* 最小遮挡提交详情悬浮卡 */
+.gw-menu-item:hover,
+.gw-menu-item:focus-visible {
+  background: var(--gw-primary);
+  color: var(--gw-primary-fg);
+  outline: none;
+}
+
+/* 提交详情悬浮卡（monaco-hover） */
 .gw-popover {
   position: fixed;
   z-index: 60;
-  max-width: calc(100vw - 16px);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--gw-border);
-  border-radius: 8px;
-  background: var(--gw-card);
+  max-width: calc(100vw - 16px);
+  padding: 0;
+  border: 1px solid var(--gw-widget-border);
+  border-radius: 5px;
+  background: var(--gw-widget-bg);
   color: var(--gw-fg);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.25);
-  overflow-y: auto;
+  box-shadow: 0 2px 8px var(--gw-widget-shadow);
+  font-size: 13px;
+  line-height: 1.5;
   overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .gw-popover > * {
   flex: none;
+  margin: 0;
+  padding: 0 8px;
+  overflow-wrap: anywhere;
 }
 
 .gw-popover-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 6px;
+  padding-top: 6px;
+}
+
+.gw-popover-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 4px;
   min-width: 0;
 }
 
-.gw-popover-sha {
-  font-family: var(--gw-font-mono-resolved);
-  font-size: 11px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--gw-field);
-  color: var(--gw-primary);
+.gw-popover-author > .gw-icon {
+  align-self: center;
 }
 
-.gw-popover-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.gw-popover-copy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid var(--gw-border);
-  border-radius: 4px;
-  background: var(--gw-field);
-  color: var(--gw-fg);
-  font-size: 11px;
-}
-
-.gw-popover-copy-btn:hover {
-  background: var(--gw-hover);
+.gw-popover-time {
+  margin-left: -4px;
 }
 
 .gw-popover-subject {
-  margin: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1.4;
-  overflow-wrap: anywhere;
+  padding-top: 4px;
+}
+
+.gw-popover-body,
+.gw-popover-loading {
+  padding-top: 4px;
+  white-space: pre-wrap;
+}
+
+.gw-popover-loading,
+.gw-popover-meta {
+  opacity: var(--gw-description-opacity);
 }
 
 .gw-popover-meta {
+  padding-top: 4px;
+}
+
+.gw-popover > :last-child {
+  padding-bottom: 4px;
+}
+
+.gw-popover-section {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--gw-widget-border);
+}
+
+.gw-popover-refs {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 11.5px;
-  color: var(--gw-fg-muted);
-  overflow-wrap: anywhere;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 2px;
 }
 
-.gw-popover-body {
-  margin: 0;
-  padding: 7px 8px;
-  border-radius: 5px;
-  background: var(--gw-field);
+.gw-popover-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  padding: 0 8px 0 6px;
+  border-radius: 10px;
+  color: var(--gw-graph-badge-fg);
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-popover-ref.is-default {
+  background: var(--gw-badge-bg);
+  color: var(--gw-badge-fg);
+}
+
+.gw-popover-ref .gw-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.gw-popover-footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gw-popover-sha {
+  color: var(--gw-link);
   font-family: var(--gw-font-mono-resolved);
-  font-size: 11px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--gw-fg);
+  font-size: 12px;
 }
 
-.gw-popover-body.is-empty {
-  color: var(--gw-fg-muted);
-  font-family: var(--gw-font-ui-resolved);
-  font-style: italic;
-}
-
-/* 模态对话框（替代 window.confirm/alert/prompt） */
+/* 模态对话框（monaco-dialog） */
 .gw-modal-overlay {
   position: fixed;
   inset: 0;
@@ -1347,26 +1343,22 @@ body.is-resizing-panes {
   align-items: center;
   justify-content: center;
   padding: 12px;
-  background: rgba(0, 0, 0, 0.48);
+  background: rgba(0, 0, 0, 0.3);
 }
 
 .gw-modal {
-  width: min(340px, 100%);
-  max-height: calc(100vh - 24px);
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 14px;
-  border: 1px solid var(--gw-border);
-  border-radius: 8px;
-  background: var(--gw-card);
+  width: min(340px, 100%);
+  max-height: calc(100vh - 24px);
+  padding: 16px;
+  border: 1px solid var(--gw-widget-border);
+  border-radius: 5px;
+  background: var(--gw-widget-bg);
   color: var(--gw-fg);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34);
-}
-
-.gw-modal.is-danger {
-  border-color: color-mix(in srgb, var(--gw-status-error) 50%, var(--gw-border));
+  box-shadow: 0 0 8px 2px var(--gw-widget-shadow);
+  overflow-y: auto;
 }
 
 .gw-modal-header {
@@ -1376,51 +1368,41 @@ body.is-resizing-panes {
 }
 
 .gw-modal-icon {
-  flex: none;
   display: inline-flex;
+  flex: none;
   color: var(--gw-primary);
 }
 
 .gw-modal.is-danger .gw-modal-icon {
-  color: var(--gw-status-error);
+  color: var(--gw-status-warning);
 }
 
 .gw-modal-title {
   margin: 0;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 1.35;
-}
-
-.gw-modal.is-danger .gw-modal-title {
-  color: var(--gw-status-error);
+  line-height: 1.4;
 }
 
 .gw-modal-body {
   margin: 0;
-  font-size: 12px;
   line-height: 1.5;
-  color: var(--gw-fg-muted);
   overflow-wrap: anywhere;
-}
-
-.gw-modal.is-danger .gw-modal-body {
-  color: var(--gw-status-error);
 }
 
 .gw-modal-select {
   width: 100%;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--gw-border);
-  border-radius: 5px;
-  background: var(--gw-field);
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--gw-input-border);
+  border-radius: 2px;
+  background: var(--gw-input-bg);
   color: var(--gw-fg);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .gw-modal-select option {
-  background: var(--gw-card);
+  background: var(--gw-widget-bg);
   color: var(--gw-fg);
 }
 
@@ -1429,50 +1411,41 @@ body.is-resizing-panes {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 2px;
+  margin-top: 4px;
+}
+
+.gw-btn-secondary,
+.gw-btn-confirm {
+  padding: 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .gw-btn-secondary {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--gw-border);
-  border-radius: 5px;
-  background: var(--gw-field);
+  background: var(--gw-button-secondary-bg);
   color: var(--gw-fg);
-  font-size: 12px;
-  font-weight: 500;
 }
 
 .gw-btn-secondary:hover {
-  background: var(--gw-hover);
+  background: var(--gw-button-secondary-hover);
 }
 
 .gw-btn-confirm {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid transparent;
-  border-radius: 5px;
   background: var(--gw-primary);
   color: var(--gw-primary-fg);
-  font-size: 12px;
-  font-weight: 500;
 }
 
 .gw-btn-confirm:hover {
-  filter: brightness(1.06);
+  background: var(--gw-button-hover);
 }
 
-.gw-btn-confirm.is-danger {
-  background: var(--gw-status-error);
-  color: #ffffff;
-}
-
-/* 轻提示 Toast */
-.gw-toast-container {
+/* 轻提示（notification toast）：每个触发控件一栈，top / bottom 由 toast.js 按控件位置写入 */
+.gw-toast-stack {
   position: fixed;
   left: 8px;
   right: 8px;
-  bottom: 8px;
   z-index: 90;
   display: flex;
   flex-direction: column;
@@ -1481,35 +1454,27 @@ body.is-resizing-panes {
 }
 
 .gw-toast {
-  pointer-events: auto;
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--gw-border);
-  border-radius: 6px;
-  background: var(--gw-card);
+  padding: 8px 6px 8px 10px;
+  border: 1px solid var(--gw-widget-border);
+  border-radius: 4px;
+  background: var(--gw-widget-bg);
   color: var(--gw-fg);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.24);
-  font-size: 12px;
-  line-height: 1.4;
+  box-shadow: 0 0 8px 2px var(--gw-widget-shadow);
+  line-height: 18px;
 }
 
-.gw-toast.is-error {
-  border-color: color-mix(in srgb, var(--gw-status-error) 50%, var(--gw-border));
-}
-
-.gw-toast.is-success {
-  border-color: color-mix(in srgb, var(--gw-status-success) 45%, var(--gw-border));
-}
-
-.gw-toast.is-warning {
-  border-color: color-mix(in srgb, var(--gw-status-warning) 45%, var(--gw-border));
+/* 提示贴在操作控件旁、常压在列表行上，除关闭按钮外点击穿透，不挡住正在操作的行 */
+.gw-toast > .gw-icon-btn {
+  pointer-events: auto;
 }
 
 .gw-toast-icon {
   flex: none;
-  margin-top: 1px;
+  padding-top: 1px;
+  color: var(--gw-primary);
 }
 
 .gw-toast.is-error .gw-toast-icon {
@@ -1524,10 +1489,6 @@ body.is-resizing-panes {
   color: var(--gw-status-warning);
 }
 
-.gw-toast.is-info .gw-toast-icon {
-  color: var(--gw-primary);
-}
-
 .gw-toast-content {
   flex: 1 1 0;
   min-width: 0;
@@ -1535,52 +1496,16 @@ body.is-resizing-panes {
 }
 
 .gw-toast-detail {
-  margin-top: 3px;
+  margin-top: 2px;
   font-family: var(--gw-font-mono-resolved);
-  font-size: 10.5px;
-  color: var(--gw-fg-muted);
+  font-size: 12px;
+  opacity: var(--gw-description-opacity);
   overflow-wrap: anywhere;
 }
 
-/* 窄幅断点 <= 340px：收紧水平留白、隐藏次要元数据并压缩标签宽度 */
+/* 窄幅断点 <= 340px：隐藏次要分支元数据 */
 @container ag-git-pane (max-width: 340px) {
-  .gw-repo-bar,
-  .gw-banner-stack,
-  .gw-empty-state,
-  .gw-dual-pane {
-    --gw-pad-x: 8px;
-  }
-
   .gw-repo-branch-meta {
     display: none;
-  }
-
-  .gw-section-title {
-    font-size: 10.5px;
-    letter-spacing: 0.02em;
-  }
-
-  .gw-scope-btn {
-    padding: 0 6px;
-    font-size: 10.5px;
-  }
-
-  .gw-icon-btn {
-    width: 22px;
-    height: 22px;
-  }
-
-  .gw-commit-refs {
-    max-width: 42%;
-  }
-
-  .gw-ref-pill {
-    max-width: 58px;
-    font-size: 10px;
-    padding: 0 4px;
-  }
-
-  .gw-file-row {
-    padding-left: calc(var(--gw-pad-x) + 8px);
   }
 }
