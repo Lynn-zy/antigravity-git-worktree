@@ -1,8 +1,14 @@
 /**
  * Antigravity Git Graph 上区「更改」视图组件，布局对齐 VS Code 源代码管理「更改」视图。
- * 负责特殊状态横幅（冲突/游离 HEAD/裸仓）、按 repo.id 内存保留的提交草稿、
+ * 负责特殊状态横幅（冲突/游离 HEAD/裸仓）、长列表按可视区渲染的文件分组、按 repo.id 内存保留的提交草稿、
  * 智能主按钮状态机、可折叠变更分组及三档 Discard 安全确认护栏。
  */
+
+// 与 styles.css 中 .gw-file-row 的固定行高一致，虚拟列表按它换算滚动位置
+const FILE_ROW_HEIGHT_PX = 22;
+// 单个分组不超过这么多行时整表渲染；超过后只渲染可视区附近的行
+const FULL_RENDER_ROW_LIMIT = 500;
+const OVERSCAN_ROWS = 10;
 
 const PRIMARY_ICON_BY_ACTION = Object.freeze({
   commit: 'check',
@@ -232,6 +238,7 @@ export const createChangesView = (elements, deps) => {
   let currentRepoId = null;
   let showValidationError = false;
   let latestRenderState = null;
+  let groupViews = [];
 
   // 持久挂载横幅、输入区与列表区，避免后台刷新打断 textarea 拼音/IME 组合输入
   const bannersEl = doc.createElement('div');
@@ -438,6 +445,196 @@ export const createChangesView = (elements, deps) => {
     bannersEl.replaceChildren(fragment);
   };
 
+  const createFileRow = ({ groupKey, file, index, total, activeRepo, t, isConflicted }) => {
+    const rowEl = doc.createElement('div');
+    rowEl.className = 'gw-file-row';
+    rowEl.tabIndex = 0;
+    rowEl.setAttribute('role', 'listitem');
+    rowEl.setAttribute('aria-posinset', String(index + 1));
+    rowEl.setAttribute('aria-setsize', String(total));
+    rowEl.dataset.testid = `change-file-${groupKey}`;
+    rowEl.dataset.filePath = file.path;
+    rowEl.dataset.focusGroup = groupKey;
+    rowEl.dataset.focusIndex = String(index);
+    rowEl.dataset.focusId = `file:${groupKey}:${file.path}`;
+
+    const fullTooltip = file.origPath ? `${file.origPath} → ${file.path}` : file.path;
+    rowEl.title = fullTooltip;
+
+    const statusMeta = normalizeStatusMeta(file, isConflicted, t);
+    rowEl.classList.add(statusMeta.className);
+    rowEl.append(deps.createFileIcon(file.path), deps.createSplitPath(file.path, file.origPath));
+
+    const rowActions = doc.createElement('div');
+    rowActions.className = 'gw-row-actions';
+
+    rowActions.append(
+      createActionButton({
+        iconName: 'goToFile',
+        title: t('action.openFile'),
+        focusId: `file-act:${groupKey}:open:${file.path}`,
+        onClick: () => deps.onOpenFile(file, rowEl),
+      }),
+    );
+
+    if (groupKey === 'staged') {
+      const unstageBtn = createActionButton({
+        iconName: 'remove',
+        title: t('action.unstage'),
+        focusId: `file-act:${groupKey}:unstage:${file.path}`,
+        onClick: () => {
+          void deps.onUnstage({
+            worktreePath: activeRepo.worktreePath,
+            all: false,
+            paths: [file.path],
+          });
+        },
+      });
+      unstageBtn.dataset.testid = 'file-unstage-btn';
+      rowActions.append(unstageBtn);
+    } else if (groupKey === 'unstaged') {
+      const isUntracked = Boolean(file.untracked);
+      const discardBtn = createActionButton({
+        iconName: 'discard',
+        title: isUntracked ? t('action.deleteUntracked') : t('action.discard'),
+        focusId: `file-act:${groupKey}:discard:${file.path}`,
+        onClick: () => {
+          deps.openModal({
+            title: isUntracked
+              ? t('modal.deleteUntracked.title')
+              : t('modal.discardFile.title'),
+            body: isUntracked
+              ? t('modal.deleteUntracked.body', { path: file.path })
+              : t('modal.discardFile.body', { path: file.path }),
+            confirmLabel: isUntracked
+              ? t('modal.deleteUntracked.confirm')
+              : t('modal.discardFile.confirm'),
+            cancelLabel: t('modal.cancel'),
+            variant: isUntracked ? 'danger' : 'default',
+            onConfirm: () => {
+              void deps.onDiscard({
+                worktreePath: activeRepo.worktreePath,
+                allTracked: false,
+                paths: [file.path],
+                untracked: isUntracked,
+              });
+            },
+          });
+        },
+      });
+      discardBtn.dataset.testid = isUntracked ? 'file-delete-untracked-btn' : 'file-discard-btn';
+
+      const stageBtn = createActionButton({
+        iconName: 'add',
+        title: t('action.stage'),
+        focusId: `file-act:${groupKey}:stage:${file.path}`,
+        onClick: () => {
+          void deps.onStage({
+            worktreePath: activeRepo.worktreePath,
+            all: false,
+            paths: [file.path],
+          });
+        },
+      });
+      stageBtn.dataset.testid = 'file-stage-btn';
+      rowActions.append(discardBtn, stageBtn);
+    }
+
+    const statusBadge = doc.createElement('span');
+    statusBadge.className = `gw-status-badge ${statusMeta.className}`;
+    statusBadge.textContent = statusMeta.letter;
+    statusBadge.title = statusMeta.label;
+    statusBadge.setAttribute('aria-label', statusMeta.label);
+
+    rowEl.append(rowActions, statusBadge);
+
+    rowEl.addEventListener('click', () => {
+      deps.onOpenFile(file, rowEl);
+    });
+    rowEl.addEventListener('keydown', (event) => {
+      if (event.target !== rowEl) return;
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        deps.onOpenFile(file, rowEl);
+      }
+    });
+
+    return rowEl;
+  };
+
+  // 计算分组列表当前应渲染的行区间 [start, end)；短列表整表渲染，保持 Tab 可遍历全部文件
+  const computeRowWindow = (view, containerRect) => {
+    const total = view.files.length;
+    if (total <= FULL_RENDER_ROW_LIMIT) {
+      return { start: 0, end: total };
+    }
+    // 列表顶部相对滚动容器可视区顶部的偏移，滚过头时为负
+    const listOffset = view.listEl.getBoundingClientRect().top - containerRect.top;
+    const firstVisible = Math.floor(-listOffset / FILE_ROW_HEIGHT_PX);
+    const lastVisible = Math.ceil((groupsEl.clientHeight - listOffset) / FILE_ROW_HEIGHT_PX);
+    const start = Math.min(total, Math.max(0, firstVisible - OVERSCAN_ROWS));
+    const end = Math.min(total, Math.max(start, lastVisible + OVERSCAN_ROWS));
+    return { start, end };
+  };
+
+  // 只增删窗口两端的行，留在窗口内的行原地不动，避免带焦点的行被移出 DOM 而失焦
+  const syncRowWindow = (view, containerRect) => {
+    const { start, end } = computeRowWindow(view, containerRect);
+    if (start === view.start && end === view.end) return;
+
+    const keptStart = Math.max(start, view.start);
+    const keptEnd = Math.min(end, view.end);
+    for (const [index, rowEl] of view.rows) {
+      if (index < keptStart || index >= keptEnd) {
+        rowEl.remove();
+        view.rows.delete(index);
+      }
+    }
+
+    const createRows = (from, to) => {
+      const created = [];
+      for (let index = from; index < to; index += 1) {
+        const rowEl = createFileRow({ ...view.rowContext, file: view.files[index], index, total: view.files.length });
+        view.rows.set(index, rowEl);
+        created.push(rowEl);
+      }
+      return created;
+    };
+
+    if (keptStart >= keptEnd) {
+      view.topSpacerEl.after(...createRows(start, end));
+    } else {
+      view.rows.get(keptStart).before(...createRows(start, keptStart));
+      view.rows.get(keptEnd - 1).after(...createRows(keptEnd, end));
+    }
+
+    view.start = start;
+    view.end = end;
+    view.topSpacerEl.style.height = `${start * FILE_ROW_HEIGHT_PX}px`;
+    view.bottomSpacerEl.style.height = `${(view.files.length - end) * FILE_ROW_HEIGHT_PX}px`;
+  };
+
+  const syncAllRowWindows = () => {
+    // 只有长列表需要读布局，短列表整表渲染时不强制同步布局
+    const needsLayout = groupViews.some((view) => view.files.length > FULL_RENDER_ROW_LIMIT);
+    const containerRect = needsLayout ? groupsEl.getBoundingClientRect() : null;
+    for (const view of groupViews) {
+      syncRowWindow(view, containerRect);
+    }
+  };
+
+  let windowSyncFrame = null;
+  const scheduleRowWindowSync = () => {
+    if (windowSyncFrame !== null) return;
+    windowSyncFrame = doc.defaultView.requestAnimationFrame(() => {
+      windowSyncFrame = null;
+      syncAllRowWindows();
+    });
+  };
+  groupsEl.addEventListener('scroll', scheduleRowWindowSync, { passive: true });
+  // 面板折叠展开、拖动中缝或窗口缩放都会改变可视高度
+  new doc.defaultView.ResizeObserver(scheduleRowWindowSync).observe(groupsEl);
+
   const renderFileGroup = ({ groupKey, title, files, activeRepo, t, isConflicted = false }) => {
     const groupEl = doc.createElement('div');
     groupEl.className = 'gw-change-group';
@@ -540,123 +737,24 @@ export const createChangesView = (elements, deps) => {
       const listEl = doc.createElement('div');
       listEl.className = 'gw-group-list';
       listEl.setAttribute('role', 'list');
-
-      files.forEach((file, index) => {
-        const rowEl = doc.createElement('div');
-        rowEl.className = 'gw-file-row';
-        rowEl.tabIndex = 0;
-        rowEl.setAttribute('role', 'listitem');
-        rowEl.dataset.testid = `change-file-${groupKey}`;
-        rowEl.dataset.filePath = file.path;
-        rowEl.dataset.focusGroup = groupKey;
-        rowEl.dataset.focusIndex = String(index);
-        rowEl.dataset.focusId = `file:${groupKey}:${file.path}`;
-
-        const fullTooltip = file.origPath ? `${file.origPath} → ${file.path}` : file.path;
-        rowEl.title = fullTooltip;
-
-        const statusMeta = normalizeStatusMeta(file, isConflicted, t);
-        rowEl.classList.add(statusMeta.className);
-        rowEl.append(deps.createFileIcon(file.path), deps.createSplitPath(file.path, file.origPath));
-
-        const rowActions = doc.createElement('div');
-        rowActions.className = 'gw-row-actions';
-
-        rowActions.append(
-          createActionButton({
-            iconName: 'goToFile',
-            title: t('action.openFile'),
-            focusId: `file-act:${groupKey}:open:${file.path}`,
-            onClick: () => deps.onOpenFile(file, rowEl),
-          }),
-        );
-
-        if (groupKey === 'staged') {
-          const unstageBtn = createActionButton({
-            iconName: 'remove',
-            title: t('action.unstage'),
-            focusId: `file-act:${groupKey}:unstage:${file.path}`,
-            onClick: () => {
-              void deps.onUnstage({
-                worktreePath: activeRepo.worktreePath,
-                all: false,
-                paths: [file.path],
-              });
-            },
-          });
-          unstageBtn.dataset.testid = 'file-unstage-btn';
-          rowActions.append(unstageBtn);
-        } else if (groupKey === 'unstaged') {
-          const isUntracked = Boolean(file.untracked);
-          const discardBtn = createActionButton({
-            iconName: 'discard',
-            title: isUntracked ? t('action.deleteUntracked') : t('action.discard'),
-            focusId: `file-act:${groupKey}:discard:${file.path}`,
-            onClick: () => {
-              deps.openModal({
-                title: isUntracked
-                  ? t('modal.deleteUntracked.title')
-                  : t('modal.discardFile.title'),
-                body: isUntracked
-                  ? t('modal.deleteUntracked.body', { path: file.path })
-                  : t('modal.discardFile.body', { path: file.path }),
-                confirmLabel: isUntracked
-                  ? t('modal.deleteUntracked.confirm')
-                  : t('modal.discardFile.confirm'),
-                cancelLabel: t('modal.cancel'),
-                variant: isUntracked ? 'danger' : 'default',
-                onConfirm: () => {
-                  void deps.onDiscard({
-                    worktreePath: activeRepo.worktreePath,
-                    allTracked: false,
-                    paths: [file.path],
-                    untracked: isUntracked,
-                  });
-                },
-              });
-            },
-          });
-          discardBtn.dataset.testid = isUntracked ? 'file-delete-untracked-btn' : 'file-discard-btn';
-
-          const stageBtn = createActionButton({
-            iconName: 'add',
-            title: t('action.stage'),
-            focusId: `file-act:${groupKey}:stage:${file.path}`,
-            onClick: () => {
-              void deps.onStage({
-                worktreePath: activeRepo.worktreePath,
-                all: false,
-                paths: [file.path],
-              });
-            },
-          });
-          stageBtn.dataset.testid = 'file-stage-btn';
-          rowActions.append(discardBtn, stageBtn);
-        }
-
-        const statusBadge = doc.createElement('span');
-        statusBadge.className = `gw-status-badge ${statusMeta.className}`;
-        statusBadge.textContent = statusMeta.letter;
-        statusBadge.title = statusMeta.label;
-        statusBadge.setAttribute('aria-label', statusMeta.label);
-
-        rowEl.append(rowActions, statusBadge);
-
-        rowEl.addEventListener('click', () => {
-          deps.onOpenFile(file, rowEl);
-        });
-        rowEl.addEventListener('keydown', (event) => {
-          if (event.target !== rowEl) return;
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            deps.onOpenFile(file, rowEl);
-          }
-        });
-
-        listEl.append(rowEl);
-      });
-
+      const topSpacerEl = doc.createElement('div');
+      topSpacerEl.className = 'gw-list-spacer';
+      topSpacerEl.setAttribute('aria-hidden', 'true');
+      const bottomSpacerEl = topSpacerEl.cloneNode();
+      listEl.append(topSpacerEl, bottomSpacerEl);
       groupEl.append(listEl);
+
+      // 行在分组挂进 DOM 后由 syncAllRowWindows 按可视区填充
+      groupViews.push({
+        files,
+        listEl,
+        topSpacerEl,
+        bottomSpacerEl,
+        rowContext: { groupKey, activeRepo, t, isConflicted },
+        rows: new Map(),
+        start: 0,
+        end: 0,
+      });
     }
 
     return groupEl;
@@ -668,6 +766,7 @@ export const createChangesView = (elements, deps) => {
 
     sectionTitleEl.textContent = t('section.changes');
 
+    groupViews = [];
     if (!activeRepo) {
       bannersEl.classList.add('hidden');
       composerEl.classList.add('hidden');
@@ -758,6 +857,7 @@ export const createChangesView = (elements, deps) => {
     }
 
     groupsEl.replaceChildren(fragment);
+    syncAllRowWindows();
     deps.restoreFocus(groupsEl, savedFocus);
   };
 

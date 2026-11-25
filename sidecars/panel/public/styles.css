@@ -756,6 +756,11 @@ body.is-resizing-panes {
   min-width: 0;
 }
 
+/* 虚拟列表上下占位，撑起未渲染行的高度；不参与伸缩，否则会被滚动容器压扁 */
+.gw-list-spacer {
+  flex: none;
+}
+
 .gw-group-header,
 .gw-file-row {
   display: flex;

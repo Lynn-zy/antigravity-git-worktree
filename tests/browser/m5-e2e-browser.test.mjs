@@ -1559,7 +1559,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { description: 'removed folder disappears by automatic refresh' },
   );
 
-  // 工作区变更超过 5000 条：列表只保留前 5000 条，顶部提示带尾部刷新按钮
+  // 工作区变更超过 5000 条：列表只保留前 5000 条，顶部提示带尾部刷新按钮；长列表只渲染可视区附近的行
   const bulkFiles = Array.from({ length: 5_050 }, (_, i) => path.join(fixtures.repoA, `bulk-${String(i).padStart(5, '0')}.txt`));
   for (const filePath of bulkFiles) {
     fs.writeFileSync(filePath, 'bulk\n', 'utf8');
@@ -1586,6 +1586,23 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   assert.equal(bannerLayout.btnText, '刷新');
   assert.equal(bannerLayout.isTrailing, true, '刷新按钮应位于警示条尾部');
   assert.equal(bannerLayout.withinViewport, true, '警示条与刷新按钮不得横向溢出');
+
+  const virtualList = await page.evaluate(`(() => {
+    const badges = [...document.querySelectorAll('[data-testid="changes-groups"] .gw-count-badge')];
+    const unstagedGroup = document.querySelector('[data-testid="changes-group-unstaged"]');
+    return {
+      totalCount: badges.reduce((sum, el) => sum + Number(el.textContent), 0),
+      unstagedCount: Number(unstagedGroup.querySelector('.gw-count-badge').textContent),
+      renderedRows: document.querySelectorAll('[data-testid^="change-file-"]').length,
+    };
+  })()`);
+  assert.equal(virtualList.totalCount, 5000, '各分组计数之和应为截断后的 5000 条');
+  assert.ok(virtualList.renderedRows < 200, `长列表只应渲染可视区附近的行，实际渲染 ${virtualList.renderedRows} 行`);
+  await page.evaluate('(() => { const el = document.querySelector("[data-testid=changes-groups]"); el.scrollTop = el.scrollHeight; })()');
+  await page.waitFor(
+    `Boolean(document.querySelector('[data-testid="change-file-unstaged"][data-focus-index="${virtualList.unstagedCount - 1}"]'))`,
+    { description: 'scrolling to the bottom renders the last unstaged row' },
+  );
 
   for (const filePath of bulkFiles) {
     fs.rmSync(filePath, { force: true });

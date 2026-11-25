@@ -416,7 +416,8 @@ const bootstrapPanel = () => {
     if (!target && savedFocus.group && Number.isFinite(savedFocus.index)) {
       const groupRows = [...container.querySelectorAll(`.gw-file-row[data-focus-group="${savedFocus.group}"]`)];
       if (groupRows.length > 0) {
-        target = groupRows[Math.min(savedFocus.index, groupRows.length - 1)];
+        // 长列表只渲染可视区附近的行，按行号匹配而不是按已渲染行的位置；原行号已不存在时落到最后一个已渲染行
+        target = groupRows.find((row) => Number(row.dataset.focusIndex) === savedFocus.index) ?? groupRows.at(-1);
       } else {
         target = container.querySelector(`[data-testid="group-toggle-${savedFocus.group}"]`)
           ?? container.querySelector('.gw-file-row, .gw-group-toggle');
