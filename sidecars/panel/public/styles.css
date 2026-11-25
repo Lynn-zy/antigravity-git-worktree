@@ -474,7 +474,7 @@ button:disabled {
   flex: 1 1 0;
 }
 
-/* 窗格标题栏：22px、11px 粗体大写 */
+/* 窗格标题栏：22px 高、粗体大写；标题用 13px 而非 VS Code 的 11px，中文标题在 11px 下偏小 */
 .gw-section-header {
   display: flex;
   align-items: center;
@@ -483,7 +483,7 @@ button:disabled {
   padding-left: 5px;
   min-width: 0;
   overflow: hidden;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: bold;
   line-height: 22px;
   user-select: none;
@@ -1211,7 +1211,7 @@ body.is-resizing-panes {
   outline: none;
 }
 
-/* 提交详情悬浮卡（monaco-hover） */
+/* 提交详情卡（monaco-hover.history-item-hover）：分区之间以 1px 横线分隔 */
 .gw-popover {
   position: fixed;
   z-index: 60;
@@ -1229,73 +1229,54 @@ body.is-resizing-panes {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-}
-
-.gw-popover > * {
-  flex: none;
-  margin: 0;
-  padding: 0 8px;
-  overflow-wrap: anywhere;
-}
-
-.gw-popover-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 6px;
-  padding-top: 6px;
-}
-
-.gw-popover-author {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 4px;
-  min-width: 0;
-}
-
-.gw-popover-author > .gw-icon {
-  align-self: center;
-}
-
-.gw-popover-time {
-  margin-left: -4px;
-}
-
-.gw-popover-subject {
-  padding-top: 4px;
-}
-
-.gw-popover-body,
-.gw-popover-loading {
-  padding-top: 4px;
-  white-space: pre-wrap;
-}
-
-.gw-popover-loading,
-.gw-popover-meta {
-  opacity: var(--gw-description-opacity);
-}
-
-.gw-popover-meta {
-  padding-top: 4px;
-}
-
-.gw-popover > :last-child {
-  padding-bottom: 4px;
+  user-select: text;
 }
 
 .gw-popover-section {
-  margin-top: 6px;
-  padding-top: 4px;
+  flex: none;
+  padding: 4px 8px;
+  overflow-wrap: anywhere;
+}
+
+.gw-popover-section + .gw-popover-section {
   border-top: 1px solid var(--gw-widget-border);
+}
+
+/* :where 不增加优先级，让下方的行间距规则覆盖这里的清零 */
+.gw-popover :where(p, ul, ol, pre, blockquote, hr, h1, h2, h3, h4, h5, h6) {
+  margin: 0;
+}
+
+.gw-popover-content > * + * {
+  margin-top: 4px;
+}
+
+/* 作者行的账号、时钟图标随文字排版，与 VS Code 悬浮卡里的 codicon 一致 */
+.gw-popover-person .gw-icon {
+  display: inline-block;
+  vertical-align: text-bottom;
+}
+
+.gw-popover-person-name {
+  color: var(--gw-link);
+}
+
+.gw-popover-loading {
+  opacity: var(--gw-description-opacity);
+}
+
+.gw-popover-stats .is-insertions {
+  color: var(--gw-git-added);
+}
+
+.gw-popover-stats .is-deletions {
+  color: var(--gw-git-deleted);
 }
 
 .gw-popover-refs {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  padding-bottom: 2px;
 }
 
 .gw-popover-ref {
@@ -1332,6 +1313,72 @@ body.is-resizing-panes {
   color: var(--gw-link);
   font-family: var(--gw-font-mono-resolved);
   font-size: 12px;
+}
+
+/* 提交说明 Markdown：每行一块，空行处（.is-spaced）留出段落间距 */
+.gw-markdown > * + *,
+.gw-markdown li > * + *,
+.gw-markdown li + li {
+  margin-top: 4px;
+}
+
+.gw-markdown .is-spaced {
+  margin-top: 12px;
+}
+
+.gw-markdown :is(ul, ol) {
+  padding-left: 20px;
+}
+
+.gw-markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-size: 1em;
+  line-height: 1.5;
+}
+
+.gw-markdown h1 {
+  font-size: 1.2em;
+}
+
+.gw-markdown blockquote {
+  padding-left: 8px;
+  border-left: 3px solid var(--gw-widget-border);
+  opacity: var(--gw-description-opacity);
+}
+
+.gw-markdown hr {
+  height: 0;
+  border: 0;
+  border-top: 1px solid var(--gw-widget-border);
+}
+
+.gw-markdown code {
+  padding: 0 0.4em;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--gw-fg) 10%, transparent);
+  font-family: var(--gw-font-mono-resolved);
+  font-size: 0.92em;
+}
+
+.gw-markdown pre {
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--gw-fg) 10%, transparent);
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.gw-markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.gw-markdown a {
+  color: var(--gw-link);
+  text-decoration: none;
+}
+
+.gw-markdown a:hover {
+  text-decoration: underline;
 }
 
 /* 模态对话框（monaco-dialog） */

@@ -13,10 +13,8 @@ import {
   computeCommitFilesPlaceholder,
   groupHistoryItemBadges,
 } from './graph-layout.js';
-import {
-  computeMinOcclusionPopoverStyle,
-  createPopoverController,
-} from './popover.js';
+import { computeMinOcclusionPopoverStyle } from './popover.js';
+import { renderCommitMarkdown } from './markdown.js';
 import { formatRelativeTime, formatAbsoluteTime } from './i18n.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -112,6 +110,7 @@ const formatFileStatus = (status) => {
  * 创建下区「图表」视图控制器，协调顶栏工具、提交拓扑图、原地文件展开、分页与详情悬浮卡。
  *
  * @param {{
+ *   headerEl: HTMLElement,
  *   sectionTitleEl: HTMLElement,
  *   toolbarActionsEl: HTMLElement,
  *   searchBarEl: HTMLElement,
@@ -144,6 +143,7 @@ const formatFileStatus = (status) => {
  */
 export const createGraphView = (elements, deps) => {
   const {
+    headerEl,
     sectionTitleEl,
     toolbarActionsEl,
     searchBarEl,
@@ -164,7 +164,8 @@ export const createGraphView = (elements, deps) => {
   let moreMenuOpen = false;
   let latestRenderState = null;
   let latestViewModelBySha = new Map();
-  let lastPopoverSha = null;
+  // 当前打开详情卡的提交；详情卡只由行尾「查看提交详情」按钮打开
+  let popoverSha = null;
 
   // 持久挂载搜索栏输入框，保证输入与 IME 期间不被后台刷新销毁
   const searchFieldEl = doc.createElement('div');
@@ -225,104 +226,90 @@ export const createGraphView = (elements, deps) => {
     return badgeEl;
   };
 
-  const renderAndPositionPopover = (sha) => {
-    if (!latestRenderState || !sha) return;
-    const viewModel = latestViewModelBySha.get(sha);
-    const anchorEl = findCommitRowEl(sha);
-    if (!viewModel || !anchorEl) {
-      popoverController.close();
-      return;
+  const createPopoverPerson = (name, email, suffix = '') => {
+    const lineEl = doc.createElement('p');
+    lineEl.className = 'gw-popover-person';
+    const nameEl = doc.createElement('strong');
+    nameEl.className = 'gw-popover-person-name';
+    nameEl.textContent = name;
+    if (email) nameEl.title = email;
+    lineEl.append(deps.createIcon('account'), ' ', nameEl);
+    if (suffix) {
+      const suffixEl = doc.createElement('em');
+      suffixEl.textContent = ` (${suffix})`;
+      lineEl.append(suffixEl);
     }
+    return lineEl;
+  };
 
+  const createPopoverSection = (className, children) => {
+    const sectionEl = doc.createElement('div');
+    sectionEl.className = `gw-popover-section ${className}`;
+    sectionEl.append(...children);
+    return sectionEl;
+  };
+
+  const createStatsLine = ({ files, insertions, deletions }, t) => {
+    const statsEl = doc.createElement('p');
+    statsEl.append(t(files === 1 ? 'popover.fileChanged' : 'popover.filesChanged', { count: files }));
+    const parts = [
+      { count: insertions, className: 'is-insertions', one: 'popover.insertion', many: 'popover.insertions' },
+      { count: deletions, className: 'is-deletions', one: 'popover.deletion', many: 'popover.deletions' },
+    ];
+    for (const { count, className, one, many } of parts) {
+      if (!count) continue;
+      const partEl = doc.createElement('span');
+      partEl.className = className;
+      partEl.textContent = t(count === 1 ? one : many, { count });
+      statsEl.append(', ', partEl);
+    }
+    return statsEl;
+  };
+
+  // 卡片分区与 VS Code Git 扩展的提交悬浮卡一致：作者与提交说明、改动统计、引用、SHA 操作
+  const buildPopoverSections = (viewModel, { t, locale }) => {
     const { commit } = viewModel;
-    const { t, locale } = latestRenderState;
-    const detail = commitDetailCache.get(sha);
-    const isLoadingDetail = loadingDetailShas.has(sha);
-    const popState = popoverController.getState();
-    const shortSha = commit.shortSha || sha.slice(0, 7);
+    const detail = commitDetailCache.get(commit.sha);
 
-    const headerEl = doc.createElement('div');
-    headerEl.className = 'gw-popover-header';
-
-    const authorEl = doc.createElement('div');
-    authorEl.className = 'gw-popover-author';
-    authorEl.append(deps.createIcon('account'));
-    const authorNameEl = doc.createElement('strong');
-    authorNameEl.textContent = commit.authorName || '';
-    if (commit.authorEmail) authorNameEl.title = commit.authorEmail;
-    authorEl.append(authorNameEl);
-    const relTime = formatRelativeTime(commit.timestamp, locale);
+    // 不联网取头像，与 VS Code 取不到头像时一样显示账号图标
+    const authorEl = createPopoverPerson(commit.authorName || '', commit.authorEmail);
     const absTime = formatAbsoluteTime(commit.timestamp, locale);
-    if (relTime || absTime) {
-      const timeEl = doc.createElement('span');
-      timeEl.className = 'gw-popover-time';
-      timeEl.textContent = relTime && absTime ? `, ${relTime} (${absTime})` : `, ${absTime || relTime}`;
-      authorEl.append(timeEl);
+    if (absTime) {
+      authorEl.append(', ', deps.createIcon('history'), ` ${formatRelativeTime(commit.timestamp, locale)} (${absTime})`);
     }
-    headerEl.append(authorEl);
-
-    if (popState.pinned) {
-      const closeBtn = doc.createElement('button');
-      closeBtn.type = 'button';
-      closeBtn.className = 'gw-icon-btn';
-      closeBtn.dataset.testid = 'popover-close-btn';
-      closeBtn.title = t('popover.close');
-      closeBtn.setAttribute('aria-label', t('popover.close'));
-      closeBtn.append(deps.createIcon('close'));
-      closeBtn.addEventListener('click', () => popoverController.close());
-      headerEl.append(closeBtn);
+    const contentChildren = [authorEl];
+    for (const coAuthor of detail?.coAuthors ?? []) {
+      contentChildren.push(createPopoverPerson(coAuthor.name, coAuthor.email, t('popover.coAuthor')));
     }
-
-    const subjectEl = doc.createElement('p');
-    subjectEl.id = 'popover-subject';
-    subjectEl.className = 'gw-popover-subject';
-    subjectEl.textContent = detail?.subject || commit.subject || '';
-
-    const children = [headerEl, subjectEl];
-    const trimmedBody = typeof detail?.body === 'string' ? detail.body.trim() : '';
-    if (isLoadingDetail && !detail) {
+    const message = detail ? [detail.subject, detail.body].filter(Boolean).join('\n\n') : (commit.subject || '');
+    contentChildren.push(renderCommitMarkdown(doc, message));
+    if (!detail && loadingDetailShas.has(commit.sha)) {
       const loadingEl = doc.createElement('p');
       loadingEl.className = 'gw-popover-loading';
-      loadingEl.textContent = t('graph.loadingDetail');
-      children.push(loadingEl);
-    } else if (trimmedBody) {
-      const bodyBox = doc.createElement('p');
-      bodyBox.className = 'gw-popover-body';
-      bodyBox.textContent = trimmedBody;
-      children.push(bodyBox);
+      loadingEl.textContent = t('popover.loading');
+      contentChildren.push(loadingEl);
     }
+    const sections = [createPopoverSection('gw-popover-content', contentChildren)];
 
-    const coAuthors = Array.isArray(detail?.coAuthors) ? detail.coAuthors : [];
-    if (coAuthors.length > 0) {
-      const coLine = doc.createElement('p');
-      coLine.className = 'gw-popover-meta';
-      const coText = coAuthors
-        .map((author) => (author.email ? `${author.name} <${author.email}>` : author.name))
-        .join(', ');
-      coLine.textContent = `${t('popover.coAuthors')}: ${coText}`;
-      children.push(coLine);
+    if (detail?.stats) {
+      sections.push(createPopoverSection('gw-popover-stats', [createStatsLine(detail.stats, t)]));
     }
 
     if (viewModel.references.length > 0) {
-      const refsEl = doc.createElement('div');
-      refsEl.className = 'gw-popover-section gw-popover-refs';
-      for (const ref of viewModel.references) {
+      const refEls = viewModel.references.map((ref) => {
         const refEl = doc.createElement('span');
         refEl.className = ref.color ? 'gw-popover-ref' : 'gw-popover-ref is-default';
         if (ref.color) refEl.style.backgroundColor = ref.color;
         refEl.title = ref.name;
-        refEl.append(deps.createIcon(ref.icon));
         const refNameEl = doc.createElement('span');
         refNameEl.textContent = ref.name;
-        refEl.append(refNameEl);
-        refsEl.append(refEl);
-      }
-      children.push(refsEl);
+        refEl.append(deps.createIcon(ref.icon), refNameEl);
+        return refEl;
+      });
+      sections.push(createPopoverSection('gw-popover-refs', refEls));
     }
 
-    const footerEl = doc.createElement('div');
-    footerEl.className = 'gw-popover-section gw-popover-footer';
-    footerEl.append(deps.createIcon('gitCommit'));
+    const shortSha = commit.shortSha || commit.sha.slice(0, 7);
     const shaSpan = doc.createElement('span');
     shaSpan.className = 'gw-popover-sha';
     shaSpan.textContent = shortSha;
@@ -340,15 +327,13 @@ export const createGraphView = (elements, deps) => {
         }
       });
     });
-    footerEl.append(shaSpan, copyBtn);
-    children.push(footerEl);
+    sections.push(createPopoverSection('gw-popover-footer', [deps.createIcon('gitCommit'), shaSpan, copyBtn]));
+    return sections;
+  };
 
-    const isDifferentCommit = lastPopoverSha !== sha;
-    lastPopoverSha = sha;
-
-    popoverEl.replaceChildren(...children);
-    popoverEl.classList.remove('hidden');
-
+  const positionPopover = (anchorEl) => {
+    // 量自然高度要先去掉 maxHeight，这会让滚动位置归零，量完后恢复
+    const { scrollTop } = popoverEl;
     const viewportRect = {
       top: 0,
       left: 0,
@@ -382,18 +367,42 @@ export const createGraphView = (elements, deps) => {
     popoverEl.style.maxHeight = `${style.maxHeight}px`;
     popoverEl.dataset.placement = style.placement;
     popoverEl.dataset.occludedGraphPx = String(Math.round(style.occludedGraphPx));
-    if (isDifferentCommit) {
-      popoverEl.scrollTop = 0;
+    popoverEl.scrollTop = scrollTop;
+  };
+
+  const renderPopover = (sha) => {
+    const viewModel = latestViewModelBySha.get(sha);
+    const anchorEl = findCommitRowEl(sha);
+    if (!latestRenderState || !viewModel || !anchorEl) {
+      closePopover();
+      return;
     }
+    popoverEl.setAttribute('aria-label', viewModel.commit.subject || viewModel.commit.sha);
+    popoverEl.replaceChildren(...buildPopoverSections(viewModel, latestRenderState));
+    popoverEl.classList.remove('hidden');
+    positionPopover(anchorEl);
+  };
+
+  // 滚动与窗口缩放只移动卡片，不重建内容，保留卡片内的滚动位置与选中的文字
+  const repositionPopover = () => {
+    const anchorEl = popoverSha ? findCommitRowEl(popoverSha) : null;
+    if (anchorEl) positionPopover(anchorEl);
   };
 
   const syncActiveCommitHighlight = () => {
-    const { activeSha, pinned } = popoverController.getState();
     for (const row of bodyEl.querySelectorAll('.gw-commit-row')) {
-      const isMatch = Boolean(activeSha && row.dataset.commitSha === activeSha);
-      row.classList.toggle('is-popover-active', isMatch);
-      row.querySelector('.gw-commit-detail-btn')?.classList.toggle('is-active', isMatch && pinned);
+      const isActive = row.dataset.commitSha === popoverSha;
+      row.classList.toggle('is-popover-active', isActive);
+      row.querySelector('.gw-commit-detail-btn')?.classList.toggle('is-active', isActive);
     }
+  };
+
+  const closePopover = () => {
+    if (popoverSha === null) return;
+    popoverSha = null;
+    popoverEl.classList.add('hidden');
+    popoverEl.replaceChildren();
+    syncActiveCommitHighlight();
   };
 
   const ensureCommitDetail = async (sha) => {
@@ -428,32 +437,26 @@ export const createGraphView = (elements, deps) => {
       if (expandedCommits.has(sha) && latestRenderState) {
         renderCommitList(latestRenderState);
       }
-      if (popoverController.getState().activeSha === sha) {
-        renderAndPositionPopover(sha);
+      if (popoverSha === sha) {
+        renderPopover(sha);
       }
     }
   };
 
-  const popoverController = createPopoverController({
-    onOpen: (sha) => {
-      syncActiveCommitHighlight();
-      // 先触发详情加载使 loadingDetailShas 同步入集，避免首次打开瞬间误判为“已加载且无正文”
-      if (!commitDetailCache.has(sha)) {
-        void ensureCommitDetail(sha);
-      }
-      renderAndPositionPopover(sha);
-    },
-    onClose: () => {
-      lastPopoverSha = null;
-      popoverEl.scrollTop = 0;
-      popoverEl.classList.add('hidden');
-      popoverEl.replaceChildren();
-      syncActiveCommitHighlight();
-    },
-  });
-
-  popoverEl.addEventListener('mouseenter', () => popoverController.enterCard());
-  popoverEl.addEventListener('mouseleave', () => popoverController.leaveCard());
+  const togglePopover = (sha) => {
+    if (popoverSha === sha) {
+      closePopover();
+      return;
+    }
+    popoverSha = sha;
+    syncActiveCommitHighlight();
+    // 先触发详情加载使 loadingDetailShas 同步入集，首次渲染即显示加载提示
+    if (!commitDetailCache.has(sha)) {
+      void ensureCommitDetail(sha);
+    }
+    renderPopover(sha);
+    popoverEl.scrollTop = 0;
+  };
 
   const toggleCommitExpand = async (sha) => {
     if (expandedCommits.has(sha)) {
@@ -584,13 +587,7 @@ export const createGraphView = (elements, deps) => {
   });
 
   bodyEl.addEventListener('scroll', () => {
-    const popState = popoverController.getState();
-    if (!popState.activeSha) return;
-    if (!popState.pinned) {
-      popoverController.close();
-      return;
-    }
-    renderAndPositionPopover(popState.activeSha);
+    repositionPopover();
   }, { passive: true });
 
   doc.addEventListener('pointerdown', (event) => {
@@ -601,32 +598,23 @@ export const createGraphView = (elements, deps) => {
       closeMoreMenu();
     }
 
-    const popState = popoverController.getState();
-    if (popState.pinned && !popoverEl.contains(target)) {
-      const detailTrigger = target instanceof Element ? target.closest('.gw-commit-detail-btn') : null;
-      if (!detailTrigger) {
-        popoverController.close();
-      }
+    // 点详情按钮交给按钮自身切换，避免这里先关闭、按钮再打开
+    const detailTrigger = target instanceof Element ? target.closest('.gw-commit-detail-btn') : null;
+    if (!popoverEl.contains(target) && !detailTrigger) {
+      closePopover();
     }
   });
 
   doc.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      if (moreMenuOpen) {
-        closeMoreMenu();
-      }
-      if (popoverController.getState().activeSha) {
-        popoverController.close();
-      }
+      closeMoreMenu();
+      closePopover();
     }
   });
 
   win.addEventListener('resize', () => {
     closeMoreMenu();
-    const popState = popoverController.getState();
-    if (popState.activeSha) {
-      renderAndPositionPopover(popState.activeSha);
-    }
+    repositionPopover();
   });
 
   const renderToolbar = ({ activeRepo, graphScope, pendingOp, t }) => {
@@ -680,7 +668,8 @@ export const createGraphView = (elements, deps) => {
           if (searchQuery) clearSearch();
           const headRow = findCommitRowEl(activeRepo.headOid);
           if (!headRow) {
-            deps.showToast(t('graph.headNotLoaded'), 'info', { anchor: toolbarActionsEl });
+            // 与提取、刷新等顶栏操作共用标题栏锚点，提示叠进同一栈而不是同位置重叠
+            deps.showToast(t('graph.headNotLoaded'), 'info', { anchor: headerEl });
             return;
           }
           headRow.scrollIntoView({ block: 'nearest' });
@@ -828,7 +817,7 @@ export const createGraphView = (elements, deps) => {
     return filesWrap;
   };
 
-  const renderCommitRow = (viewModel, { activeRepo, popState, t }) => {
+  const renderCommitRow = (viewModel, t) => {
     const { commit } = viewModel;
     const isExpanded = expandedCommits.has(commit.sha);
     const isCurrent = viewModel.kind === 'HEAD';
@@ -837,14 +826,14 @@ export const createGraphView = (elements, deps) => {
     rowEl.className = 'gw-commit-row';
     rowEl.classList.toggle('is-expanded', isExpanded);
     rowEl.classList.toggle('is-current', isCurrent);
-    rowEl.classList.toggle('is-popover-active', popState.activeSha === commit.sha);
+    rowEl.classList.toggle('is-popover-active', popoverSha === commit.sha);
     rowEl.tabIndex = 0;
     rowEl.setAttribute('role', 'listitem');
     rowEl.setAttribute('aria-expanded', String(isExpanded));
     rowEl.dataset.testid = 'commit-row';
     rowEl.dataset.commitSha = commit.sha;
     rowEl.dataset.focusId = `commit:${commit.sha}`;
-    // 提交行已有悬浮详情卡，仅写 aria-label 不写 title，避免浏览器原生文字 tooltip 与悬浮卡片重叠
+    // 只写 aria-label 不写 title：详情由行尾按钮打开，原生 tooltip 只会重复一遍标题
     rowEl.setAttribute('aria-label', `${commit.shortSha || commit.sha.slice(0, 7)} ${commit.subject || ''}`.trim());
 
     const graphContainerEl = doc.createElement('span');
@@ -875,9 +864,8 @@ export const createGraphView = (elements, deps) => {
 
     const detailBtn = doc.createElement('button');
     detailBtn.type = 'button';
-    detailBtn.className = popState.activeSha === commit.sha && popState.pinned
-      ? 'gw-icon-btn gw-commit-detail-btn is-active'
-      : 'gw-icon-btn gw-commit-detail-btn';
+    detailBtn.className = 'gw-icon-btn gw-commit-detail-btn';
+    detailBtn.classList.toggle('is-active', popoverSha === commit.sha);
     detailBtn.dataset.testid = 'commit-detail-btn';
     detailBtn.dataset.focusId = `commit-detail:${commit.sha}`;
     detailBtn.title = t('graph.openDetailCard');
@@ -885,18 +873,12 @@ export const createGraphView = (elements, deps) => {
     detailBtn.append(deps.createIcon('info'));
     detailBtn.addEventListener('click', (event) => {
       event.stopPropagation();
-      popoverController.togglePin(commit.sha);
+      togglePopover(commit.sha);
     });
     rowEl.append(detailBtn);
 
     rowEl.addEventListener('click', () => {
       void toggleCommitExpand(commit.sha);
-    });
-    rowEl.addEventListener('mouseenter', () => {
-      popoverController.enterAnchor(commit.sha);
-    });
-    rowEl.addEventListener('mouseleave', () => {
-      popoverController.leaveAnchor();
     });
 
     return rowEl;
@@ -937,14 +919,14 @@ export const createGraphView = (elements, deps) => {
     const savedFocus = deps.captureFocus(bodyEl);
 
     if (!activeRepo) {
-      popoverController.close();
+      closePopover();
       latestViewModelBySha = new Map();
       bodyEl.replaceChildren();
       return;
     }
 
     if (activeRepo.isUnborn) {
-      popoverController.close();
+      closePopover();
       latestViewModelBySha = new Map();
       const unbornEl = doc.createElement('div');
       unbornEl.className = 'gw-quiet-empty';
@@ -961,7 +943,7 @@ export const createGraphView = (elements, deps) => {
       : allCommits;
 
     if (matchedCommits.length === 0) {
-      popoverController.close();
+      closePopover();
       latestViewModelBySha = new Map();
       const emptyEl = doc.createElement('div');
       emptyEl.className = 'gw-quiet-empty';
@@ -996,9 +978,8 @@ export const createGraphView = (elements, deps) => {
     listEl.dataset.testid = 'graph-commit-list';
     listEl.setAttribute('role', 'list');
 
-    const popState = popoverController.getState();
     for (const viewModel of viewModels) {
-      listEl.append(renderCommitRow(viewModel, { activeRepo, popState, t }));
+      listEl.append(renderCommitRow(viewModel, t));
       if (expandedCommits.has(viewModel.commit.sha)) {
         listEl.append(renderCommitFiles(viewModel, t));
       }
@@ -1014,13 +995,7 @@ export const createGraphView = (elements, deps) => {
     bodyEl.replaceChildren(...(footerEl ? [listEl, footerEl] : [listEl]));
     deps.restoreFocus(bodyEl, savedFocus);
 
-    if (popState.activeSha) {
-      if (!latestViewModelBySha.has(popState.activeSha)) {
-        popoverController.close();
-      } else {
-        renderAndPositionPopover(popState.activeSha);
-      }
-    }
+    if (popoverSha) renderPopover(popoverSha);
   };
 
   const render = (state) => {
@@ -1043,12 +1018,12 @@ export const createGraphView = (elements, deps) => {
     detailErrors.clear();
     loadingDetailShas.clear();
     expandedCommits.clear();
-    popoverController.close();
+    closePopover();
   };
 
   const closeOverlays = () => {
     closeMoreMenu();
-    popoverController.close();
+    closePopover();
   };
 
   return {

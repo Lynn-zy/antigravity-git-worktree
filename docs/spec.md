@@ -15,7 +15,7 @@
 1. **被动跟随宿主工作区**：监听宿主 `workspace-change` 事件与本地 `.git`、工作区文件变化，自动同步当前对话 `Workspace` 命中的 `Repository`、`Worktree` 与当前分支状态。单仓库场景下顶部不占额外高度；当单个 `Workspace` 同时命中 2 个及以上 `Repository` 时，顶部显示一行紧凑仓库切换栏。
 2. **VS Code 风格上下可拖拽双区（无 Tab）**：
    - **上区（更改）**：原生提交说明输入框（支持 `Ctrl/Cmd + Enter`）、智能主按钮（工作区有改动时始终可点「提交」，未暂存时弹窗确认自动暂存全部并提交；工作区干净时随上游状态切换为「推送更改 N↑」「发布分支」或「拉取更改 N↓」）、可折叠的「暂存的更改」与「更改」文件列表（支持单文件与全部暂存、取消暂存，以及带确认护栏的放弃更改与未跟踪文件删除）。
-   - **下区（图表）**：单行紧凑顶栏（`自动 / 全部` 分支范围、转到当前提交、`Fetch`、`Pull`、`Push / Publish`、`Refresh`、`⋯` 更多菜单）、移植自 VS Code「图表」视图的 `22px` 内联 SVG 提交拓扑图、点击提交行原地展开改动文件列表、最小图表遮挡的悬浮提交详情卡。
+   - **下区（图表）**：单行紧凑顶栏（`自动 / 全部` 分支范围、转到当前提交、`Fetch`、`Pull`、`Push / Publish`、`Refresh`、`⋯` 更多菜单）、移植自 VS Code「图表」视图的 `22px` 内联 SVG 提交拓扑图、点击提交行原地展开改动文件列表、点击行尾「查看提交详情」按钮打开的最小图表遮挡提交详情卡。
 3. **宿主原生文件打开**：点击上区更改文件或下区展开的历史提交文件，统一调用 `window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri })` 在宿主辅助栏打开文件，插件内不自建 Diff 查看器。
 4. **外观与双语适配**：通过语义 CSS 变量与 1×1 Canvas 亮度检测同步宿主明暗主题，支持窄幅视口（`320px–560px`）零横向溢出，支持中英双语切换。
 
@@ -38,7 +38,7 @@
 /
 ├── plugin.json                         # Antigravity 插件清单
 ├── assets/
-│   └── logo.svg                        # 插件图标（Codicons git-branch 字形，与无仓库空态图标一致）
+│   └── logo.svg                        # 插件图标（Codicons git-branch 字形，与无仓库空态图标一致，四周留白）
 ├── sidecars/
 │   └── panel/
 │       ├── sidecar.json                # Auxiliary Pane Sidecar 清单
@@ -59,17 +59,18 @@
 │           ├── index.html              # 面板文档骨架（保留 <script src="/preload.js">）
 │           ├── styles.css              # VS Code 源代码管理视图尺寸、宿主语义色映射与窄幅 @container
 │           ├── app.js                  # 顶层状态协调、宿主桥接、长轮询与事件绑定
-│           ├── file-icons/             # vscode-icons 文件类型 SVG（只含映射表用到的图标）与其 LICENSE
+│           ├── file-icons/             # vscode-icons 文件与文件夹 SVG（只含映射表用到的图标）与其 LICENSE
 │           └── modules/
 │               ├── api-client.js       # 统一 POST JSON 客户端（window.sidecar.fetch 回退 fetch）
 │               ├── theme.js            # MutationObserver + 1x1 Canvas 明暗检测与对比度校正
 │               ├── i18n.js             # 中英双语词典与相对/绝对时间格式化
 │               ├── graph-layout.js     # 泳道布局纯函数（移植自 VS Code scmHistory.ts）
 │               ├── codicons.js         # VS Code Codicons 图标路径（由源 SVG 机械转换）
-│               ├── file-icon-map.js    # 文件名、扩展名到 vscode-icons 图标的映射（机械生成）
-│               ├── file-icons.js       # 按 VS Code 图标主题顺序解析文件图标 URL
+│               ├── file-icon-map.js    # 文件名、扩展名、文件夹名到 vscode-icons 图标的映射（机械生成）
+│               ├── file-icons.js       # 按 VS Code 图标主题顺序解析文件与文件夹图标 URL
 │               ├── toast.js            # 轻提示就近定位纯函数与提示栈控制
-│               ├── popover.js          # 最小可见图表遮挡悬浮定位纯函数与详情卡控制
+│               ├── popover.js          # 提交详情卡最小遮挡定位纯函数
+│               ├── markdown.js         # 提交说明 Markdown 解析（纯函数）与 DOM 渲染
 │               ├── changes-view.js     # 上区「更改」渲染与确认弹窗交互
 │               └── graph-view.js       # 下区提交图表、原地文件展开与顶栏交互
 ├── scripts/
@@ -280,7 +281,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 #### 2. `POST /api/commit/detail`
 
-用户展开某条提交的文件列表，或悬停打开提交详情卡时按需调用（前端按 `sha` 做内存缓存，切换仓库或强制刷新时清空）。
+用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时按需调用（前端按 `sha` 做内存缓存，切换仓库或强制刷新时清空）。
 
 - **Request**：`{ "worktreePath": "...", "sha": "2a76567..." }`（校验 `sha` 匹配 `/^[0-9a-f]{7,64}$/i`）
 - **Response `data`**：
@@ -290,6 +291,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
     "subject": "docs: align domain docs with dual-pane passive scope",
     "body": "完整提交正文（不含已解析出的 Co-authored-by 行）",
     "coAuthors": [{ "name": "Claude Opus 5.5", "email": "noreply@anthropic.com" }],
+    "stats": { "files": 6, "insertions": 336, "deletions": 78 },
     "files": [
       {
         "status": "M",
@@ -366,6 +368,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 | 图谱分页 | 首屏 `limit = 150`，点击「加载更多」每次 `+200`，硬上限 `2000` | 采用增大 `limit` 重拉并在前端按 `sha` 稳定合并，避免提交新增导致 `--skip` 漂移重复。达到 `2000` 时置 `reachedSoftLimit: true` 提示缩小范围。 |
 | 提交正文 | `git ... --no-optional-locks show -s --format=%B --end-of-options <sha>` | 逐行提取末尾 `Co-authored-by: Name <email>`（大小写不敏感）至 `coAuthors[]`，其余文本归入 `body`。 |
 | 提交文件清单 | `git ... --no-optional-locks show --name-status -M -m --first-parent --format= -z --end-of-options <sha>` | 根提交与 Merge Commit 均稳定输出标准状态，空提交返回空 Buffer 解析为 `files: []`。普通项占 2 token（`<status>`, `<path>`），`R*`/`C*` 重命名复制项占 3 token（`<status>`, **`origPath` 在前、`newPath` 在后**，与 `status -z` 相反）。对每个最终路径检查 `existsSync` 返回 `existsInWorktree`。 |
+| 提交改动统计 | `git ... --no-optional-locks show --numstat -M -m --first-parent --format= -z --end-of-options <sha>` | 每个文件一条 `<增>\t<删>\t<路径>`，汇总为 `stats.files`、`stats.insertions`、`stats.deletions`。重命名复制项的路径字段为空，源路径与新路径各占随后一个 token；二进制文件的增删为 `-`，只计入文件数。不用 `--shortstat`，因为它的文案会随 Git 界面语言翻译。numstat 要逐个比较文件内容，在 1120 个文件的提交上实测比 name-status 慢约 4 倍。numstat 单独超时（`GIT_TIMEOUT`）时 `stats` 为 `null`，正文与文件清单照常返回；其他错误仍让请求失败。 |
 | 暂存 | 单/多文件 `git add -- <paths>`；全部 `git add -A` | 走 Worktree 级写队列。 |
 | 取消暂存 | 有提交：`git restore --staged -- <paths>`（全部不传路径或传 `.`）；**unborn 仓库**：`git rm --cached -r -- <paths>` | 实测 unborn 仓库执行 `git restore --staged` 会报 `fatal: could not resolve 'HEAD'`，必须走 `git rm --cached`。 |
 | 放弃更改 | 已跟踪：`git restore --worktree -- <paths>`（批量 `git restore --worktree -- .`）；单文件未跟踪：`git clean -f -- <path>` | 仅还原工作区，保留已暂存改动（`MM` 态不伤暂存区）；批量绝不执行 `git clean`。 |
@@ -417,7 +420,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 - **根结构**：全高 Flex 纵向布局（`100vh`，零页面级横向溢出），外层容器声明 `container: ag-git-pane / inline-size`。
 - **多仓顶部栏**：仅 `repositories.length >= 2` 时渲染一行 `30px` 紧凑仓库下拉条；单仓时不渲染。
 - **双区与中缝拖拽**：
-  - 上区 `∨ 更改` 与下区 `∨ 图表` 为 `22px` 窗格标题栏，各自独立支持点击折叠/展开；下区标题栏上边框即两区分界线。
+  - 上区 `∨ 更改` 与下区 `∨ 图表` 为 `22px` 窗格标题栏，各自独立支持点击折叠/展开；下区标题栏上边框即两区分界线。标题文字为 `13px` 粗体，比 VS Code 的 `11px` 大，因为中文标题在 `11px` 下偏小。
   - 双区均展开时两区交界处有一条不占高度的 `4px` 拖拽条，悬停 `300ms` 后显示强调色（指针拖动实时更新上区占比 `splitRatio`，范围 `0.15–0.85`，松手后写入 `/api/preferences`；双区各自内部 `overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain`）。
   - 任一区折叠时，另一展开区自动撑满剩余高度。
 - **窄屏防溢出约束**：
@@ -447,6 +450,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
      - 工作区干净且与上游同步（或无远端）：显示禁用态「提交」（或保持无待同步状态）。
 4. **可折叠文件分组与行操作**：
    - 分组行行尾显示文件数徽标；文件行依次为文件类型图标（与分组标题文字左对齐，距左缘 `30px`）、文件名、淡色目录，行尾为按 Git 装饰色着色的单字母状态（`M`/`A`/`D`/`R`/`U`/`!`），已删除文件加删除线。工作区干净时列表留空，不显示占位文案。
+   - 整个未跟踪的目录在 `git status` 中只占一项，路径以 `/` 结尾（如 `docs/public/`）。这一行显示文件夹图标，文件名位置显示文件夹名 `public`，淡色目录显示上级目录 `docs`。
    - 「暂存的更改」：悬停显示「打开文件」「取消暂存 (`−`)」；分组行悬停显示「全部取消暂存」。
    - 「更改」：合并未暂存与未跟踪文件。悬停显示「打开文件」「放弃更改 (`↶`)」「暂存更改 (`+`)」；分组行悬停显示「全部放弃更改」「全部暂存」。
    - `MM` 双态文件同时出现在两组中，对「更改」组执行放弃更改仅调用 `git restore --worktree`，保留暂存区内容。
@@ -461,7 +465,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 右侧紧凑动作组：`自动 / 全部` 范围切换、转到当前提交（定位并聚焦 `HEAD` 行）、`Fetch`（提取）、`Pull`（拉取）、`Push`（推送/发布）、`Refresh`（刷新）、`⋯`（更多菜单）。
    - `⋯` 菜单固定包含 3 项：**本地提交搜索栏显隐**（按提交标题、短 SHA、作者与分支名即时过滤已加载节点，不发后端请求）、**折叠全部已展开提交**、**切换界面语言（中文 / English）**。
 2. **紧凑提交行与原地展开**：
-   - 行结构对齐 VS Code「图表」视图。每行固定 `22px`，左侧 SVG 图形列宽度按本行泳道数计算（`11px × (泳道数 + 1)`），标题紧随其后，作者以淡色小字附在标题后，`HEAD` 行加粗；行尾为引用徽标，悬停时显示详情图标。窄栏下泳道极多时，图形列在右侧裁切，至少给标题留出 `96px`。
+   - 行结构对齐 VS Code「图表」视图。每行固定 `22px`，左侧 SVG 图形列宽度按本行泳道数计算（`11px × (泳道数 + 1)`），标题紧随其后，作者以淡色小字附在标题后，`HEAD` 行加粗；行尾为引用徽标，悬停或聚焦时显示「查看提交详情」按钮。窄栏下泳道极多时，图形列在右侧裁切，至少给标题留出 `96px`。
    - 引用徽标按当前分支 > 上游 > 其他有色引用排序；首个有色引用显示图标与名称，其余按颜色、图标归组只显示图标（多于 1 个时带数量）。`自动` 范围只显示当前分支与上游；`全部` 范围的其余引用取所在泳道颜色。图标为当前分支 `target`、本地分支 `git-branch`、远程分支 `cloud`、标签 `tag`。
    - 点击提交行（或按 `Enter`/`Space`）调用 `/api/commit/detail` 并在该行下方原地展开文件列表（按 `A/M/D/R` 标记）。文件行左侧绘制所属提交的输出泳道竖线，并加粗该提交向下接续第一父提交的泳道（根提交没有接续泳道，不加粗），提交行自身的下行线同步加粗；文件图标位于泳道列之后 `8px`。
    - 列表底部在 `hasMore === true` 且未达软上限时显示「加载更多...」行（左侧泳道向下淡出）；达到 `2000` 条软上限时显示提示引导切换为 `自动` 范围。
@@ -480,9 +484,17 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 4. **列表边界**：父提交不在已加载列表内时，泳道一直延伸到列表末尾，由「加载更多」行的淡出竖线承接。本地搜索时只连接结果集内部的父子关系。
 5. **与 VS Code 原实现的差异**：根提交处保留其余泳道（原实现会丢弃，多根仓库会断线）；未实现 Incoming / Outgoing Changes 虚拟节点。
 
-### 7.5 最小遮挡悬浮提交详情卡（`popover.js`）
+### 7.5 最小遮挡提交详情卡（`popover.js`、`markdown.js`）
 
-鼠标悬停提交行（延迟 `260ms` 打开，移入卡片区域保活，移出 `180ms` 关闭）或点击行末文档图标（固定开启直至点击外部或按 `Escape`）显示 VS Code 风格提交详情卡，自上而下为：作者名与相对、绝对时间（如 `1 天前 (2026-11-20 11:17)`）、提交标题与完整正文 `%B`、共同创作者列表（若有）、引用列表，以及短 SHA 与复制完整 SHA 按钮。
+点击提交行行尾的「查看提交详情」按钮打开提交详情卡。再次点击该按钮、点击卡片外部或按 `Escape` 关闭。悬停提交行不弹出卡片。卡片打开期间该行保持高亮。列表滚动或窗口缩放时卡片只跟随该行移动、不重建内容，卡片内的滚动位置与选中的文字保持不变。卡片的无障碍名称是提交标题。
+
+卡片分区与 VS Code Git 扩展的提交悬浮卡一致，各区之间以横线分隔：
+
+1. **作者行**：账号图标、作者名（链接色粗体）、时钟图标、相对时间与长日期，如 `9 小时前 (2026年11月24日 11:21)`、`9 hours ago (November 24, 2026 at 11:21 AM)`。插件不联网获取头像，始终显示账号图标，与 VS Code 取不到头像时一致。每位共同作者另起一行，名字后标注「(共同作者)」。
+2. **提交说明**：标题与正文按 Markdown 渲染，分块规则取自 VS Code 的 `formatCommitMessage`。每行各自成块，空行处留出段落间距，围栏代码块与缩进代码块整体保留。支持标题、列表（含嵌套）、引用、分隔线、行内代码、粗体、斜体、删除线与链接。HTML 标签与图片语法按原文显示。链接只保留 `http`、`https`、`mailto` 三种协议，以新窗口打开，由宿主交给系统浏览器。渲染只创建 DOM 节点，不拼接 HTML 字符串。
+3. **改动统计**：相对第一父提交的改动，如 `已更改 6 个文件, 336 行插入(+), 78 行删除(-)`。插入、删除分别用 Git 新增、删除装饰色；为 0 的部分省略。详情加载完成前不显示这一区，提交说明下方显示「正在加载提交详情…」；统计超时（`stats: null`）时也不显示。
+4. **引用**：提交上有引用时显示，样式同图表行的引用徽标。
+5. **SHA**：提交图标、短 SHA 与复制完整 SHA 按钮。
 
 定位由纯函数 `computeMinOcclusionPopoverStyle(anchorRect, cardSize, graphContentRect, viewportRect)` 计算：
 
@@ -491,8 +503,8 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - **下方候选** `topBelow = anchorRect.bottom + gap`（钳制在 `viewportRect.bottom - pad - cardSize.height` 以内；若撞到锚点行则记录不可行）。
 2. 对每个可行候选位置，计算卡片矩形 `[top, top + cardSize.height]` 与**可见图表列表内容区** `graphContentRect` 的垂直交集像素长度（`occludedGraphPx`）。
 3. 决策规则：
-   - 优先选择 `occludedGraphPx` 更小的位置（因此悬停在第 1、2 条提交时，上方借用上区空间，遮挡图表行像素少于下方，自动向上弹出）。
-   - 若上下两个可行位置的 `occludedGraphPx` 相等（如悬停在图表区中部），默认选**下方**。
+   - 优先选择 `occludedGraphPx` 更小的位置（因此第 1、2 条提交的详情卡借用上方的上区空间，遮挡图表行像素少于下方，向上弹出）。
+   - 若上下两个可行位置的 `occludedGraphPx` 相等（如图表区中部的提交），默认选**下方**。
    - 若某一方向在 `iframe` 视口内空间不足，自动翻转至另一方向并严格钳制在 `viewportRect` 内，确保内容可内部纵向滚动且绝不被 `iframe` 裁切。
 
 ### 7.6 主题、字体、图标、提示、快捷键与无障碍
@@ -511,9 +523,10 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 4. **文件类型图标**：
    - 上区文件行与图表展开的文件行使用 vscode-icons 图标，以 `<img src="/file-icons/<名称>.svg">` 按需加载。
    - 匹配顺序与 VS Code 文件图标主题一致：完整文件名优先，其次从最长到最短的多段扩展名（如 `d.ts` 先于 `ts`），都不命中时用默认文件图标；不区分大小写。
-   - 浅色主题下，有浅色变体的图标改用 `file_type_light_*.svg`；主题切换时就地替换已渲染图标的 `src`。
+   - 以 `/` 结尾的未跟踪目录按文件夹名匹配 vscode-icons 的文件夹图标（如 `tests` 用测试文件夹图标、`public` 用 public 文件夹图标），不区分大小写；未命中时用默认文件夹图标。
+   - 浅色主题下，有浅色变体的图标改用 `file_type_light_*.svg` 或 `folder_type_light_*.svg`；主题切换时就地替换已渲染图标的 `src`。
 5. **就近轻提示**：
-   - 位置在提示出现时按触发控件计算。提示贴在控件下方；下方剩余空间不足 `96px` 时放到上下两侧中空间较大的一侧；控件不可见（折叠、滚出视口或已移除）时停靠面板底部。提示存续期间不随列表滚动移动。
+   - 位置在提示出现时按触发控件计算。提示贴在控件下方。下方剩余空间不足 `96px` 时，放到上下两侧中空间较大的一侧。控件只露出一部分时，贴在露出部分的下方。控件不可见（折叠、滚出视口、被所在滚动区域裁掉或已移除）时，停靠面板底部。提示存续期间不随列表滚动移动。
    - 提示条除关闭按钮外点击穿透，压在列表行上时不妨碍继续操作这些行。
    - 上区操作（提交、暂存、取消暂存、放弃、发布、推送、拉取）锚定提交按钮；图表顶栏操作（范围切换、提取、拉取、推送、刷新）锚定图表标题栏；打开文件、复制 SHA 等锚定被点击的行或按钮；后台同步失败等无明确来源的提示停靠底部。
 6. **禁用态**：所有禁用按钮悬停时显示 `not-allowed` 光标。
@@ -582,6 +595,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 2. **前端纯逻辑与浏览器回归（`tests/browser/`）**：
    - `graph-layout.js` 测试：单线、分支分叉、多父 Merge Commit 连续无断口、`自动` 模式无悬空线头、展开文件行穿行竖线连续。
    - `popover.js` 测试：顶部第 1/2 项向上弹出、中部默认向下、底部空间不足翻转并钳制在视口内。
+   - `markdown.js` 测试：逐行分块与段落间隔、列表续行与嵌套、行内格式、不安全链接与 HTML 按原文显示、代码块保留内部空行。
    - 真实浏览器（Standalone + `<iframe sandbox="allow-scripts" srcdoc="...">` 注入 `theme-change` / `workspace-change`）：验证 `320px`、`360px`、`420px`、`560px` 零横向溢出（`scrollWidth <= clientWidth`）、0 控制台报错、深浅主题切换、未暂存时点击提交弹窗确认且提交完成后主按钮切换为推送更改、键盘焦点与重渲染保焦。
 
 ### 8.4 Windows Antigravity 2.0 桌面端真机验收清单
@@ -591,7 +605,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 - [ ] 运行 `scripts/install.ps1` 成功安装至 `~/.gemini/config/plugins/antigravity-git-worktree/`，在 Antigravity Customizations 启用后侧栏正常渲染 `Git Graph`，无控制台或 `sidecar.log` 报错。
 - [ ] 在 Antigravity 中切换不同仓库对话、新建/切换宿主 Worktree、在终端 `git checkout` / 编辑文件，辅助栏均在 1 秒内自动同步，无 `index.lock` 竞争报错。
 - [ ] 在仅存在未暂存更改时填好说明点击「提交」，确认弹窗后完成提交，工作区干净且领先上游时主按钮自动切换为「推送更改 N↑」；验证 `MM` 文件放弃未暂存不伤暂存区、未跟踪单文件红字二次确认删除。
-- [ ] 在图表中切换 `自动 / 全部`、测试含 Merge 分支仓库的连线完整性、展开提交文件列表、分别悬停顶部/中部/底部提交行验证悬浮卡最小遮挡与不裁切。
+- [ ] 在图表中切换 `自动 / 全部`、测试含 Merge 分支仓库的连线完整性、展开提交文件列表、分别点击顶部/中部/底部提交行的「查看提交详情」按钮，验证详情卡最小遮挡与不裁切、提交说明按 Markdown 渲染、改动统计与 VS Code 一致。
 - [ ] 点击上区更改文件与下区展开文件，确认宿主原生 `fileView` 正确打开对应文件；历史已删文件不可点击并显示提示。
 - [ ] 切换 Antigravity 深色/浅色主题与调整辅助栏宽度（含 `320px` 极窄态），确认配色、对比度、字体与无横向溢出表现正常，输入框内 `Ctrl+C/V/Z/A`、`Ctrl+Enter` 与 `Ctrl+B` 表现符合预期。
 - [ ] 再次运行 `scripts/install.ps1` 覆盖安装，确认无 Windows 目录句柄锁定报错。

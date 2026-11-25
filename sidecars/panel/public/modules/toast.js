@@ -13,25 +13,30 @@ const MAX_TOASTS_PER_STACK = 3;
  *
  * @param {{ top: number, bottom: number, width: number, height: number } | null} anchorRect 触发控件的视口矩形，无锚点时为 null
  * @param {number} viewportHeight 视口高度
+ * @param {Array<{ top: number, bottom: number }>} [clipRects=[]] 会裁切锚点的祖先滚动容器矩形；锚点只有落在其中的部分算可见
  * @returns {{ edge: 'top' | 'bottom', offset: number }} 以视口上边（edge = 'top'）或下边为基准的像素偏移（无副作用）
  */
-export const computeToastPlacement = (anchorRect, viewportHeight) => {
-  const isVisible = Boolean(anchorRect)
-    && anchorRect.width > 0
-    && anchorRect.height > 0
-    && anchorRect.bottom > 0
-    && anchorRect.top < viewportHeight;
-  if (!isVisible) {
+export const computeToastPlacement = (anchorRect, viewportHeight, clipRects = []) => {
+  if (!anchorRect || anchorRect.width <= 0) {
     return { edge: 'bottom', offset: TOAST_EDGE_MARGIN };
   }
-  const below = anchorRect.bottom + TOAST_GAP;
+  let top = Math.max(anchorRect.top, 0);
+  let bottom = Math.min(anchorRect.bottom, viewportHeight);
+  for (const clip of clipRects) {
+    top = Math.max(top, clip.top);
+    bottom = Math.min(bottom, clip.bottom);
+  }
+  if (bottom <= top) {
+    return { edge: 'bottom', offset: TOAST_EDGE_MARGIN };
+  }
+  const below = bottom + TOAST_GAP;
   const spaceBelow = viewportHeight - below;
-  const spaceAbove = anchorRect.top - TOAST_GAP;
+  const spaceAbove = top - TOAST_GAP;
   // 下方放得下就贴下方；都放不下时选空间更大的一侧，避免提示栈越出视口
   if (spaceBelow >= MIN_SPACE_BELOW || spaceBelow >= spaceAbove) {
     return { edge: 'top', offset: Math.max(TOAST_EDGE_MARGIN, below) };
   }
-  return { edge: 'bottom', offset: Math.max(TOAST_EDGE_MARGIN, viewportHeight - anchorRect.top + TOAST_GAP) };
+  return { edge: 'bottom', offset: Math.max(TOAST_EDGE_MARGIN, viewportHeight - top + TOAST_GAP) };
 };
 
 /**
@@ -47,9 +52,19 @@ export const createToastController = ({ layerEl, createIcon }) => {
   const win = doc.defaultView;
   const stacks = new Map();
 
+  // 祖先滚动容器会裁掉锚点，例如更改区滚动后提交按钮已滚出该区可视范围、但仍在视口内
+  const collectClipRects = (anchor) => {
+    const clipRects = [];
+    for (let el = anchor.parentElement; el; el = el.parentElement) {
+      if (win.getComputedStyle(el).overflowY !== 'visible') clipRects.push(el.getBoundingClientRect());
+    }
+    return clipRects;
+  };
+
   const placeStack = (stackEl, anchor) => {
     const anchorRect = anchor?.isConnected ? anchor.getBoundingClientRect() : null;
-    const { edge, offset } = computeToastPlacement(anchorRect, win.innerHeight);
+    const clipRects = anchorRect ? collectClipRects(anchor) : [];
+    const { edge, offset } = computeToastPlacement(anchorRect, win.innerHeight, clipRects);
     stackEl.style.top = edge === 'top' ? `${offset}px` : '';
     stackEl.style.bottom = edge === 'bottom' ? `${offset}px` : '';
   };

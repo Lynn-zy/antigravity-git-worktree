@@ -202,6 +202,8 @@ test('集成测试：unborn 仓库、中文路径、-weird.txt、MM 双态、Det
   assert.equal(mergeDetail.subject, 'merge: integrate feature');
   assert.equal(mergeDetail.body, 'Merge body line.');
   assert.deepEqual(mergeDetail.coAuthors, [{ name: 'Pair Dev', email: 'pair@example.com' }]);
+  // 相对第一父提交：纯重命名 0 行、删除 to-delete.txt 1 行、新增「中文 目录/新 文件.txt」1 行
+  assert.deepEqual(mergeDetail.stats, { files: 3, insertions: 1, deletions: 1 });
 
   const renamedFile = mergeDetail.files.find((item) => item.status === 'R');
   assert.ok(renamedFile, 'Merge commit detail should detect renamed file');

@@ -131,14 +131,20 @@ export const MESSAGES = Object.freeze({
     'graph.softLimitNotice': '已达到 2000 条单次展示上限；如需查看特定历史，建议切换为「自动」范围或缩小仓库检查',
     'graph.deletedFileDisabled': '该文件在当前工作区已不存在',
     'graph.standaloneFilePreviewNotice': '文件预览仅在 Antigravity 桌面端辅助栏内可用',
-    'graph.openDetailCard': '固定查看提交详情',
+    'graph.openDetailCard': '查看提交详情',
     'graph.expandCommit': '展开或收起提交文件列表',
 
-    // 悬浮提交详情卡
-    'popover.coAuthors': '共同创作者',
+    // 提交详情卡（改动统计文案沿用 VS Code 简体中文语言包）
+    'popover.loading': '正在加载提交详情…',
+    'popover.coAuthor': '共同作者',
+    'popover.fileChanged': '已更改 {count} 个文件',
+    'popover.filesChanged': '已更改 {count} 个文件',
+    'popover.insertion': '{count} 行插入(+)',
+    'popover.insertions': '{count} 行插入(+)',
+    'popover.deletion': '{count} 行删除(-)',
+    'popover.deletions': '{count} 行删除(-)',
     'popover.copySha': '复制完整 SHA',
     'popover.copiedSha': '已复制完整 SHA：{sha}',
-    'popover.close': '关闭提交详情',
 
     // 远端同步反馈
     'remote.fetchSuccess': '已完成远端提取（Fetch）',
@@ -284,14 +290,20 @@ export const MESSAGES = Object.freeze({
     'graph.softLimitNotice': 'Reached the 2,000-commit display limit. Switch to "Auto" scope to focus on the current branch.',
     'graph.deletedFileDisabled': 'This file no longer exists in the current worktree',
     'graph.standaloneFilePreviewNotice': 'File preview is only available inside the Antigravity desktop Auxiliary Pane',
-    'graph.openDetailCard': 'Pin Commit Details',
+    'graph.openDetailCard': 'View Commit Details',
     'graph.expandCommit': 'Expand or collapse commit files',
 
-    // Commit detail popover
-    'popover.coAuthors': 'Co-authors',
+    // Commit detail popover (change statistics wording follows VS Code)
+    'popover.loading': 'Loading commit details…',
+    'popover.coAuthor': 'Co-author',
+    'popover.fileChanged': '{count} file changed',
+    'popover.filesChanged': '{count} files changed',
+    'popover.insertion': '{count} insertion(+)',
+    'popover.insertions': '{count} insertions(+)',
+    'popover.deletion': '{count} deletion(-)',
+    'popover.deletions': '{count} deletions(-)',
     'popover.copySha': 'Copy Full SHA',
     'popover.copiedSha': 'Copied SHA: {sha}',
-    'popover.close': 'Close commit details',
 
     // Remote operation feedback
     'remote.fetchSuccess': 'Fetched all remotes',
@@ -315,8 +327,6 @@ export const MESSAGES = Object.freeze({
     'error.GIT_ERROR': 'Git command failed. Check details or retry in a terminal.',
   }),
 });
-
-const padTwoDigits = (value) => String(value).padStart(2, '0');
 
 const interpolateTemplate = (template, params) => {
   if (!params || typeof params !== 'object') return template;
@@ -439,25 +449,23 @@ export const formatRelativeTime = (timestampSec, locale = 'en', nowMs = Date.now
 };
 
 /**
- * 将 Unix 秒级时间戳格式化为本地绝对时间 `YYYY-MM-DD HH:mm`（如 `2026-11-20 11:17`）。
+ * 将 Unix 秒级时间戳格式化为本地长日期时间，格式与 VS Code 提交悬浮卡一致
+ * （如 `2026年11月20日 11:17`、`November 20, 2026 at 11:17 AM`）。
  *
  * @param {number} timestampSec Unix 秒级时间戳
- * @param {string | null | undefined} [locale='en'] 目标语言标识（保留签名一致性）
- * @returns {string} 本地绝对时间字符串；时间戳无效时返回空字符串（无副作用）
+ * @param {string | null | undefined} [locale='en'] 目标语言标识
+ * @returns {string} 本地日期时间字符串；时间戳无效时返回空字符串（无副作用）
  */
 export const formatAbsoluteTime = (timestampSec, locale = 'en') => {
-  void locale;
-  if (!Number.isFinite(timestampSec)) {
-    return '';
-  }
   const date = new Date(timestampSec * 1000);
   if (Number.isNaN(date.getTime())) {
     return '';
   }
-  const year = date.getFullYear();
-  const month = padTwoDigits(date.getMonth() + 1);
-  const day = padTwoDigits(date.getDate());
-  const hours = padTwoDigits(date.getHours());
-  const minutes = padTwoDigits(date.getMinutes());
-  return `${year}-${month}-${day} ${hours}:${minutes}`;
+  return date.toLocaleString(resolveLocale(locale), {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+  });
 };

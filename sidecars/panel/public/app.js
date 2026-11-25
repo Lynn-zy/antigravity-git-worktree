@@ -80,12 +80,13 @@ export const createFileIcon = (filePath) => {
 /**
  * 将相对文件路径拆分为「文件名 + 目录」双段结构，在窄栏下优先压缩目录保留文件名完整可见。
  *
- * @param {string} filePath 文件相对路径
+ * @param {string} filePath 文件相对路径；以 `/` 结尾的文件夹路径显示文件夹名与其上级目录
  * @param {string | null} [origPath=null] 重命名或复制时的源路径
  * @returns {HTMLElement} 拆分路径 DOM 容器（无全局副作用）
  */
 export const createSplitPath = (filePath, origPath = null) => {
-  const safePath = typeof filePath === 'string' ? filePath : '';
+  const rawPath = typeof filePath === 'string' ? filePath : '';
+  const safePath = rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
   const lastSlash = safePath.lastIndexOf('/');
   const fileName = lastSlash >= 0 ? safePath.slice(lastSlash + 1) : safePath;
   const dirPart = lastSlash > 0 ? safePath.slice(0, lastSlash) : '';
@@ -639,6 +640,7 @@ const bootstrapPanel = () => {
 
   const graphView = createGraphView(
     {
+      headerEl: graphHeaderEl,
       sectionTitleEl: graphTitleEl,
       toolbarActionsEl: graphToolbarEl,
       searchBarEl: graphSearchBarEl,

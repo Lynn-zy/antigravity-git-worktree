@@ -743,7 +743,7 @@ const setupRealGitFixtures = async (rootDir) => {
   writeRepoFile(repoA, 'CHANGELOG.md', '## v1.0.0\n');
   await execGit(['add', '--', 'CHANGELOG.md'], repoA);
   await execGit(
-    ['commit', '-m', 'release: tag multi-ref baseline\n\nBaseline release notes for commit popover body rendering.'],
+    ['commit', '-m', 'release: tag multi-ref baseline\n\nBaseline release notes for commit popover body rendering.\n\n- 更新 `CHANGELOG.md`'],
     repoA,
   );
   const taggedSha = await execGit(['rev-parse', 'HEAD'], repoA);
@@ -760,6 +760,8 @@ const setupRealGitFixtures = async (rootDir) => {
   writeRepoFile(repoA, 'src/mm-双态.txt', 'v3-unstaged\n');
   writeRepoFile(repoA, 'README.md', '# Repo A\nunstaged modification\n');
   const untrackedPath = writeRepoFile(repoA, 'temp-未跟踪.txt', 'untracked temp file\n');
+  // 整个未跟踪的目录在 git status 中只列一项 docs/public/
+  writeRepoFile(repoA, 'docs/public/index.html', '<!doctype html>\n');
 
   // 初始化第二个仓库 repoB
   await initConfiguredRepo(repoB, 'develop', { name: 'Bob', email: 'bob@example.com' });
@@ -940,6 +942,21 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { description: 'standalone file preview toast' },
   );
 
+  // 未跟踪目录显示按文件夹名匹配的文件夹图标，标签为文件夹名、描述为上级目录
+  await page.waitFor(
+    '(() => { const img = document.querySelector(\'[data-testid="change-file-unstaged"][data-file-path="docs/public/"] img.gw-file-icon\'); return Boolean(img?.complete && img.naturalWidth > 0); })()',
+    { description: 'untracked folder icon loaded' },
+  );
+  const untrackedFolderRow = await page.evaluate(`(() => {
+    const row = document.querySelector('[data-testid="change-file-unstaged"][data-file-path="docs/public/"]');
+    return {
+      iconPath: new URL(row.querySelector('img.gw-file-icon').src).pathname,
+      name: row.querySelector('.gw-file-name').textContent,
+      dir: row.querySelector('.gw-file-dir').textContent,
+    };
+  })()`);
+  assert.deepEqual(untrackedFolderRow, { iconPath: '/file-icons/folder_type_public.svg', name: 'public', dir: 'docs' });
+
   // 验证 MM 双态文件存在于 staged 和 unstaged，放弃未暂存保留暂存区
   const mmBefore = await page.evaluate(`(() => ({
     inStaged: Boolean(document.querySelector('[data-testid="change-file-staged"][data-file-path="src/mm-双态.txt"]')),
@@ -1089,7 +1106,8 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   })()`);
   assert.deepEqual(nativeTooltipCheck, { rowsWithTitle: 0, pillsWithTitle: 0 });
 
-  // 点击第 1、2 条提交详情按钮向上弹出且不溢出视口；点击中部提交详情按钮向下弹出；校验最大宽度对齐侧边栏且无正文时不渲染正文块
+  // 详情卡只由行尾「查看提交详情」按钮打开：悬停提交行超过旧版 260ms 悬停延迟也不得弹出；再次点击按钮关闭。
+  // 第 1、2 条向上弹出且不溢出视口，中部提交向下弹出；卡片宽度对齐侧边栏，无正文时提交说明只有标题一块
   const checkCommitPopoverPlacement = async (rowIndex, expectedPlacement, { expectBody = null } = {}) => {
     await page.hoverSelector('[data-testid="commit-row"]', { index: rowIndex });
     await page.waitFor(
@@ -1100,39 +1118,42 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       })()`,
       { description: `hover detail button visible on row ${rowIndex}` },
     );
-    await page.clickSelector(`[data-testid="commit-row"]:nth-of-type(${rowIndex + 1}) [data-testid="commit-detail-btn"]`).catch(async () => {
-      const pt = await page.evaluate(`(() => {
-        const rows = document.querySelectorAll('[data-testid="commit-row"]');
-        const btn = rows[${rowIndex}].querySelector('[data-testid="commit-detail-btn"]');
-        const r = btn.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-      })()`);
-      await page.hoverSelector('[data-testid="commit-row"]', { index: rowIndex });
-      await page.evaluate(`(() => {
-        const rows = document.querySelectorAll('[data-testid="commit-row"]');
-        rows[${rowIndex}].querySelector('[data-testid="commit-detail-btn"]').click();
-      })()`);
-      return pt;
-    });
+    const openedByHover = await page.evaluate(
+      'new Promise((resolve) => setTimeout(() => resolve(!document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")), 400))',
+    );
+    assert.equal(openedByHover, false, '悬停提交行不得弹出详情卡');
+    const detailBtnTitle = await page.evaluate(
+      `document.querySelectorAll('[data-testid="commit-row"]')[${rowIndex}].querySelector('[data-testid="commit-detail-btn"]').title`,
+    );
+    assert.equal(detailBtnTitle, '查看提交详情');
+
+    const clickDetailBtn = () => page.evaluate(`(() => {
+      document.querySelectorAll('[data-testid="commit-row"]')[${rowIndex}].querySelector('[data-testid="commit-detail-btn"]').click();
+    })()`);
+    await clickDetailBtn();
     await page.waitFor(
-      '(() => { const p = document.querySelector("[data-testid=commit-popover]"); return Boolean(p && !p.classList.contains("hidden") && !p.textContent.includes("正在加载")); })()',
+      '(() => { const p = document.querySelector("[data-testid=commit-popover]"); return Boolean(p && !p.classList.contains("hidden") && p.querySelector(".gw-popover-stats")); })()',
       { description: `popover opened and loaded for row ${rowIndex}` },
     );
     const placementInfo = await page.evaluate(`(() => {
       const p = document.querySelector('[data-testid="commit-popover"]');
       const r = p.getBoundingClientRect();
-      const header = p.querySelector('.gw-popover-header');
-      const headerRect = header ? header.getBoundingClientRect() : null;
-      const bodyEl = p.querySelector('.gw-popover-body');
+      const author = p.querySelector('.gw-popover-person');
+      const authorRect = author ? author.getBoundingClientRect() : null;
+      const markdown = p.querySelector('.gw-markdown');
       return {
         placement: p.dataset.placement,
         width: r.width,
         expectedMaxWidth: window.innerWidth - 16,
         scrollTop: p.scrollTop,
-        headerVisible: Boolean(headerRect && headerRect.height > 0 && headerRect.top >= r.top - 1),
-        hasBodyEl: Boolean(bodyEl),
-        bodyText: bodyEl ? bodyEl.textContent : '',
-        fullText: p.textContent || '',
+        authorVisible: Boolean(authorRect && authorRect.height > 0 && authorRect.top >= r.top - 1),
+        authorText: author ? author.textContent : '',
+        authorIconCount: author ? author.querySelectorAll('svg.gw-icon').length : 0,
+        markdownBlockCount: markdown ? markdown.children.length : 0,
+        markdownText: markdown ? markdown.textContent : '',
+        markdownListCode: markdown?.querySelector('ul > li > code')?.textContent ?? null,
+        statsText: p.querySelector('.gw-popover-stats').textContent,
+        rowActive: document.querySelectorAll('[data-testid="commit-row"]')[${rowIndex}].classList.contains('is-popover-active'),
         withinViewport: r.top >= -0.5 && r.left >= -0.5 && r.right <= window.innerWidth + 0.5 && r.bottom <= window.innerHeight + 0.5,
       };
     })()`);
@@ -1143,17 +1164,23 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       `悬浮详情卡宽度应随侧边栏自适应: actual=${placementInfo.width}, expected=${placementInfo.expectedMaxWidth}`,
     );
     assert.equal(placementInfo.scrollTop, 0, '打开提交详情卡时应位于顶部');
-    assert.equal(placementInfo.headerVisible, true, '提交详情卡顶部作者与关闭操作栏必须完整可见');
-    assert.equal(placementInfo.fullText.includes('无更多提交正文'), false, '无提交正文时不得显示占位文案');
+    assert.equal(placementInfo.authorVisible, true, '提交详情卡顶部作者行必须完整可见');
+    // 作者行：账号图标 + 作者名 + 时钟图标 + 相对时间（年月日 时:分）
+    assert.equal(placementInfo.authorIconCount, 2, '作者行应有账号图标与时钟图标');
+    assert.match(placementInfo.authorText, /(刚刚|前) \(\d{4}年\d{1,2}月\d{1,2}日 \d{1,2}:\d{2}\)$/);
+    assert.equal(placementInfo.rowActive, true, '打开详情卡的提交行应保持高亮');
     if (expectBody === false) {
-      assert.equal(placementInfo.hasBodyEl, false, '无提交正文时不得渲染 .gw-popover-body');
+      assert.equal(placementInfo.markdownBlockCount, 1, '无提交正文时提交说明只渲染标题一块');
     } else if (typeof expectBody === 'string') {
-      assert.equal(placementInfo.hasBodyEl, true, '存在提交正文时应渲染 .gw-popover-body');
-      assert.ok(placementInfo.bodyText.includes(expectBody));
+      assert.ok(placementInfo.markdownBlockCount > 1, '存在提交正文时应渲染正文块');
+      assert.ok(placementInfo.markdownText.includes(expectBody));
+      assert.equal(placementInfo.markdownListCode, 'CHANGELOG.md', '正文中的列表与行内代码应按 Markdown 渲染');
     }
-    await page.clickSelector('[data-testid="popover-close-btn"]');
+    assert.match(placementInfo.statsText, /^已更改 \d+ 个文件/);
+
+    await clickDetailBtn();
     await page.waitFor('document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")', {
-      description: 'close popover',
+      description: 'second click on detail button closes popover',
     });
   };
 
@@ -1594,7 +1621,7 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
   const lightScreenshotPath = path.join(screenshotDir, 'm5-light-popover.png');
   await page.captureScreenshot(lightScreenshotPath);
   await page.evaluate(
-    'document.querySelector("[data-testid=popover-close-btn]")?.click()',
+    'document.querySelectorAll("[data-testid=commit-row]")[1].querySelector("[data-testid=commit-detail-btn]").click()',
     { sessionId: iframeSessionId },
   );
 

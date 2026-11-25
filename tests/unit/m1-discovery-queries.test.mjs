@@ -16,7 +16,9 @@ import {
 import {
   parseCommitMessageB,
   parseCommitNameStatusZ,
+  parseCommitNumstatZ,
   parseLogRecordsZ,
+  queryCommitDetail,
   parseStatusPorcelainV2Z,
   parseWorktreeListPorcelainZ,
 } from '../../sidecars/panel/backend/git-queries.mjs';
@@ -496,4 +498,39 @@ test('parseLogRecordsZ / parseCommitMessageB / parseCommitNameStatusZ 精确解�
     { status: 'C', path: 'copy.txt', origPath: 'src.txt' },
     { status: 'D', path: 'gone.txt', origPath: null },
   ]);
+});
+
+test('parseCommitNumstatZ 汇总文件数与增删行数：重命名路径不计为文件，二进制文件只计文件数', () => {
+  assert.deepEqual(parseCommitNumstatZ(Buffer.alloc(0)), { files: 0, insertions: 0, deletions: 0 });
+  // 路径故意写成形如统计行的「7\t7\tx」，若重命名后的两个路径 token 未被跳过就会多算一个文件
+  const numstatBuf = Buffer.from(
+    ['12\t3\tsrc/app.js', '0\t0\t', 'old/中文.txt', '7\t7\tx', '-\t-\tassets/logo.png', '5\t0\tdocs/新 文件.md', ''].join('\0'),
+    'utf8',
+  );
+  assert.deepEqual(parseCommitNumstatZ(numstatBuf), { files: 4, insertions: 17, deletions: 3 });
+});
+
+test('queryCommitDetail：改动统计超时只省略统计，其他统计错误仍让请求失败', async () => {
+  const fakeRead = (numstatError) => async (args) => {
+    if (args.includes('--numstat')) throw numstatError;
+    if (args.includes('--name-status')) return { stdout: Buffer.from('M\0src/app.js\0', 'utf8') };
+    return { stdout: Buffer.from('fix: 修复\n\n正文\n', 'utf8') };
+  };
+  const sha = 'abcdef1234567';
+
+  const detail = await queryCommitDetail('/repo', sha, {
+    isBare: true,
+    runGitRead: fakeRead(new AppError(ERROR_CODES.GIT_TIMEOUT, 'Git command timed out.')),
+  });
+  assert.equal(detail.stats, null);
+  assert.equal(detail.subject, 'fix: 修复');
+  assert.deepEqual(detail.files.map((file) => file.path), ['src/app.js']);
+
+  await assert.rejects(
+    queryCommitDetail('/repo', sha, {
+      isBare: true,
+      runGitRead: fakeRead(new AppError(ERROR_CODES.GIT_ERROR, 'bad object')),
+    }),
+    (error) => error instanceof AppError && error.code === ERROR_CODES.GIT_ERROR,
+  );
 });

@@ -27,11 +27,7 @@ import {
   groupHistoryItemBadges,
 } from '../../sidecars/panel/public/modules/graph-layout.js';
 
-import {
-  POPOVER_TIMINGS,
-  computeMinOcclusionPopoverStyle,
-  createPopoverController,
-} from '../../sidecars/panel/public/modules/popover.js';
+import { computeMinOcclusionPopoverStyle } from '../../sidecars/panel/public/modules/popover.js';
 
 import {
   DEFAULT_UI_FONT_STACK,
@@ -60,8 +56,11 @@ import {
   FILE_ICON_NAMES,
   FILE_ICON_EXTENSIONS,
   FILE_ICON_LIGHT_VARIANTS,
+  FOLDER_ICON_NAMES,
+  FOLDER_ICON_LIGHT_VARIANTS,
 } from '../../sidecars/panel/public/modules/file-icon-map.js';
 import { computeToastPlacement } from '../../sidecars/panel/public/modules/toast.js';
+import { parseCommitMarkdown, parseInlineMarkdown } from '../../sidecars/panel/public/modules/markdown.js';
 import fs from 'node:fs';
 
 /**
@@ -406,63 +405,6 @@ test('popover: 中部遮挡相等默认向下，底部空间不足自动翻转�
   assert.ok(tinyStyle.top + tinyStyle.maxHeight <= tinyViewport.top + tinyViewport.height);
 });
 
-test('popover: 悬浮延迟控制器支持 260ms 打开、移入保活、180ms 离开关闭与 Pin 固定', () => {
-  let currentTime = 0;
-  let nextTimerId = 1;
-  const timers = new Map();
-  const events = [];
-
-  const controller = createPopoverController({
-    setTimer: (fn, ms) => {
-      const id = nextTimerId++;
-      timers.set(id, { fn, runAt: currentTime + ms });
-      return id;
-    },
-    clearTimer: (id) => {
-      timers.delete(id);
-    },
-    onOpen: (sha, pinned) => events.push({ type: 'open', sha, pinned }),
-    onClose: () => events.push({ type: 'close' }),
-  });
-
-  const advanceBy = (deltaMs) => {
-    currentTime += deltaMs;
-    for (const [id, entry] of [...timers.entries()]) {
-      if (entry.runAt <= currentTime) {
-        timers.delete(id);
-        entry.fn();
-      }
-    }
-  };
-
-  assert.equal(POPOVER_TIMINGS.hoverOpenMs, 260);
-  assert.equal(POPOVER_TIMINGS.hoverCloseMs, 180);
-
-  controller.enterAnchor('abc1234');
-  advanceBy(200);
-  assert.equal(events.length, 0);
-  advanceBy(60);
-  assert.deepEqual(events, [{ type: 'open', sha: 'abc1234', pinned: false }]);
-
-  controller.leaveAnchor();
-  advanceBy(100);
-  controller.enterCard();
-  advanceBy(200);
-  assert.equal(events.length, 1);
-
-  controller.leaveCard();
-  advanceBy(180);
-  assert.deepEqual(events[1], { type: 'close' });
-
-  controller.togglePin('def5678');
-  assert.deepEqual(controller.getState(), { activeSha: 'def5678', pinned: true });
-  controller.leaveAnchor();
-  advanceBy(500);
-  assert.equal(controller.getState().pinned, true);
-  controller.close();
-  assert.deepEqual(controller.getState(), { activeSha: null, pinned: false });
-});
-
 test('theme: 模式规范化、WCAG 相对亮度与 4.5:1 对比度自动微调', () => {
   assert.equal(normalizeThemeMode('dark'), 'dark');
   assert.equal(normalizeThemeMode('vs-dark'), 'dark');
@@ -696,7 +638,8 @@ test('i18n: 中英词典键全对称、全错误码覆盖、时间与语言解�
   assert.equal(formatRelativeTime(Math.floor(baseMs / 1000) - 900, 'zh-CN', baseMs), '15 分钟前');
   assert.equal(formatRelativeTime(oneDayAgoSec, 'zh-CN', baseMs), '1 天前');
   assert.equal(formatRelativeTime(oneDayAgoSec, 'en', baseMs), '1 day ago');
-  assert.equal(formatAbsoluteTime(oneDayAgoSec, 'zh-CN'), '2026-11-20 12:00');
+  assert.equal(formatAbsoluteTime(oneDayAgoSec, 'zh-CN'), '2026年11月20日 12:00');
+  assert.equal(formatAbsoluteTime(oneDayAgoSec, 'en'), 'November 20, 2026 at 12:00 PM');
   assert.equal(formatRelativeTime(NaN, 'zh-CN', baseMs), '');
   assert.equal(formatAbsoluteTime(NaN, 'zh-CN'), '');
 });
@@ -815,6 +758,16 @@ test('file-icons: 浅色主题使用浅色变体，没有浅色变体的图标�
   assert.equal(resolveFileIconUrl('main.py', 'light'), resolveFileIconUrl('main.py', 'dark'));
 });
 
+test('file-icons: 以 / 结尾的未跟踪目录按文件夹名取文件夹图标，未命中时回退默认文件夹图标', () => {
+  assert.equal(resolveFileIconUrl('tests/', 'dark'), '/file-icons/folder_type_test.svg');
+  assert.equal(resolveFileIconUrl('sidecars/panel/public/', 'dark'), '/file-icons/folder_type_public.svg');
+  assert.equal(resolveFileIconUrl('Node_Modules/', 'dark'), '/file-icons/folder_type_node.svg', '文件夹名大小写不敏感');
+  assert.equal(resolveFileIconUrl('assets/fonts/', 'light'), '/file-icons/folder_type_light_fonts.svg');
+  assert.equal(resolveFileIconUrl('sidecars/panel/public/file-icons/', 'dark'), '/file-icons/default_folder.svg');
+  assert.equal(resolveFileIconUrl('constructor/', 'dark'), '/file-icons/default_folder.svg', '不得命中 Object 原型属性');
+  assert.equal(resolveFileIconUrl('src/package.json', 'dark'), '/file-icons/file_type_npm.svg', '不以 / 结尾的仍按文件解析');
+});
+
 test('file-icons: 映射表引用的每个图标（含浅色变体）都随插件分发', () => {
   const iconsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sidecars/panel/public/file-icons');
   const shipped = new Set(fs.readdirSync(iconsDir));
@@ -825,8 +778,102 @@ test('file-icons: 映射表引用的每个图标（含浅色变体）都随插�
   for (const icon of FILE_ICON_LIGHT_VARIANTS) {
     if (!shipped.has(`file_type_light_${icon}.svg`)) missing.push(`file_type_light_${icon}.svg`);
   }
-  if (!shipped.has('default_file.svg')) missing.push('default_file.svg');
+  for (const icon of new Set(Object.values(FOLDER_ICON_NAMES))) {
+    if (!shipped.has(`folder_type_${icon}.svg`)) missing.push(`folder_type_${icon}.svg`);
+  }
+  for (const icon of FOLDER_ICON_LIGHT_VARIANTS) {
+    if (!shipped.has(`folder_type_light_${icon}.svg`)) missing.push(`folder_type_light_${icon}.svg`);
+  }
+  for (const name of ['default_file.svg', 'default_folder.svg']) {
+    if (!shipped.has(name)) missing.push(name);
+  }
   assert.deepEqual(missing, []);
+});
+
+const text = (value) => ({ type: 'text', text: value });
+
+test('markdown: 提交说明每行各自成块，空行标记段落间隔，列表项、续行与嵌套列表归入同一列表', () => {
+  const message = [
+    'fix(sidecar): 修复推送误报',
+    '',
+    '- 根因：授权表被清空',
+    '- api-client.js：透传 workspaceUris',
+    '  续行说明',
+    '  - 嵌套项',
+    '- tests：补充回归测试',
+    '',
+    'Closes #14',
+  ].join('\n');
+  const item = (inlines, blocks = [], spaced = false) => ({ inlines, blocks, spaced });
+  assert.deepEqual(parseCommitMarkdown(message), [
+    { type: 'paragraph', inlines: [text('fix(sidecar): 修复推送误报')], spaced: false },
+    {
+      type: 'list',
+      ordered: false,
+      start: 1,
+      spaced: true,
+      items: [
+        item([text('根因：授权表被清空')]),
+        item([text('api-client.js：透传 workspaceUris')], [
+          { type: 'paragraph', inlines: [text('续行说明')], spaced: false },
+          { type: 'list', ordered: false, start: 1, spaced: false, items: [item([text('嵌套项')])] },
+        ]),
+        item([text('tests：补充回归测试')]),
+      ],
+    },
+    { type: 'paragraph', inlines: [text('Closes #14')], spaced: true },
+  ]);
+});
+
+test('markdown: 行内代码、强调与安全链接按 Markdown 渲染，HTML、图片语法与不安全链接保留为文本', () => {
+  assert.deepEqual(parseInlineMarkdown('修复 `a_b` 与 **粗体**、*斜体*、~~删除~~'), [
+    text('修复 '),
+    { type: 'code', text: 'a_b' },
+    text(' 与 '),
+    { type: 'strong', children: [text('粗体')] },
+    text('、'),
+    { type: 'em', children: [text('斜体')] },
+    text('、'),
+    { type: 'del', children: [text('删除')] },
+  ]);
+  assert.deepEqual(parseInlineMarkdown('parse_commit_message 与 \\*字面星号\\*'), [text('parse_commit_message 与 *字面星号*')]);
+  assert.deepEqual(parseInlineMarkdown('[文档](https://a.dev/x "标题") [坏](javascript:alert(1))'), [
+    { type: 'link', href: 'https://a.dev/x', children: [text('文档')] },
+    text(' 坏'),
+  ]);
+  assert.deepEqual(parseInlineMarkdown('<div> ![图](x.png) <me@x.io>'), [
+    text('<div> ![图](x.png) '),
+    { type: 'link', href: 'mailto:me@x.io', children: [text('me@x.io')] },
+  ]);
+  assert.deepEqual(parseInlineMarkdown('见 https://github.com/a/b。另见 (https://x.dev/y_(z)).'), [
+    text('见 '),
+    { type: 'link', href: 'https://github.com/a/b', children: [text('https://github.com/a/b')] },
+    text('。另见 ('),
+    { type: 'link', href: 'https://x.dev/y_(z)', children: [text('https://x.dev/y_(z)')] },
+    text(').'),
+  ]);
+});
+
+test('markdown: 围栏与缩进代码块整体保留内部空行，未闭合的围栏延续到结尾', () => {
+  assert.deepEqual(parseCommitMarkdown('说明\n\n    a = 1\n\n    b = 2\n结束\n```js\nx\n\n  y'), [
+    { type: 'paragraph', inlines: [text('说明')], spaced: false },
+    { type: 'code', text: 'a = 1\n\nb = 2', spaced: true },
+    { type: 'paragraph', inlines: [text('结束')], spaced: false },
+    { type: 'code', text: 'x\n\n  y', spaced: false },
+  ]);
+  assert.deepEqual(parseCommitMarkdown('示例：\n\n    - 不是列表\n    * 也是代码'), [
+    { type: 'paragraph', inlines: [text('示例：')], spaced: false },
+    { type: 'code', text: '- 不是列表\n* 也是代码', spaced: true },
+  ]);
+  assert.deepEqual(
+    parseCommitMarkdown('# 标题\n---\n> 引用\n2. 第二\n3. 第三').map(({ type, level, start }) => ({ type, level, start })),
+    [
+      { type: 'heading', level: 1, start: undefined },
+      { type: 'rule', level: undefined, start: undefined },
+      { type: 'quote', level: undefined, start: undefined },
+      { type: 'list', level: undefined, start: 2 },
+    ],
+  );
 });
 
 test('toast: 锚点下方放得下时贴在下方，放不下时改到上方，无锚点或锚点不可见时停靠底部', () => {
@@ -840,5 +887,17 @@ test('toast: 锚点下方放得下时贴在下方，放不下时改到上方，�
     computeToastPlacement({ top: 10, bottom: 70, width: 300, height: 60 }, 150),
     { edge: 'top', offset: 74 },
     '矮面板里上下都放不下时选空间更大的下方，不把提示推出视口顶部',
+  );
+  // 更改区（视口 y=60–400）滚动后，提交按钮（y=20–46）在视口内但已被该区裁掉
+  const changesBody = { top: 60, bottom: 400 };
+  assert.deepEqual(
+    computeToastPlacement({ top: 20, bottom: 46, width: 300, height: 26 }, viewportHeight, [changesBody]),
+    { edge: 'bottom', offset: 8 },
+    '被滚动容器完全裁掉的锚点按不可见处理',
+  );
+  assert.deepEqual(
+    computeToastPlacement({ top: 50, bottom: 76, width: 300, height: 26 }, viewportHeight, [changesBody]),
+    { edge: 'top', offset: 80 },
+    '部分可见的锚点贴在可见部分下方',
   );
 });

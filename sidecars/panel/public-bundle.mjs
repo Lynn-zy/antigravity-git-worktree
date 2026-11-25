@@ -14,6 +14,7 @@ export const PANEL_APP_MODULES = Object.freeze([
   'modules/i18n.js',
   'modules/graph-layout.js',
   'modules/popover.js',
+  'modules/markdown.js',
   'modules/api-client.js',
   'modules/changes-view.js',
   'modules/graph-view.js',

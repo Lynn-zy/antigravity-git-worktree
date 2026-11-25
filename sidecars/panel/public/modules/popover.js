@@ -1,13 +1,7 @@
 /**
- * 提交详情悬浮卡（Popover）最小可见图表遮挡定位算法与交互定时控制器。
- * 纯函数计算与 DOM/定时器控制解耦，可在无浏览器环境的 Node.js 下直接导入验证。
+ * 提交详情卡（Popover）定位算法：在锚点行上下两侧中选遮挡可见图表最少的一侧。
+ * 纯函数，可在无浏览器环境的 Node.js 下直接导入验证。
  */
-
-/** @type {Readonly<{ hoverOpenMs: number, hoverCloseMs: number }>} 悬浮详情卡默认开关延迟（毫秒） */
-export const POPOVER_TIMINGS = Object.freeze({
-  hoverOpenMs: 260,
-  hoverCloseMs: 180,
-});
 
 const normalizeRect = (rect) => {
   const top = Number.isFinite(rect?.top) ? rect.top : 0;
@@ -150,123 +144,5 @@ export const computeMinOcclusionPopoverStyle = (
     maxHeight: availBelow,
     placement: 'below',
     occludedGraphPx: occBelow,
-  };
-};
-
-/**
- * 创建提交详情悬浮卡的悬停延迟与固定状态控制器（纯显式调用，无全局副作用）。
- *
- * @param {{
- *   onOpen?: (sha: string, pinned: boolean) => void,
- *   onClose?: () => void,
- *   hoverOpenMs?: number,
- *   hoverCloseMs?: number,
- *   setTimer?: (fn: () => void, ms: number) => unknown,
- *   clearTimer?: (id: unknown) => void
- * }} [options] 回调与可选定时器注入（便于单元测试）
- * @returns {{
- *   enterAnchor: (sha: string) => void,
- *   leaveAnchor: () => void,
- *   enterCard: () => void,
- *   leaveCard: () => void,
- *   togglePin: (sha: string) => void,
- *   close: () => void,
- *   getState: () => { activeSha: string | null, pinned: boolean },
- *   dispose: () => void
- * }} 控制器实例
- */
-export const createPopoverController = (options = {}) => {
-  const hoverOpenMs = Number.isFinite(options?.hoverOpenMs)
-    ? options.hoverOpenMs
-    : POPOVER_TIMINGS.hoverOpenMs;
-  const hoverCloseMs = Number.isFinite(options?.hoverCloseMs)
-    ? options.hoverCloseMs
-    : POPOVER_TIMINGS.hoverCloseMs;
-  const schedule = options?.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
-  const cancel = options?.clearTimer ?? ((id) => clearTimeout(id));
-
-  let activeSha = null;
-  let pinned = false;
-  let openTimerId = null;
-  let closeTimerId = null;
-
-  const clearOpenTimer = () => {
-    if (openTimerId !== null) {
-      cancel(openTimerId);
-      openTimerId = null;
-    }
-  };
-
-  const clearCloseTimer = () => {
-    if (closeTimerId !== null) {
-      cancel(closeTimerId);
-      closeTimerId = null;
-    }
-  };
-
-  const clearAllTimers = () => {
-    clearOpenTimer();
-    clearCloseTimer();
-  };
-
-  const close = () => {
-    clearAllTimers();
-    if (activeSha === null && !pinned) return;
-    activeSha = null;
-    pinned = false;
-    options?.onClose?.();
-  };
-
-  const enterAnchor = (sha) => {
-    if (pinned || !sha) return;
-    clearCloseTimer();
-    if (activeSha === sha) return;
-    clearOpenTimer();
-    openTimerId = schedule(() => {
-      openTimerId = null;
-      if (pinned) return;
-      activeSha = sha;
-      options?.onOpen?.(sha, false);
-    }, hoverOpenMs);
-  };
-
-  const scheduleHoverClose = () => {
-    if (pinned) return;
-    clearOpenTimer();
-    clearCloseTimer();
-    closeTimerId = schedule(() => {
-      closeTimerId = null;
-      if (!pinned) close();
-    }, hoverCloseMs);
-  };
-
-  const enterCard = () => {
-    clearCloseTimer();
-  };
-
-  const togglePin = (sha) => {
-    clearAllTimers();
-    if (!sha) {
-      close();
-      return;
-    }
-    if (pinned && activeSha === sha) {
-      close();
-      return;
-    }
-    activeSha = sha;
-    pinned = true;
-    options?.onOpen?.(sha, true);
-  };
-
-  return {
-    enterAnchor,
-    leaveAnchor: scheduleHoverClose,
-    enterCard,
-    leaveCard: scheduleHoverClose,
-    togglePin,
-    close,
-    getState: () => ({ activeSha, pinned }),
-    dispose: clearAllTimers,
   };
 };

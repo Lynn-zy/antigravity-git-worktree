@@ -361,6 +361,8 @@ test('集成测试：全套 POST /api/* 写操作、unborn rm --cached、MM 保�
   assert.equal(detailRes.json.data.subject, 'feat: initial commit');
   assert.deepEqual(detailRes.json.data.coAuthors, [{ name: 'Pair', email: 'pair@example.com' }]);
   assert.equal(detailRes.json.data.files.length, 2);
+  // 根提交与空树比较：两个文件各新增 1 行
+  assert.deepEqual(detailRes.json.data.stats, { files: 2, insertions: 2, deletions: 0 });
 
   const badShaRes = await postApi(server.url, '/api/commit/detail', {
     worktreePath: unbornRepo,

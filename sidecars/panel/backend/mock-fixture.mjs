@@ -64,7 +64,9 @@ function createInitialMockRepositories() {
       timestamp: 1795251200,
       subject: 'merge: integrate feat/svg-graph into main',
       scopeTags: ['auto', 'all'],
-      body: '合并 SVG 动态拓扑车道与双语悬浮详情卡实现。',
+      body: '合并 SVG 动态拓扑车道与双语悬浮详情卡实现。\n\n- 泳道算法移植自 VS Code 的 `scmHistory.ts`\n- 详情卡按 **Markdown** 渲染提交说明',
+      insertions: 336,
+      deletions: 78,
       coAuthors: [{ name: 'Antigravity Bot', email: 'noreply@antigravity.dev' }],
       files: [
         { status: 'M', path: 'sidecars/panel/public/modules/graph-layout.js', origPath: null, existsInWorktree: true },
@@ -82,6 +84,8 @@ function createInitialMockRepositories() {
       subject: 'feat(backend): add watcher storm circuit breaker',
       scopeTags: ['auto', 'all'],
       body: '加入 Windows 自毁守卫与 200 次/秒事件风暴熔断恢复机制。',
+      insertions: 42,
+      deletions: 7,
       coAuthors: [],
       files: [
         { status: 'M', path: 'sidecars/panel/backend/watcher.mjs', origPath: null, existsInWorktree: true },
@@ -462,6 +466,7 @@ export function createMockFixtureStore(options = {}) {
       subject: target.subject,
       body: target.body,
       coAuthors: target.coAuthors.map((item) => ({ ...item })),
+      stats: { files: target.files.length, insertions: target.insertions ?? 0, deletions: target.deletions ?? 0 },
       files: target.files.map((item) => {
         const canBuildFileUri = Boolean(repo.worktreePath) && !repo.isBare && item.existsInWorktree;
         return {

@@ -9,6 +9,7 @@
   - `sidecars/panel/public/modules/graph-layout.js`：泳道布局与图形绘制移植自 `src/vs/workbench/contrib/scm/browser/scmHistory.ts`，引用徽标归组移植自同目录 `scmHistoryViewPane.ts`；改为输出图形描述，并修改了根提交处的泳道保留规则（见文件头注释）。文件头内嵌下方许可全文，随插件安装分发。
   - `sidecars/panel/public/styles.css`：尺寸、间距与颜色取值参照 `scm.css`、`paneview.css`、`tree.css`、`actionbar.css`、`button.css`、`iconlabel.css`、`countBadge.css` 以及默认主题 `dark_modern.json`、`light_modern.json`。
   - `sidecars/panel/public/modules/file-icon-map.js`：部分映射取自 `extensions/*/package.json` 中内置语言声明的扩展名与文件名（提交 `25e7ea7b8ff47efaf5dd69ee2645f1ed1962ed2c`）。
+  - `sidecars/panel/public/modules/markdown.js` 与 `graph-view.js` 的提交详情卡：分区结构、提交说明逐行分块规则与改动统计文案参照 `extensions/git/src/hover.ts`（同一提交），代码为重新实现。
 
 ```
 MIT License
@@ -44,8 +45,8 @@ SOFTWARE.
 
 - 来源：<https://github.com/vscode-icons/vscode-icons>，提交 `dc003f665c8d91ee9ffb821b9064c6a79cff09c0`
 - 使用范围：
-  - `sidecars/panel/public/file-icons/*.svg`：文件类型图标原样复制，只包含映射表用到的图标及其浅色变体。同目录的 `LICENSE` 为下方许可原文，随插件安装分发。
-  - `sidecars/panel/public/modules/file-icon-map.js`：由 `src/iconsManifest/supportedExtensions.ts` 与 `languages.ts` 机械生成的文件名、扩展名映射。
+  - `sidecars/panel/public/file-icons/*.svg`：文件类型与文件夹图标原样复制，只包含映射表用到的图标及其浅色变体。同目录的 `LICENSE` 为下方许可原文，随插件安装分发。
+  - `sidecars/panel/public/modules/file-icon-map.js`：由 `src/iconsManifest/supportedExtensions.ts`、`languages.ts` 与 `supportedFolders.ts` 机械生成的文件名、扩展名与文件夹名映射。
 
 ```
 The MIT License (MIT)
