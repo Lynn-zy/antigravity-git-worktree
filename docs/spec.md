@@ -51,7 +51,7 @@
 │       │   ├── git-runner.mjs          # 安全 execFile/spawn、两级写锁队列、超时与非交互凭据
 │       │   ├── git-queries.mjs         # status/log/show/remote 只读查询与 -z 二进制解析
 │       │   ├── git-mutations.mjs       # stage/unstage/discard/commit/fetch/pull/push 写操作
-│       │   ├── watcher.mjs             # .git 与当前工作区 fs.watch、自毁守卫与风暴降级
+│       │   ├── watcher.mjs             # .git 与当前工作区 fs.watch、自毁守卫与变更过多降级
 │       │   ├── event-bus.mjs           # 内存 revision 版本号与挂起式长轮询管理
 │       │   ├── preferences.mjs         # 轻量偏好（locale/graphScope/splitRatio）持久化
 │       │   └── mock-fixture.mjs        # Standalone ?fixture=mock 离线演示数据
@@ -278,9 +278,17 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
     "preferences": { "locale": "auto", "graphScope": "auto", "splitRatio": 0.42 }
   }
   ```
-- 说明：`forceRefresh: true` 时若监听之前处于风暴降级态，尝试恢复文件监听。
+- 说明：`forceRefresh: true` 时若监听处于降级态（变更过多或监听出错），清除降级并重新挂载文件监听。`changes.truncated` 为 `true` 表示变更超过上限，列表只含前 `5000` 条。
 
-#### 2. `POST /api/commit/detail`
+#### 2. `POST /api/status`
+
+只有工作区文件变化时，前端用它代替完整快照：沿用上次快照记录的仓库，只执行一次 `git status`，不重跑仓库发现、`git log` 与 `git remote`。
+
+- **Request**：`{ "workspaceKey": "...", "sinceRevision": 12 }`（`workspaceKey` 必须来自本进程内的一次 `/api/snapshot`，否则返回 `NO_REPOSITORY`，前端随即回退到完整快照）
+- **Response `data`**：`{ "workspaceKey", "revision", "activeRepo", "changes", "watchState" }`，字段格式与 `/api/snapshot` 相同；`activeRepo` 的 HEAD、分支、上游与领先落后数取自本次 status，其余字段沿用上次快照。
+- **版本号**：在执行 `git status` 前取当前版本号返回，执行期间到达的变更由下一轮长轮询补上；若 `sinceRevision` 之后还有未处理的 `full` 级变更，则原样返回 `sinceRevision`，让下一轮长轮询立即要求完整快照。
+
+#### 3. `POST /api/commit/detail`
 
 用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时按需调用（前端按 `sha` 做内存缓存，切换仓库或强制刷新时清空）。
 
@@ -305,29 +313,30 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
   }
   ```
 
-#### 3. `POST /api/events/wait`
+#### 4. `POST /api/events/wait`
 
 挂起式长轮询端点，用于替代 `SidecarApp` 不支持的流式 SSE。
 
 - **Request**：`{ "workspaceKey": "...", "sinceRevision": 12, "timeoutMs": 20000 }`（后端将 `timeoutMs` 钳制在 `1000–20000` 毫秒）
 - **行为**：
-  - 若当前内存 `revision > sinceRevision` 或监听刚切换为降级态，立即返回 `{ "revision": current, "changed": true, "watchDegraded": false }`。
-  - 否则挂起 Promise 注册到 `event-bus.mjs`；当 `fs.watch` 防抖触发或写操作完成后，立刻 `resolve` 全部等待者；到达 `timeoutMs` 仍无变化则返回 `{ "revision": current, "changed": false, "watchDegraded": false }`。
-  - 同一客户端重连或关闭时通过上限清理避免内存泄漏（最多同时挂起 8 个等待者，超出时提前唤醒最旧者返回 `changed: false`）。
+  - 每次变更都带刷新级别：工作区文件变化、监听降级通知，以及 `stage`、`unstage`、`discard` 写操作为 `status` 级；`.git` 元数据变化（`HEAD`、`refs`、`packed-refs`、`index`、`config`、`worktrees`）、`commit`、`fetch`、`pull`、`push` 与不带作用域的广播为 `full` 级。
+  - 返回 `{ "revision": current, "refresh": "none" | "status" | "full" }`：`sinceRevision` 之后没有变更为 `none`；全部是 `status` 级为 `status`（前端调用 `/api/status`）；其中有任意一次 `full` 级为 `full`（前端调用 `/api/snapshot`）。
+  - 已有变更时立即返回；否则挂起 Promise 注册到 `event-bus.mjs`，当 `fs.watch` 防抖触发或写操作完成后立刻 `resolve`；到达 `timeoutMs` 仍无变化则返回 `refresh: "none"`。会话未知、监听已被 LRU 淘汰或 Sidecar 重启时直接返回 `full`。
+  - 同一客户端重连或关闭时通过上限清理避免内存泄漏（最多同时挂起 8 个等待者，超出时提前唤醒最旧者返回 `refresh: "none"`）。
 
-#### 4. `POST /api/changes/stage` 与 `POST /api/changes/unstage`
+#### 5. `POST /api/changes/stage` 与 `POST /api/changes/unstage`
 
 - **Request**：`{ "worktreePath": "...", "all": false, "paths": ["README.md"] }`（`all: true` 或非空 `paths[]` 二选一）
 - **Response `data`**：`{ "revision": 13 }`（写操作成功后递增内存版本号，前端随之拉取最新快照）。
 
-#### 5. `POST /api/changes/discard`
+#### 6. `POST /api/changes/discard`
 
 - **Request**：
   - 单文件/批量已跟踪文件还原：`{ "worktreePath": "...", "allTracked": false, "paths": ["README.md"], "untracked": false }`
   - 单文件未跟踪删除：`{ "worktreePath": "...", "allTracked": false, "paths": ["temp.txt"], "untracked": true }`（仅当 `untracked: true` 时强制校验 `paths.length === 1` 且该路径确在最新未跟踪列表中）
 - **护栏约束**：`allTracked: true` 绝不删除未跟踪文件；`paths` 禁止包含处于合并冲突的文件；所有路径必须通过 `worktreePath` 边界校验。
 
-#### 6. `POST /api/commit`
+#### 7. `POST /api/commit`
 
 - **Request**：`{ "worktreePath": "...", "message": "feat: ...", "autoStageAll": false }`
 - **行为**：
@@ -335,13 +344,13 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
   - 检查 `message.trim()` 为空则返回 `400 EMPTY_COMMIT_MESSAGE`。
   - 在同一仓库写队列内，若 `autoStageAll === true` 先执行 `git add -A`，随后通过 `stdin` 执行 `git commit -F -`。
 
-#### 7. `POST /api/remote/fetch`、`POST /api/remote/pull`、`POST /api/remote/push`
+#### 8. `POST /api/remote/fetch`、`POST /api/remote/pull`、`POST /api/remote/push`
 
 - **`fetch`**：请求体传入 `{ "worktreePath": "..." }`，执行 `git fetch --all --prune`。
 - **`pull`**：请求体传入 `{ "worktreePath": "..." }`，校验非 unborn、非 detached 且存在上游后执行 `git pull --ff-only`。
 - **`push`**：请求体传入 `{ "worktreePath": "...", "remote": "origin" }`（`remote` 仅在无上游 Publish Branch 时必填；存在上游时忽略并执行 `git push`）。所有推送路径均禁止使用 `--force` 与 `--force-with-lease`。
 
-#### 8. `POST /api/preferences`
+#### 9. `POST /api/preferences`
 
 - **Request**：`{ "locale": "zh-CN", "graphScope": "all", "splitRatio": 0.4 }`（任意子集字段，缺省字段保留原值）
 - **行为**：校验字段白名单与范围（`splitRatio` 钳制在 `0.15–0.85`），原子写入 `ANTIGRAVITY_EXECUTABLE_DATA_DIR/prefs.json`（先写临时文件再 `rename`）；Standalone 模式写 `os.tmpdir()/antigravity-git-worktree-prefs.json`（前端也可叠加 `localStorage`）。
@@ -392,12 +401,12 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 当宿主环境未显式设置 `GIT_SSH_COMMAND` 时，注入 `GIT_SSH_COMMAND: 'ssh -o BatchMode=yes'`。
    - 若命令以退出码 `128` 失败且 stderr 匹配交互禁用、鉴权失败或 `Permission denied (publickey)`，映射为 `AUTH_REQUIRED` 引导用户在终端完成登录。
 
-### 6.4 文件监听与风暴降级
+### 6.4 文件监听、刷新级别与变更过多降级
 
 后端仅对当前活跃 `Repository` 与当前命中的 `Worktree` 挂载监听，切换仓库或离开工作区时立即关闭旧句柄：
 
 1. **监听目标**：
-   - `.git/`（非递归）：仅响应 `HEAD`、`packed-refs`、`index` 与 `worktrees`，忽略 `*.lock`、`*.new`、`objects`、`COMMIT_EDITMSG` 等过程文件。
+   - `.git/`（非递归）：仅响应 `HEAD`、`packed-refs`、`index`、`config` 与 `worktrees`（`config` 覆盖 `git remote add`、设置上游等只改配置的操作），忽略 `*.lock`、`*.new`、`objects`、`COMMIT_EDITMSG` 等过程文件。
    - `.git/refs/`（`{ recursive: true }`）：捕获分支、标签与远端跟踪引用变更。
    - `.git/worktrees/`（动态挂载）：仅在目录存在时挂载 `{ recursive: true }`，目录被删除时卸载，避免无 linked Worktree 时抛出 `ENOENT`。
    - 当前命中 `Worktree` 根目录（`{ recursive: true }`）：过滤 `.git` 目录、`node_modules`、`.next`、`dist`、`build`、`target`、`__pycache__` 等高频产物目录。
@@ -408,9 +417,13 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
      return;
    }
    ```
-3. **防抖与风暴降级**：
-   - 元数据通道防抖 `200ms`，工作区通道防抖 `300ms`。
-   - 滑动 1 秒窗口内收到超过 `200` 次有效工作区事件，或最近一次 `status` 返回超过 `2000` 条变更时，暂停工作区自动监听并置 `watchState = { active: false, degraded: true, reason }`，同时递增 `revision` 通知前端在顶部展示「变更过多或文件写入频繁，已暂停自动监听，请手动刷新」。用户点击 `Refresh` 时重置计数器并尝试重新挂载监听。
+3. **防抖与刷新级别**：
+   - 元数据通道防抖 `200ms`，工作区通道防抖 `300ms`、连续写入时最长等待 `1s`。写入再频繁也只是合并成更少的刷新，不暂停监听。
+   - 工作区通道触发 `status` 级刷新（前端只调用 `/api/status`），元数据通道触发 `full` 级刷新（前端调用 `/api/snapshot`）。
+4. **变更过多降级**：
+   - 每次 `status`（快照或 `/api/status`）之后都按结果重新判断。`truncated: true` 时关闭工作区监听，置 `watchState = { active: false, degraded: true, reason: "too_many_changes" }`，状态随这次响应返回，不另行递增 `revision`（避免前端为同一结果再跑一遍 status）；前端在顶部展示「变更超过 5,000 条，只显示前 5,000 条；文件改动暂停自动刷新」与刷新按钮。
+   - 降级期间 `.git` 元数据监听照常工作，提交、切分支、暂存等操作仍会触发完整快照；某次 `status` 回落到上限以内时自动恢复工作区监听，并补一次工作区同步覆盖恢复前的空窗。
+   - 工作区监听连续出错 3 次时置 `reason: "watch_error"` 并递增 `revision`（`status` 级）通知前端，前端提示「文件监听出错，已暂停自动刷新，请手动刷新」。用户点击刷新（`forceRefresh: true`）时清除降级并重新挂载监听。
 
 ## 7. 前端架构、交互与视觉规范
 

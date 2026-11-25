@@ -1535,18 +1535,38 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   assert.equal(focusAfterRerender.focusId, 'file:unstaged:README.md');
   assert.equal(focusAfterRerender.focusVisible, true);
 
-  // 分批快速写入文件以触发真实的 1 秒 >200 事件风暴熔断（规避单次同步写入顶满 libuv 4KB 缓冲导致内核合并）
-  const stormDir = path.join(fixtures.repoA, 'tmp-storm');
-  fs.mkdirSync(stormDir, { recursive: true });
+  // 分批快速写入 225 个文件（规避单次同步写入顶满 libuv 4KB 缓冲导致内核合并）：高频写入只推迟刷新，不再暂停监听
+  const burstDir = path.join(fixtures.repoA, 'tmp-burst');
+  fs.mkdirSync(burstDir, { recursive: true });
   for (let batch = 0; batch < 15; batch += 1) {
     for (let i = 0; i < 15; i += 1) {
-      fs.writeFileSync(path.join(stormDir, `f-${batch}-${i}.txt`), `storm-${batch}-${i}\n`, 'utf8');
+      fs.writeFileSync(path.join(burstDir, `f-${batch}-${i}.txt`), `burst-${batch}-${i}\n`, 'utf8');
     }
     await sleep(20);
   }
   await page.waitFor(
+    'Boolean(document.querySelector(\'[data-testid="change-file-unstaged"][data-file-path="tmp-burst/"]\'))',
+    { description: 'burst-written folder listed by automatic refresh' },
+  );
+  assert.equal(
+    await page.evaluate('Boolean(document.querySelector("[data-testid=watch-degraded-banner]"))'),
+    false,
+    '高频写入不得暂停自动监听',
+  );
+  fs.rmSync(burstDir, { recursive: true, force: true });
+  await page.waitFor(
+    '!document.querySelector(\'[data-testid="change-file-unstaged"][data-file-path="tmp-burst/"]\')',
+    { description: 'removed folder disappears by automatic refresh' },
+  );
+
+  // 工作区变更超过 5000 条：列表只保留前 5000 条，顶部提示带尾部刷新按钮
+  const bulkFiles = Array.from({ length: 5_050 }, (_, i) => path.join(fixtures.repoA, `bulk-${String(i).padStart(5, '0')}.txt`));
+  for (const filePath of bulkFiles) {
+    fs.writeFileSync(filePath, 'bulk\n', 'utf8');
+  }
+  await page.waitFor(
     'Boolean(document.querySelector("[data-testid=watch-degraded-banner]") && document.querySelector("[data-testid=watch-degraded-refresh-btn]"))',
-    { description: 'watch degraded banner and trailing refresh button visible' },
+    { description: 'too-many-changes banner and trailing refresh button visible', timeoutMs: 30_000 },
   );
   const bannerLayout = await page.evaluate(`(() => {
     const banner = document.querySelector('[data-testid="watch-degraded-banner"]');
@@ -1556,20 +1576,24 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     const tr = text.getBoundingClientRect();
     const btnR = btn.getBoundingClientRect();
     return {
+      text: text.textContent ?? '',
       btnText: btn.textContent?.trim() ?? '',
       isTrailing: btnR.left >= tr.right - 1,
       withinViewport: btnR.right <= window.innerWidth + 0.5 && br.right <= window.innerWidth + 0.5,
     };
   })()`);
+  assert.match(bannerLayout.text, /5,000/, '提示应说明只显示前 5000 条');
   assert.equal(bannerLayout.btnText, '刷新');
   assert.equal(bannerLayout.isTrailing, true, '刷新按钮应位于警示条尾部');
   assert.equal(bannerLayout.withinViewport, true, '警示条与刷新按钮不得横向溢出');
 
-  fs.rmSync(stormDir, { recursive: true, force: true });
+  for (const filePath of bulkFiles) {
+    fs.rmSync(filePath, { force: true });
+  }
   await page.clickSelector('[data-testid="watch-degraded-refresh-btn"]');
   await page.waitFor(
     'document.getElementById("global-banners").classList.contains("hidden") && !document.querySelector("[data-testid=watch-degraded-banner]")',
-    { description: 'degraded banner cleared after clicking trailing refresh button' },
+    { description: 'banner cleared after clicking trailing refresh button', timeoutMs: 15_000 },
   );
 
   const sceneAErrors = page.getErrors();

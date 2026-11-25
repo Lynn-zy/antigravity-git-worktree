@@ -322,12 +322,10 @@ export function createMockFixtureStore(options = {}) {
   let repositories = createInitialMockRepositories();
   let localRevision = 1;
   let commitCounter = 0;
-  let watchDegraded = false;
-  let watchReason = null;
 
   const bump = () => {
     if (options.eventBus) {
-      return options.eventBus.bumpRevision({ watchDegraded }).revision;
+      return options.eventBus.bumpRevision().revision;
     }
     localRevision += 1;
     return localRevision;
@@ -357,8 +355,6 @@ export function createMockFixtureStore(options = {}) {
   const reset = () => {
     repositories = createInitialMockRepositories();
     commitCounter = 0;
-    watchDegraded = false;
-    watchReason = null;
   };
 
   const getSnapshot = (params = {}, preferences = { locale: 'auto', graphScope: 'auto', splitRatio: 0.42 }) => {
@@ -373,12 +369,6 @@ export function createMockFixtureStore(options = {}) {
     }
     const limit = Math.min(Math.trunc(rawLimit), MAX_GRAPH_LIMIT);
 
-    if (params.forceRefresh) {
-      watchDegraded = false;
-      watchReason = null;
-      options.eventBus?.setWatchDegraded(false);
-    }
-
     const active = (selectedRepoId ? repositories.find((r) => r.id === selectedRepoId) : null) ?? repositories[0];
     const filteredCommits = active.commits.filter((c) => c.scopeTags.includes(rawScope));
     const hasMore = filteredCommits.length > limit;
@@ -392,11 +382,6 @@ export function createMockFixtureStore(options = {}) {
       timestamp: c.timestamp,
       subject: c.subject,
     }));
-
-    const totalEntries =
-      active.changes.conflicted.length +
-      active.changes.staged.length +
-      active.changes.unstaged.length;
 
     const workspaceKey = createHash('sha256')
       .update(`${active.id}\0${(active.worktreePath ?? '').toLowerCase()}`)
@@ -432,7 +417,6 @@ export function createMockFixtureStore(options = {}) {
         conflicted: active.changes.conflicted.map((item) => ({ ...item })),
         staged: active.changes.staged.map((item) => ({ ...item })),
         unstaged: active.changes.unstaged.map((item) => ({ ...item })),
-        totalEntries,
         truncated: false,
       },
       graph: {
@@ -443,9 +427,9 @@ export function createMockFixtureStore(options = {}) {
         commits: slicedCommits,
       },
       watchState: {
-        active: !watchDegraded,
-        degraded: watchDegraded,
-        reason: watchReason,
+        active: true,
+        degraded: false,
+        reason: null,
       },
       preferences,
     };

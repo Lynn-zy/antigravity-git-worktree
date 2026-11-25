@@ -75,6 +75,7 @@ const safeParseJson = async (response) => {
  * @returns {{
  *   postJson: (pathname: string, body?: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
  *   fetchSnapshot: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
+ *   fetchStatus: (params: { workspaceKey: string, sinceRevision: number }, signal?: AbortSignal) => Promise<any>,
  *   fetchCommitDetail: (params: { worktreePath?: string | null, repoId?: string | null, sha: string, workspaceUris?: string[] }, signal?: AbortSignal) => Promise<any>,
  *   waitEvents: (params: { workspaceKey: string, sinceRevision: number, timeoutMs?: number }, signal?: AbortSignal) => Promise<any>,
  *   stageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[], workspaceUris?: string[] }) => Promise<any>,
@@ -156,6 +157,7 @@ export const createApiClient = (options = {}) => {
   return {
     postJson,
     fetchSnapshot: (params, signal) => postJson('/api/snapshot', params, signal),
+    fetchStatus: (params, signal) => postJson('/api/status', params, signal),
     fetchCommitDetail: (params, signal) => postRepoJson('/api/commit/detail', params, signal),
     waitEvents: (params, signal) => postJson('/api/events/wait', params, signal),
     stageChanges: (params) => postRepoJson('/api/changes/stage', params),

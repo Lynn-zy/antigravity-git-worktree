@@ -15,6 +15,8 @@ import {
   DEFAULT_GRAPH_LIMIT,
   discoverAndBuildSnapshotBase,
   queryCommitDetail,
+  queryWorktreeStatus,
+  withHeadInfo,
 } from './git-queries.mjs';
 import {
   AppError,
@@ -24,6 +26,7 @@ import {
 
 export const API_ROUTES = Object.freeze([
   '/api/snapshot',
+  '/api/status',
   '/api/commit/detail',
   '/api/events/wait',
   '/api/changes/stage',
@@ -89,6 +92,13 @@ function assertOptionalStringArray(value, fieldName) {
     if (typeof item !== 'string' || CONTROL_CHAR_PATTERN.test(item)) {
       throw new AppError(ERROR_CODES.INVALID_REQUEST, `${fieldName} contains invalid string entry.`);
     }
+  }
+  return value;
+}
+
+function assertRevision(value, fieldName) {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new AppError(ERROR_CODES.INVALID_REQUEST, `${fieldName} must be a non-negative integer.`);
   }
   return value;
 }
@@ -193,10 +203,9 @@ export function createApiRouter(deps) {
       channel: repositoryWide ? 'metadata' : 'worktree',
       target: repo,
     });
-    const watchState = watcher.getWatchState(repo);
     return eventBus.bumpRevision({
-      watchDegraded: watchState.degraded,
       scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+      refresh: repositoryWide ? 'full' : 'status',
     });
   };
 
@@ -351,7 +360,6 @@ export function createApiRouter(deps) {
           selectedRepoId,
           graphScope,
           graphLimit,
-          forceRefresh,
         },
         preferences,
       );
@@ -403,11 +411,6 @@ export function createApiRouter(deps) {
     const watchState = snapshotBase.activeRepo
       ? watcher.getWatchState(snapshotBase.activeRepo)
       : { active: false, degraded: false, reason: null };
-    if (snapshotBase.workspaceKey) {
-      eventBus.setWatchDegraded(watchState.degraded, snapshotBase.workspaceKey);
-    } else if (reqSeq === snapshotSeq) {
-      eventBus.setWatchDegraded(watchState.degraded);
-    }
 
     const scopedRevision = snapshotBase.workspaceKey
       ? eventBus.getRevision(snapshotBase.workspaceKey)
@@ -424,6 +427,33 @@ export function createApiRouter(deps) {
       graph: snapshotBase.graph,
       watchState,
       preferences,
+    };
+  };
+
+  // 工作区文件变化只需刷新上区：沿用上次快照记录的仓库，只跑 git status，不再重跑仓库发现、log 与 remote
+  const handleStatus = async (rawBody) => {
+    const body = assertPlainObject(rawBody);
+    const workspaceKey = assertRequiredNonEmptyString(body.workspaceKey, 'workspaceKey');
+    const sinceRevision = assertRevision(body.sinceRevision, 'sinceRevision');
+    const repo = knownWorkspaces.get(workspaceKey)?.repoTarget;
+    if (!repo?.worktreePath) {
+      throw new AppError(ERROR_CODES.NO_REPOSITORY, '工作区会话已失效，需要重新加载完整快照。');
+    }
+
+    // 版本号在 git status 之前锁定，之后到达的变更由下一轮长轮询补上；
+    // 若客户端还有未处理的 full 级变更，则不推进版本号，让下一轮长轮询立即返回 full。
+    const revision = eventBus.pendingRefresh(workspaceKey, sinceRevision) === 'full'
+      ? sinceRevision
+      : eventBus.getRevision(workspaceKey);
+    watcher.setTarget(repo);
+    const { branchInfo, changes } = await queryWorktreeStatus(repo.worktreePath);
+    const watchState = watcher.applyStatusBudget(changes, repo);
+    return {
+      workspaceKey,
+      revision,
+      activeRepo: withHeadInfo(repo, branchInfo),
+      changes,
+      watchState,
     };
   };
 
@@ -456,10 +486,7 @@ export function createApiRouter(deps) {
       ? null
       : assertRequiredNonEmptyString(body.workspaceKey, 'workspaceKey');
 
-    const sinceRevision = body.sinceRevision;
-    if (typeof sinceRevision !== 'number' || !Number.isInteger(sinceRevision) || sinceRevision < 0) {
-      throw new AppError(ERROR_CODES.INVALID_REQUEST, 'sinceRevision must be a non-negative integer.');
-    }
+    const sinceRevision = assertRevision(body.sinceRevision, 'sinceRevision');
 
     let timeoutMs;
     if (body.timeoutMs !== undefined) {
@@ -480,8 +507,7 @@ export function createApiRouter(deps) {
     if ((workspaceKey && !session) || watcherEvicted || sinceRevision > eventBus.revision) {
       return {
         revision: eventBus.getRevision(workspaceKey),
-        changed: true,
-        watchDegraded: eventBus.isWatchDegraded(workspaceKey),
+        refresh: 'full',
       };
     }
 
@@ -673,6 +699,7 @@ export function createApiRouter(deps) {
 
   const routeMap = new Map([
     ['/api/snapshot', handleSnapshot],
+    ['/api/status', handleStatus],
     ['/api/commit/detail', handleCommitDetail],
     ['/api/events/wait', handleEventsWait],
     ['/api/changes/stage', handleStage],

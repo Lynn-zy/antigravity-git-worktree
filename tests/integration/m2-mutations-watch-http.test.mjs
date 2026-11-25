@@ -207,7 +207,7 @@ test('event-bus.mjs 支持超时钳制、最多 8 个等待者唤醒最旧者及
   assert.equal(bus.clampTimeoutMs(5000), 5000);
 
   const immediate = await bus.waitForEvent({ sinceRevision: 4, timeoutMs: 5000 });
-  assert.deepEqual(immediate, { revision: 5, changed: true, watchDegraded: false });
+  assert.deepEqual(immediate, { revision: 5, refresh: 'full' });
 
   const waiters = [];
   for (let i = 0; i < 8; i += 1) {
@@ -215,10 +215,10 @@ test('event-bus.mjs 支持超时钳制、最多 8 个等待者唤醒最旧者及
   }
   assert.equal(bus.pendingCount, 8);
 
-  // 第 9 个等待者进入时，应立即唤醒第 1 个（最旧者）并返回 changed: false
+  // 第 9 个等待者进入时，应立即唤醒第 1 个（最旧者）并返回 refresh: 'none'
   const ninth = bus.waitForEvent({ sinceRevision: 5, timeoutMs: 20_000 });
   const evictedResult = await waiters[0];
-  assert.deepEqual(evictedResult, { revision: 5, changed: false, watchDegraded: false });
+  assert.deepEqual(evictedResult, { revision: 5, refresh: 'none' });
   assert.equal(bus.pendingCount, 8);
 
   const bumped = bus.bumpRevision();
@@ -227,9 +227,32 @@ test('event-bus.mjs 支持超时钳制、最多 8 个等待者唤醒最旧者及
   const settledRest = await Promise.all([...waiters.slice(1), ninth]);
   assert.equal(settledRest.length, 8);
   for (const item of settledRest) {
-    assert.deepEqual(item, { revision: 6, changed: true, watchDegraded: false });
+    assert.deepEqual(item, { revision: 6, refresh: 'full' });
   }
   assert.equal(bus.pendingCount, 0);
+});
+
+test('event-bus.mjs 按刷新级别汇总：只有 status 级变更返回 status，期间混入任意 full 级变更返回 full，且按工作区隔离', async (t) => {
+  const bus = createEventBus({ initialRevision: 1 });
+  t.after(() => bus.dispose());
+
+  const statusWait = bus.waitForEvent({ sinceRevision: 1, scopeKey: 'ws-a', timeoutMs: 5000 });
+  bus.bumpRevision({ scopeKeys: ['ws-a'], refresh: 'status' });
+  assert.deepEqual(await statusWait, { revision: 2, refresh: 'status' });
+
+  bus.bumpRevision({ scopeKeys: ['ws-a'], refresh: 'status' });
+  bus.bumpRevision({ scopeKeys: ['ws-a'], refresh: 'full' });
+  bus.bumpRevision({ scopeKeys: ['ws-a'], refresh: 'status' });
+  assert.deepEqual(await bus.waitForEvent({ sinceRevision: 2, scopeKey: 'ws-a' }), { revision: 5, refresh: 'full' });
+  assert.deepEqual(await bus.waitForEvent({ sinceRevision: 4, scopeKey: 'ws-a' }), { revision: 5, refresh: 'status' });
+  assert.equal(bus.pendingRefresh('ws-a', 5), 'none');
+
+  bus.bumpRevision({ scopeKeys: ['ws-b'], refresh: 'full' });
+  assert.equal(bus.pendingRefresh('ws-a', 5), 'none', '其他工作区的变更不得唤醒 ws-a');
+  assert.equal(bus.pendingRefresh('ws-b', 5), 'full');
+
+  bus.bumpRevision();
+  assert.equal(bus.pendingRefresh('ws-a', 5), 'full', '不带作用域的广播默认按 full 处理');
 });
 
 test('集成测试：全套 POST /api/* 写操作、unborn rm --cached、MM 保暂存、单未跟踪删除、OUT_OF_WORKTREE 与冲突阻断', async (t) => {
@@ -633,7 +656,7 @@ test('集成测试：fetch / pull / push 远程同步、禁 force、无远端 NO
   assert.equal(bareFetch.response.status, 200);
 });
 
-test('集成测试：events/wait 文件修改即时唤醒、删除目录触发自毁守卫无风暴、模拟风暴熔断与 forceRefresh 恢复', async (t) => {
+test('集成测试：文件修改返回 status 级刷新并由 /api/status 只刷新变更列表、外部提交返回 full、高频写入不降级、变更过多自动恢复、删除目录触发自毁守卫', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm2-int-watch-'));
   const repoDir = path.join(root, 'watch-repo');
   await initConfiguredRepo(repoDir, 'main');
@@ -650,16 +673,17 @@ test('集成测试：events/wait 文件修改即时唤醒、删除目录触发�
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // 1) 文件修改通过 fs.watch 即时唤醒 POST /api/events/wait
+  // 1) 工作区文件修改通过 fs.watch 即时唤醒 POST /api/events/wait，且只需 status 级刷新
   const initialSnap = await postApi(server.url, '/api/snapshot', {
     workspaceUris: [toFileUri(repoDir)],
   });
   assert.equal(initialSnap.json.data.watchState.active, true);
   assert.equal(initialSnap.json.data.watchState.degraded, false);
+  const workspaceKey = initialSnap.json.data.workspaceKey;
   const baseRevision = initialSnap.json.data.revision;
 
   const waitPromise = postApi(server.url, '/api/events/wait', {
-    workspaceKey: initialSnap.json.data.workspaceKey,
+    workspaceKey,
     sinceRevision: baseRevision,
     timeoutMs: 10_000,
   });
@@ -670,9 +694,62 @@ test('集成测试：events/wait 文件修改即时唤醒、删除目录触发�
 
   const waitRes = await waitPromise;
   assert.equal(waitRes.response.status, 200);
-  assert.equal(waitRes.json.data.changed, true);
+  assert.equal(waitRes.json.data.refresh, 'status');
   assert.ok(waitRes.json.data.revision > baseRevision);
-  assert.equal(waitRes.json.data.watchDegraded, false);
+
+  // /api/status 只返回上区数据：变更列表、HEAD 信息与监听状态
+  const statusRes = await postApi(server.url, '/api/status', { workspaceKey, sinceRevision: baseRevision });
+  assert.equal(statusRes.response.status, 200);
+  assert.deepEqual(statusRes.json.data.changes.unstaged.map((item) => item.path), ['app.txt']);
+  assert.equal(statusRes.json.data.changes.truncated, false);
+  assert.equal(statusRes.json.data.activeRepo.id, initialSnap.json.data.activeRepo.id);
+  assert.equal(statusRes.json.data.activeRepo.branch, 'main');
+  assert.equal(statusRes.json.data.activeRepo.headOid, initialSnap.json.data.activeRepo.headOid);
+  assert.deepEqual(statusRes.json.data.watchState, { active: true, degraded: false, reason: null });
+  assert.equal(statusRes.json.data.graph, undefined, '/api/status 不得重跑提交图谱');
+  assert.ok(statusRes.json.data.revision >= waitRes.json.data.revision);
+  const statusRevision = statusRes.json.data.revision;
+
+  // 外部终端提交改动的是 .git 元数据，需要完整快照
+  const commitWait = postApi(server.url, '/api/events/wait', {
+    workspaceKey,
+    sinceRevision: statusRevision,
+    timeoutMs: 10_000,
+  });
+  await execGit(['commit', '-am', 'external commit'], repoDir);
+  const commitWaitRes = await commitWait;
+  assert.equal(commitWaitRes.json.data.refresh, 'full');
+
+  // 还有未处理的 full 级变更时，/api/status 不推进版本号，下一轮长轮询仍会要求完整快照
+  const staleStatus = await postApi(server.url, '/api/status', { workspaceKey, sinceRevision: statusRevision });
+  assert.equal(staleStatus.json.data.revision, statusRevision);
+  const afterStaleWait = await postApi(server.url, '/api/events/wait', {
+    workspaceKey,
+    sinceRevision: staleStatus.json.data.revision,
+    timeoutMs: 1000,
+  });
+  assert.equal(afterStaleWait.json.data.refresh, 'full');
+
+  const unknownStatus = await postApi(server.url, '/api/status', { workspaceKey: 'unknown-key', sinceRevision: 0 });
+  assert.equal(unknownStatus.response.status, 409);
+  assert.equal(unknownStatus.json.error.code, ERROR_CODES.NO_REPOSITORY);
+
+  // 终端只改 .git/config（例如 git remote add）也要触发完整快照，刷新 remotes 与上游
+  const beforeRemoteSnap = (await postApi(server.url, '/api/snapshot', {
+    workspaceUris: [toFileUri(repoDir)],
+  })).json.data;
+  assert.deepEqual(beforeRemoteSnap.activeRepo.remotes, []);
+  const remoteWait = postApi(server.url, '/api/events/wait', {
+    workspaceKey,
+    sinceRevision: beforeRemoteSnap.revision,
+    timeoutMs: 10_000,
+  });
+  await execGit(['remote', 'add', 'origin', 'https://example.invalid/watch-repo.git'], repoDir);
+  assert.equal((await remoteWait).json.data.refresh, 'full');
+  const afterRemoteSnap = (await postApi(server.url, '/api/snapshot', {
+    workspaceUris: [toFileUri(repoDir)],
+  })).json.data;
+  assert.deepEqual(afterRemoteSnap.activeRepo.remotes, ['origin']);
 
   // 1.5) 客户端提前中止 /api/events/wait 时，res.once('close') 立即释放 eventBus 等待者不泄漏
   const latestRevSnap = await postApi(server.url, '/api/snapshot', {
@@ -705,24 +782,19 @@ test('集成测试：events/wait 文件修改即时唤醒、删除目录触发�
   }
   assert.equal(server.runtime.eventBus.pendingCount, 0);
 
-  // 2) 模拟风暴（超过 200 次有效工作区事件）触发 watchDegraded 并随 forceRefresh 恢复
-  const snapBeforeStorm = await postApi(server.url, '/api/snapshot', {
-    workspaceUris: [toFileUri(repoDir)],
-  });
-  const stormWaitPromise = postApi(server.url, '/api/events/wait', {
-    workspaceKey: snapBeforeStorm.json.data.workspaceKey,
-    sinceRevision: snapBeforeStorm.json.data.revision,
-    timeoutMs: 10_000,
-  });
-
-  // 在独立单元测试级监听器上也同时验证 200 次窗口熔断机制
-  let stormDegradeNotified = false;
-  let injectedClock = 1000;
+  // 2) 高频写入只推迟刷新，不再暂停监听；变更过多时暂停，回落后自动恢复并补一次同步
+  const worktreeTarget = {
+    gitCommonDir: path.join(repoDir, '.git'),
+    gitDir: path.join(repoDir, '.git'),
+    worktreePath: repoDir,
+    isBare: false,
+  };
   let fakeEmit = null;
+  let degradeNotifications = 0;
+  const emittedChannels = [];
   const fakeWatcher = createRepositoryWatcher({
-    stormEventLimit: 200,
-    stormWindowMs: 1000,
-    nowFn: () => injectedClock,
+    worktreeDebounceMs: 20,
+    worktreeMaxWaitMs: 40,
     existsFn: () => true,
     watchFn: (dir, _opts, listener) => {
       if (normalizeFsPath(dir) === normalizeFsPath(repoDir)) {
@@ -730,56 +802,54 @@ test('集成测试：events/wait 文件修改即时唤醒、删除目录触发�
       }
       return { close() {}, on() {} };
     },
+    onChange: (info) => emittedChannels.push(info.channel),
     onDegraded: () => {
-      stormDegradeNotified = true;
+      degradeNotifications += 1;
     },
   });
-  fakeWatcher.setTarget({
-    gitCommonDir: path.join(repoDir, '.git'),
-    gitDir: path.join(repoDir, '.git'),
-    worktreePath: repoDir,
-    isBare: false,
-  });
+  fakeWatcher.setTarget(worktreeTarget);
   assert.ok(fakeEmit);
-  for (let i = 0; i < 205; i += 1) {
+  for (let i = 0; i < 1000; i += 1) {
     fakeEmit('change', `src/file-${i}.js`);
   }
-  assert.equal(stormDegradeNotified, true);
-  assert.equal(fakeWatcher.getWatchState().degraded, true);
-  assert.equal(fakeWatcher.getWatchState().active, false);
-  fakeWatcher.setTarget(
-    {
-      gitCommonDir: path.join(repoDir, '.git'),
-      gitDir: path.join(repoDir, '.git'),
-      worktreePath: repoDir,
-      isBare: false,
-    },
-    { forceRefresh: true },
-  );
-  assert.equal(fakeWatcher.getWatchState().degraded, false);
-  assert.equal(fakeWatcher.getWatchState().active, true);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.deepEqual(fakeWatcher.getWatchState(), { active: true, degraded: false, reason: null });
+  assert.deepEqual(emittedChannels, ['worktree'], '1000 次事件应合并为一次工作区刷新');
+
+  fakeWatcher.applyStatusBudget({ truncated: true });
+  fakeWatcher.applyStatusBudget({ truncated: true });
+  assert.deepEqual(fakeWatcher.getWatchState(), { active: false, degraded: true, reason: 'too_many_changes' });
+  assert.equal(degradeNotifications, 0, 'status 结果触发的降级随响应返回，不另发通知');
+  fakeEmit('change', 'src/while-degraded.js');
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(emittedChannels, ['worktree'], '变更过多期间工作区事件不触发刷新');
+
+  fakeWatcher.applyStatusBudget({ truncated: false });
+  assert.deepEqual(fakeWatcher.getWatchState(), { active: true, degraded: false, reason: null });
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(emittedChannels, ['worktree', 'worktree'], '恢复监听后应补一次工作区同步');
   fakeWatcher.close();
 
-  // 真实服务器实例上触发降级并验证 events/wait 返回 watchDegraded: true，再经 forceRefresh 恢复
-  server.runtime.watcher.degrade('watch_storm');
-  const stormWaitRes = await stormWaitPromise;
-  assert.equal(stormWaitRes.json.data.changed, true);
-  assert.equal(stormWaitRes.json.data.watchDegraded, true);
-
-  const degradedSnap = await postApi(server.url, '/api/snapshot', {
+  // 真实服务器：变更过多后，下一次 status 已回落到上限内时监听自动恢复，无需手动刷新
+  const snapBeforeDegrade = (await postApi(server.url, '/api/snapshot', {
     workspaceUris: [toFileUri(repoDir)],
-    forceRefresh: false,
-  });
-  assert.equal(degradedSnap.json.data.watchState.degraded, true);
-  assert.equal(degradedSnap.json.data.watchState.active, false);
+  })).json.data;
+  server.runtime.watcher.applyStatusBudget({ truncated: true }, snapBeforeDegrade.activeRepo);
+  assert.equal(server.runtime.watcher.getWatchState(snapBeforeDegrade.activeRepo).degraded, true);
 
-  const recoveredSnap = await postApi(server.url, '/api/snapshot', {
+  const recoveredStatus = await postApi(server.url, '/api/status', {
+    workspaceKey: snapBeforeDegrade.workspaceKey,
+    sinceRevision: snapBeforeDegrade.revision,
+  });
+  assert.deepEqual(recoveredStatus.json.data.watchState, { active: true, degraded: false, reason: null });
+
+  // forceRefresh 仍可手动清除降级（例如监听出错后）
+  server.runtime.watcher.applyStatusBudget({ truncated: true }, snapBeforeDegrade.activeRepo);
+  const forcedSnap = await postApi(server.url, '/api/snapshot', {
     workspaceUris: [toFileUri(repoDir)],
     forceRefresh: true,
   });
-  assert.equal(recoveredSnap.json.data.watchState.degraded, false);
-  assert.equal(recoveredSnap.json.data.watchState.active, true);
-  assert.equal(recoveredSnap.json.data.watchState.reason, null);
+  assert.deepEqual(forcedSnap.json.data.watchState, { active: true, degraded: false, reason: null });
 
   // 3) 删除被监听工作目录，验证自毁守卫拦截 Windows \\?\ 死循环且回调 < 30 次并迅速结束
   const disposableDir = path.join(root, 'disposable-wt');
@@ -1141,7 +1211,7 @@ test('集成测试：切分支防吞事件、watcher 合并与目录噪声过滤
   const snapPromise = postApi(server.url, '/api/snapshot', { workspaceUris: [repoUri] });
   // 在快照执行 Git 读命令期间模拟外部切分支触发事件总线递增
   setTimeout(() => {
-    server.runtime.eventBus.bumpRevision({ watchDegraded: false });
+    server.runtime.eventBus.bumpRevision();
   }, 15);
   const s1 = (await snapPromise).json.data;
   assert.equal(
@@ -1157,7 +1227,7 @@ test('集成测试：切分支防吞事件、watcher 合并与目录噪声过滤
     sinceRevision: s1.revision,
     timeoutMs: 3000,
   })).json.data;
-  assert.equal(wakeRes.changed, true);
+  assert.equal(wakeRes.refresh, 'full');
   assert.ok(performance.now() - tWait < 500, '被查询窗口错过的变更应在下一次 events/wait 中立即唤醒');
 
   // 2) watcher 合并同一 checkout 的 metadata + worktree 双通道，并忽略目录级 change 元数据噪声
@@ -1529,7 +1599,7 @@ test('集成测试：多会话共享 Sidecar、同仓多 Worktree 与 Sidecar �
   const createTestRouter = () => {
     const eventBus = createEventBus({ minTimeoutMs: 100 });
     const watcher = createRepositoryWatcher({
-      onChange: () => eventBus.bumpRevision({ watchDegraded: watcher.getWatchState().degraded }),
+      onChange: () => eventBus.bumpRevision(),
     });
     const preferencesStore = createPreferencesStore({ filePath: prefsPath });
     const mockFixture = createMockFixtureStore({ eventBus });
@@ -1573,7 +1643,7 @@ test('集成测试：多会话共享 Sidecar、同仓多 Worktree 与 Sidecar �
   const snapEmpty = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [] });
   assert.equal(snapEmpty.statusCode, 200);
 
-  // 会话 A 推送必须成功，且其长轮询不会因为 currentWorkspaceKey 不同而立即误报 changed: true
+  // 会话 A 推送必须成功，且其长轮询不会因为 currentWorkspaceKey 不同而立即误报需要刷新
   const pushA = await inst1.router.dispatch('/api/remote/push', { worktreePath: wtA });
   assert.equal(pushA.statusCode, 200);
   assert.equal(pushA.body.ok, true);
@@ -1586,7 +1656,7 @@ test('集成测试：多会话共享 Sidecar、同仓多 Worktree 与 Sidecar �
     timeoutMs: 120,
   });
   assert.equal(waitA.statusCode, 200);
-  assert.equal(waitA.body.data.changed, false, '多会话 workspaceKey 不同不得触发互相唤醒风暴');
+  assert.equal(waitA.body.data.refresh, 'none', '多会话 workspaceKey 不同不得互相唤醒');
 
   // 2) 同一 Repository 的两个 Worktree（主工作树与链接工作树）应共存授权，互不覆盖
   const snapWt = await inst1.router.dispatch('/api/snapshot', { workspaceUris: [toFileUri(repoAWt)] });
@@ -1617,7 +1687,7 @@ test('集成测试：多会话共享 Sidecar、同仓多 Worktree 与 Sidecar �
     timeoutMs: 1000,
   });
   assert.equal(restartWait.statusCode, 200);
-  assert.equal(restartWait.body.data.changed, true, 'Sidecar 重启后应立即唤醒已挂载前端重新同步快照');
+  assert.equal(restartWait.body.data.refresh, 'full', 'Sidecar 重启后应立即唤醒已挂载前端重新同步完整快照');
 
   // 即使尚未重新拉取 snapshot，写接口携带 workspaceUris 也应按需校验并推送成功
   const pushAfterRestart = await inst2.router.dispatch('/api/remote/push', {
@@ -1699,11 +1769,12 @@ test('集成测试：多会话共享 Sidecar 并发监听不互拆、外部 git 
   await execGit(['commit', '-m', 'external commit in repoA'], repoA);
 
   const [resA, resAWt, resB] = await Promise.all([waitA, waitAWt, waitB]);
-  assert.equal(resA.json.data.changed, true, '其他会话快照后，外部终端提交 repoA 仍必须即时唤醒会话 A');
-  assert.equal(resAWt.json.data.changed, true, '同一 Repository 的 metadata 变更应同步唤醒关联 Worktree');
-  assert.equal(resB.json.data.changed, false, 'repoA 的外部提交不得误唤醒无关会话 B');
+  // 会话 A 先改了工作区文件再提交，先到的可能是 status 级或 full 级事件，只要被唤醒即可
+  assert.notEqual(resA.json.data.refresh, 'none', '其他会话快照后，外部终端提交 repoA 仍必须即时唤醒会话 A');
+  assert.equal(resAWt.json.data.refresh, 'full', '同一 Repository 的 metadata 变更应以 full 级唤醒关联 Worktree');
+  assert.equal(resB.json.data.refresh, 'none', 'repoA 的外部提交不得误唤醒无关会话 B');
 
-  // 2) 监听池超出 maxTargets 淘汰旧目标时，被淘汰会话下一次 /api/events/wait 应立即返回 changed: true 触发重建
+  // 2) 监听池超出 maxTargets 淘汰旧目标时，被淘汰会话下一次 /api/events/wait 应立即返回 full 触发重建
   const smallEventBus = createEventBus({ minTimeoutMs: 100 });
   let smallRouter = null;
   const smallPool = createWatcherPool({
@@ -1711,8 +1782,8 @@ test('集成测试：多会话共享 Sidecar 并发监听不互拆、外部 git 
     onChange: (info) => {
       const scopeKeys = smallRouter?.resolveAffectedWorkspaceKeys(info) ?? [];
       smallEventBus.bumpRevision({
-        watchDegraded: info?.watchState?.degraded ?? false,
         scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+        refresh: info.channel === 'worktree' ? 'status' : 'full',
       });
     },
   });
@@ -1737,7 +1808,7 @@ test('集成测试：多会话共享 Sidecar 并发监听不互拆、外部 git 
     sinceRevision: sSmallA.revision,
     timeoutMs: 1000,
   })).body.data;
-  assert.equal(evictedWait.changed, true, '被 LRU 淘汰监听的会话轮询时应立即唤醒重拉快照并重建监听');
+  assert.equal(evictedWait.refresh, 'full', '被 LRU 淘汰监听的会话轮询时应立即唤醒重拉完整快照并重建监听');
 
   // 3) .git 元数据监听遭遇瞬时 error 后自动延迟重挂并补发一次 metadata 变更
   let gitMountCount = 0;

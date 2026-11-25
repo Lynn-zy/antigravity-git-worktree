@@ -1,6 +1,6 @@
 /**
  * Antigravity Git Graph 上区「更改」视图组件，布局对齐 VS Code 源代码管理「更改」视图。
- * 负责特殊状态横幅（冲突/游离 HEAD/裸仓/截断）、按 repo.id 内存保留的提交草稿、
+ * 负责特殊状态横幅（冲突/游离 HEAD/裸仓）、按 repo.id 内存保留的提交草稿、
  * 智能主按钮状态机、可折叠变更分组及三档 Discard 安全确认护栏。
  */
 
@@ -398,9 +398,6 @@ export const createChangesView = (elements, deps) => {
     }
     if (activeRepo?.isDetached) {
       items.push({ variant: 'warning', icon: 'warning', text: t('repo.detachedBanner'), testid: 'banner-detached' });
-    }
-    if (changes?.truncated) {
-      items.push({ variant: 'warning', icon: 'warning', text: t('changes.truncatedBanner'), testid: 'banner-truncated' });
     }
     const conflictedCount = changes?.conflicted?.length ?? 0;
     if (conflictedCount > 0) {

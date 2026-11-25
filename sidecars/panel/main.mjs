@@ -368,17 +368,20 @@ function createCoreRuntime(options = {}) {
   let router = null;
   const watcher = createWatcherPool({
     ...options.watcherOptions,
+    // 工作区文件变化只需重跑 git status；.git 元数据变化（HEAD、refs、index 等）需要完整快照
     onChange: (info) => {
       const scopeKeys = router?.resolveAffectedWorkspaceKeys(info) ?? [];
       eventBus.bumpRevision({
-        watchDegraded: info?.watchState?.degraded ?? false,
         scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+        refresh: info.channel === 'worktree' ? 'status' : 'full',
       });
     },
+    // 只有后台监听出错会走到这里；通知前端做一次 status 刷新，取回新的 watchState 显示提示
     onDegraded: (_watchState, info) => {
       const scopeKeys = router?.resolveAffectedWorkspaceKeys(info) ?? [];
-      eventBus.notifyWatchDegraded({
+      eventBus.bumpRevision({
         scopeKeys: scopeKeys.length > 0 ? scopeKeys : undefined,
+        refresh: 'status',
       });
     },
   });

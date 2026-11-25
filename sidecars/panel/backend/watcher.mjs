@@ -8,14 +8,12 @@ export const WORKTREE_MAX_WAIT_MS = 1000;
 export const WORKTREE_RETRY_DELAY_MS = 500;
 export const MAX_WORKTREE_ERROR_RETRIES = 3;
 export const MAX_POOL_TARGETS = 8;
-export const STORM_WINDOW_MS = 1000;
-export const STORM_EVENT_LIMIT = 200;
-export const STATUS_DEGRADE_LIMIT = 2000;
 
 const WATCHED_GIT_ROOT_FILES = new Set([
   'HEAD',
   'packed-refs',
   'index',
+  'config',
   'worktrees',
   'MERGE_HEAD',
   'REBASE_HEAD',
@@ -107,8 +105,8 @@ function isIgnoredWorktreePath(filename) {
 
 /**
  * 仅面向当前活跃 `Repository` 与当前命中 `Worktree` 的局部文件系统监听器。
- * 内置 Windows `ReadDirectoryChangesW` 自毁守卫、元数据/工作区双通道防抖、
- * 1 秒 200 次事件风暴熔断与 2000 条变更预算降级，支持 `forceRefresh` 恢复。
+ * 内置 Windows `ReadDirectoryChangesW` 自毁守卫与元数据/工作区双通道防抖。
+ * 写入再频繁也只是延后刷新；`status` 变更数超过上限时暂停工作区监听，回落到上限以内自动恢复。
  */
 export class RepositoryWatcher {
   #watchFn;
@@ -120,9 +118,6 @@ export class RepositoryWatcher {
   #worktreeMaxWaitMs;
   #worktreeRetryDelayMs;
   #maxWorktreeErrorRetries;
-  #stormWindowMs;
-  #stormEventLimit;
-  #statusDegradeLimit;
   #onChange;
   #onDegraded;
 
@@ -141,7 +136,6 @@ export class RepositoryWatcher {
   #eventSeq = 0;
   #lastMetadataEventSeq = 0;
   #lastWorktreeEventSeq = 0;
-  #recentWorktreeEvents = [];
   #watchState = {
     active: false,
     degraded: false,
@@ -165,9 +159,6 @@ export class RepositoryWatcher {
    *   worktreeMaxWaitMs?: number,
    *   worktreeRetryDelayMs?: number,
    *   maxWorktreeErrorRetries?: number,
-   *   stormWindowMs?: number,
-   *   stormEventLimit?: number,
-   *   statusDegradeLimit?: number,
    *   watchFn?: typeof fs.watch,
    *   existsFn?: typeof fs.existsSync,
    *   statFn?: typeof fs.statSync,
@@ -182,9 +173,6 @@ export class RepositoryWatcher {
     this.#worktreeMaxWaitMs = options.worktreeMaxWaitMs ?? Math.max(this.#worktreeDebounceMs, WORKTREE_MAX_WAIT_MS);
     this.#worktreeRetryDelayMs = options.worktreeRetryDelayMs ?? WORKTREE_RETRY_DELAY_MS;
     this.#maxWorktreeErrorRetries = options.maxWorktreeErrorRetries ?? MAX_WORKTREE_ERROR_RETRIES;
-    this.#stormWindowMs = options.stormWindowMs ?? STORM_WINDOW_MS;
-    this.#stormEventLimit = options.stormEventLimit ?? STORM_EVENT_LIMIT;
-    this.#statusDegradeLimit = options.statusDegradeLimit ?? STATUS_DEGRADE_LIMIT;
     this.#watchFn = options.watchFn ?? fs.watch;
     this.#existsFn = options.existsFn ?? fs.existsSync;
     this.#statFn = options.statFn ?? fs.statSync;
@@ -233,7 +221,6 @@ export class RepositoryWatcher {
       this.#teardownAllWatchers();
       this.#target = null;
       this.#targetKey = null;
-      this.#recentWorktreeEvents = [];
       this.#watchState = { active: false, degraded: false, reason: null };
       return this.getWatchState();
     }
@@ -246,7 +233,6 @@ export class RepositoryWatcher {
         this.#gitRetryCount = 0;
         this.#clearWorktreeRetryTimer();
         this.#worktreeRetryCount = 0;
-        this.#recentWorktreeEvents = [];
         this.#watchState = { active: false, degraded: false, reason: null };
         this.#ensureWorktreeWatcher();
       }
@@ -275,7 +261,6 @@ export class RepositoryWatcher {
     this.#targetKey = nextKey;
     this.#gitRetryCount = 0;
     this.#worktreeRetryCount = 0;
-    this.#recentWorktreeEvents = [];
     this.#watchState = { active: false, degraded: false, reason: null };
 
     this.#mountGitWatchers();
@@ -287,32 +272,27 @@ export class RepositoryWatcher {
   }
 
   /**
-   * 根据最新 `status` 变更总数判断是否触发 2000 条预算降级。
-   * 当 `truncated` 为 true 或 `totalEntries > 2000` 时立即暂停工作区监听并通知降级。
+   * 按最新一次 `status` 结果同步「变更过多」状态，每次 status 后都重新判断。
+   * `truncated` 为 true 时暂停工作区监听；状态随这次 status 的响应返回，不再另发 `onDegraded` 通知，
+   * 免得前端为同一结果再跑一遍代价最高的 status。之后变更数回落到上限以内则自动恢复监听，
+   * 并补一次工作区同步，覆盖这次 status 与重新挂载监听之间的空窗。
    *
-   * @param {{ totalEntries?: number, truncated?: boolean } | null | undefined} changes 快照中的变更统计
+   * @param {{ truncated?: boolean } | null | undefined} changes 最新 status 的变更列表
    * @returns {{ active: boolean, degraded: boolean, reason: string | null }} 最新监听状态
    */
   applyStatusBudget(changes) {
     if (!this.#target || !this.#target.worktreePath) {
       return this.getWatchState();
     }
-    const totalEntries = Number(changes?.totalEntries ?? 0);
-    const exceedsBudget = Boolean(changes?.truncated) || totalEntries > this.#statusDegradeLimit;
-    if (exceedsBudget) {
-      this.#triggerDegraded('too_many_changes');
+    if (changes?.truncated) {
+      this.#enterDegraded('too_many_changes');
+    } else if (this.#watchState.reason === 'too_many_changes') {
+      this.#watchState = { active: false, degraded: false, reason: null };
+      this.#ensureWorktreeWatcher();
+      this.#recomputeActiveFlag();
+      this.#scheduleWorktreeResyncIfMounted();
     }
     return this.getWatchState();
-  }
-
-  /**
-   * 外部显式触发风暴或预算降级（供集成测试与内部熔断统一复用）。
-   *
-   * @param {string} [reason='watch_storm'] 降级原因标识
-   * @returns {void}
-   */
-  degrade(reason = 'watch_storm') {
-    this.#triggerDegraded(reason);
   }
 
   /**
@@ -325,7 +305,6 @@ export class RepositoryWatcher {
     this.#teardownAllWatchers();
     this.#target = null;
     this.#targetKey = null;
-    this.#recentWorktreeEvents = [];
     this.#watchState = { active: false, degraded: false, reason: null };
   }
 
@@ -560,16 +539,22 @@ export class RepositoryWatcher {
       }
       this.#ensureWorktreeWatcher();
       this.#recomputeActiveFlag();
-      if (this.#worktreeWatcher && !this.#worktreeWatcher.closed) {
-        // 补挂成功后主动触发一次工作区同步，补齐监听中断窗口内的文件变动
-        this.#eventSeq += 1;
-        this.#lastWorktreeEventSeq = this.#eventSeq;
-        this.#scheduleWorktreeChange();
-      } else {
+      if (!this.#scheduleWorktreeResyncIfMounted()) {
         this.#scheduleWorktreeRemount();
       }
     }, this.#worktreeRetryDelayMs);
     this.#worktreeRetryTimer.unref?.();
+  }
+
+  // 重新挂载工作区监听后主动触发一次同步，补齐监听中断窗口内的文件变动；返回监听是否已挂上
+  #scheduleWorktreeResyncIfMounted() {
+    if (!this.#worktreeWatcher || this.#worktreeWatcher.closed) {
+      return false;
+    }
+    this.#eventSeq += 1;
+    this.#lastWorktreeEventSeq = this.#eventSeq;
+    this.#scheduleWorktreeChange();
+    return true;
   }
 
   #ensureWorktreeWatcher() {
@@ -620,16 +605,6 @@ export class RepositoryWatcher {
       return;
     }
     this.#stats.effectiveEventCount += 1;
-    const now = this.#nowFn();
-    const cutoff = now - this.#stormWindowMs;
-    this.#recentWorktreeEvents.push(now);
-    while (this.#recentWorktreeEvents.length > 0 && this.#recentWorktreeEvents[0] < cutoff) {
-      this.#recentWorktreeEvents.shift();
-    }
-    if (this.#recentWorktreeEvents.length > this.#stormEventLimit) {
-      this.#triggerDegraded('watch_storm');
-      return;
-    }
     this.#eventSeq += 1;
     this.#lastWorktreeEventSeq = this.#eventSeq;
     this.#scheduleWorktreeChange();
@@ -683,7 +658,8 @@ export class RepositoryWatcher {
     this.#worktreeTimer.unref?.();
   }
 
-  #triggerDegraded(reason) {
+  // 关闭工作区监听并进入降级态；返回这次调用是否改变了降级原因
+  #enterDegraded(reason) {
     if (this.#worktreeTimer) {
       clearTimeout(this.#worktreeTimer);
       this.#worktreeTimer = null;
@@ -692,7 +668,6 @@ export class RepositoryWatcher {
     this.#clearWorktreeRetryTimer();
     closeWatcherHandle(this.#worktreeWatcher);
     this.#worktreeWatcher = null;
-    this.#recentWorktreeEvents = [];
 
     const alreadyDegradedSameReason =
       this.#watchState.degraded && this.#watchState.reason === reason;
@@ -701,7 +676,12 @@ export class RepositoryWatcher {
       degraded: true,
       reason,
     };
-    if (!alreadyDegradedSameReason) {
+    return !alreadyDegradedSameReason;
+  }
+
+  // 后台异步发生的降级（监听出错）没有随行的响应，需要通知前端来取
+  #triggerDegraded(reason) {
+    if (this.#enterDegraded(reason)) {
       this.#onDegraded(this.getWatchState());
     }
   }
@@ -870,27 +850,15 @@ export class RepositoryWatcherPool {
   }
 
   /**
-   * 对指定目标（省略时取最近操作目标）应用变更条目数预算检查。
+   * 按最新 status 结果同步指定目标（省略时取最近操作目标）的「变更过多」状态。
    *
-   * @param {{ totalEntries?: number, truncated?: boolean } | null | undefined} changes 快照中的变更统计
+   * @param {{ truncated?: boolean } | null | undefined} changes 最新 status 的变更列表
    * @param {{ gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null} [repoTarget] 可选仓库目标
    * @returns {{ active: boolean, degraded: boolean, reason: string | null }} 最新监听状态
    */
   applyStatusBudget(changes, repoTarget) {
     const entry = this.#resolveEntry(repoTarget);
     return entry ? entry.watcher.applyStatusBudget(changes) : { active: false, degraded: false, reason: null };
-  }
-
-  /**
-   * 显式触发指定目标（省略时取最近操作目标）的风暴或预算降级。
-   *
-   * @param {string} [reason='watch_storm'] 降级原因标识
-   * @param {{ gitCommonDir: string, gitDir?: string, worktreePath?: string | null, isBare?: boolean } | null} [repoTarget] 可选仓库目标
-   * @returns {void}
-   */
-  degrade(reason = 'watch_storm', repoTarget) {
-    const entry = this.#resolveEntry(repoTarget);
-    entry?.watcher.degrade(reason);
   }
 
   /**

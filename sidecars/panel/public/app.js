@@ -880,7 +880,14 @@ const bootstrapPanel = () => {
 
     const textEl = document.createElement('span');
     textEl.className = 'gw-banner-text';
-    textEl.textContent = t('watch.degradedBanner');
+    if (snapshot.watchState.reason === 'too_many_changes') {
+      // 截断后列表恰好保留上限条数，直接用展示条数作为上限，不单独传常量
+      const changes = snapshot.changes;
+      const shownCount = (changes?.conflicted?.length ?? 0) + (changes?.staged?.length ?? 0) + (changes?.unstaged?.length ?? 0);
+      textEl.textContent = t('watch.tooManyChangesBanner', { count: shownCount.toLocaleString(t.locale) });
+    } else {
+      textEl.textContent = t('watch.errorBanner');
+    }
 
     const refreshBtn = document.createElement('button');
     refreshBtn.type = 'button';
@@ -994,15 +1001,16 @@ const bootstrapPanel = () => {
             eventsBackoffMs = 1200;
             if (token !== eventsLoopToken || document.hidden) return;
 
-            const shouldRefresh = Boolean(eventRes?.changed)
-              || (Number.isFinite(eventRes?.revision) && eventRes.revision > state.revision)
-              || Boolean(eventRes?.watchDegraded && !state.snapshot?.watchState?.degraded);
-
-            if (shouldRefresh) {
-              // loadSnapshot 会立即接管长轮询生命周期（成功重启、失败退避重连），当前循环直接退出
-              await loadSnapshot({ forceRefresh: false });
-              return;
+            const refresh = eventRes?.refresh ?? 'none';
+            if (refresh === 'none') continue;
+            // 只有工作区文件变化时只刷新上区，留在当前循环继续等待；失败时回退到完整快照
+            if (refresh === 'status' && state.snapshot?.activeRepo?.worktreePath && await refreshStatus()) {
+              continue;
             }
+            if (token !== eventsLoopToken || document.hidden) return;
+            // loadSnapshot 会立即接管长轮询生命周期（成功重启、失败退避重连），当前循环直接退出
+            await loadSnapshot({ forceRefresh: false });
+            return;
           } catch (err) {
             // 仅本端主动取消或页面不可见时退出；宿主 fetch 超时/连接重置等外部 AbortError 必须退避重连
             if (controller.signal.aborted || token !== eventsLoopToken || document.hidden) {
@@ -1024,6 +1032,51 @@ const bootstrapPanel = () => {
     };
 
     void poll();
+  };
+
+  /**
+   * 只重跑 git status，刷新上区变更列表、分支上下游与监听状态，保留提交图谱与远端列表。
+   * 与 `loadSnapshot` 共用请求序号，任一方发起新请求都会让另一方的旧响应作废。
+   *
+   * @returns {Promise<boolean>} 是否已应用新结果；失败、被取消或会话已切换时返回 false，由调用方决定是否回退到完整快照
+   */
+  const refreshStatus = async () => {
+    snapshotRequestSeq += 1;
+    const reqSeq = snapshotRequestSeq;
+    snapshotAbortController?.abort();
+    const controller = new AbortController();
+    snapshotAbortController = controller;
+    const workspaceKey = state.snapshot?.workspaceKey;
+
+    let result;
+    try {
+      result = await apiClient.fetchStatus({ workspaceKey, sinceRevision: state.revision }, controller.signal);
+    } catch {
+      return false;
+    } finally {
+      if (snapshotAbortController === controller) {
+        snapshotAbortController = null;
+      }
+    }
+
+    if (reqSeq !== snapshotRequestSeq || state.snapshot?.workspaceKey !== result.workspaceKey) return false;
+
+    state.revision = Number(result.revision ?? state.revision);
+    // 反复保存已修改的文件时 status 结果不变；变更上千条时整表重建要数百毫秒，结果相同就不重绘
+    const current = state.snapshot;
+    if (JSON.stringify([result.activeRepo, result.changes, result.watchState])
+      === JSON.stringify([current.activeRepo, current.changes, current.watchState])) {
+      return true;
+    }
+
+    state.snapshot = {
+      ...state.snapshot,
+      activeRepo: result.activeRepo,
+      changes: result.changes,
+      watchState: result.watchState,
+    };
+    renderAll();
+    return true;
   };
 
   const loadSnapshot = async ({ forceRefresh = false, toastAnchor = null } = {}) => {

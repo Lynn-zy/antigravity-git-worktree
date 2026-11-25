@@ -22,8 +22,8 @@ export const MESSAGES = Object.freeze({
     'repo.bareLabel': '裸仓库',
 
     // 特殊仓库与监听状态横幅
-    'watch.degradedBanner': '变更过多或文件写入频繁，已暂停自动监听，请手动刷新',
-    'changes.truncatedBanner': '工作区变更超过 2000 条，列表已截断显示；建议手动刷新',
+    'watch.tooManyChangesBanner': '变更超过 {count} 条，只显示前 {count} 条；文件改动暂停自动刷新',
+    'watch.errorBanner': '文件监听出错，已暂停自动刷新，请手动刷新',
     'repo.detachedBanner': '当前处于游离 HEAD（Detached HEAD）状态：可正常提交，但无法直接推送或拉取。',
     'repo.bareNotice': '裸仓库不支持工作区修改，可在下方浏览提交图表或执行提取（Fetch）。',
     'repo.unbornNotice': '当前分支尚无任何提交记录，完成首次提交后将生成提交图表。',
@@ -182,8 +182,8 @@ export const MESSAGES = Object.freeze({
     'repo.bareLabel': 'Bare repository',
 
     // Special repository & file-watch banners
-    'watch.degradedBanner': 'Too many changes or rapid writes; auto file watching is paused. Please refresh manually.',
-    'changes.truncatedBanner': 'More than 2,000 working tree changes found; list truncated. Refresh manually when ready.',
+    'watch.tooManyChangesBanner': 'More than {count} changes; only the first {count} are shown. Auto refresh on file edits is paused.',
+    'watch.errorBanner': 'File watching failed; auto refresh is paused. Please refresh manually.',
     'repo.detachedBanner': 'HEAD is detached: you can still commit, but push and pull are disabled.',
     'repo.bareNotice': 'Bare repositories do not support working tree modifications. You can still browse the Commit Graph and fetch.',
     'repo.unbornNotice': 'This branch has no commits yet. Make an initial commit to populate the Commit Graph.',
