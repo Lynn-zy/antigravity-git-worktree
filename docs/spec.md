@@ -254,7 +254,6 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
       "conflicted": [],
       "staged": [{ "path": "docs/spec.md", "origPath": null, "status": "M", "fileUri": "file:///..." }],
       "unstaged": [{ "path": "README.md", "origPath": null, "status": "M", "untracked": false, "fileUri": "file:///..." }],
-      "totalEntries": 2,
       "truncated": false
     },
     "graph": {
@@ -364,7 +363,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 | 场景 | Git 命令 | 解析与边界注意事项 |
 | --- | --- | --- |
-| 工作区变更 | `git ... --no-optional-locks status --porcelain=v2 --branch --show-stash -z` | 顺序指针消费 NUL token：普通项 `1` 占 1 token（按前 8 个空格切分保留路径空格）；重命名 `2` 占 2 token（**`newPath` 在前、`origPath` 在后**）；冲突项 `u` 单独归入 `conflicted[]`；未跟踪 `?` 归入 `unstaged[]` 并标 `untracked: true`。`XY` 均非 `.`（如 `MM`）时同时进入 `staged[]` 与 `unstaged[]`。总变更超 `2000` 条时设 `truncated: true` 并触发监听降级。 |
+| 工作区变更 | `git ... --no-optional-locks status --porcelain=v2 --branch --show-stash -z` | 顺序指针消费 NUL token：普通项 `1` 占 1 token（按前 8 个空格切分保留路径空格）；重命名 `2` 占 2 token（**`newPath` 在前、`origPath` 在后**）；冲突项 `u` 单独归入 `conflicted[]`；未跟踪 `?` 归入 `unstaged[]` 并标 `untracked: true`。`XY` 均非 `.`（如 `MM`）时同时进入 `staged[]` 与 `unstaged[]`。边读 stdout 边解析，变更条目超过 `5000` 条时立即结束 git 进程，只保留前 `5000` 条并设 `truncated: true`。 |
 | 图谱（`全部`） | `git ... --no-optional-locks log --exclude=refs/stash --all --topo-order --decorate=full -z -n <limit+1> --format=%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%at%x1f%s` | 排除 `refs/stash` 伪节点；多拉 1 条判断 `hasMore`；0 提交 unborn 仓库安全返回空串。`%D` 按 `", "` 与 `" -> "` 安全拆分（Git 禁止 ref 名含空格）。 |
 | 图谱（`自动`） | 非 unborn 时：`git ... --no-optional-locks log --topo-order --decorate=full -z -n <limit+1> --format=... --end-of-options HEAD [<upstream>]` | 若当前分支有上游跟踪分支则同时传入 `HEAD` 与 `<upstream>`，同时显示领先与落后分支；unborn 仓库跳过调用直接返回空数组。 |
 | 图谱分页 | 首屏 `limit = 150`，每加载一页 `+200`，硬上限 `2000` | 采用增大 `limit` 重拉并在前端按 `sha` 稳定合并，避免提交新增导致 `--skip` 漂移重复。达到 `2000` 时置 `reachedSoftLimit: true` 提示缩小范围。 |

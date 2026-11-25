@@ -16,7 +16,7 @@ import {
 
 export { parseWorktreeListPorcelainZ };
 
-export const MAX_STATUS_ENTRIES = 2000;
+export const MAX_STATUS_ENTRIES = 5_000;
 export const DEFAULT_GRAPH_LIMIT = 150;
 export const MAX_GRAPH_LIMIT = 2000;
 
@@ -57,21 +57,46 @@ function resolveChangeFileUri(worktreePath, relPath) {
   }
 }
 
+function applyBranchHeader(branchInfo, token) {
+  if (token.startsWith('# branch.oid ')) {
+    const oid = token.slice('# branch.oid '.length).trim();
+    branchInfo.isUnborn = oid === '(initial)';
+    branchInfo.headOid = branchInfo.isUnborn ? null : (oid || null);
+  } else if (token.startsWith('# branch.head ')) {
+    const head = token.slice('# branch.head '.length).trim();
+    branchInfo.isDetached = head === '(detached)';
+    branchInfo.branch = branchInfo.isDetached ? null : (head || null);
+  } else if (token.startsWith('# branch.upstream ')) {
+    branchInfo.upstream = token.slice('# branch.upstream '.length).trim() || null;
+  } else if (token.startsWith('# branch.ab ')) {
+    const match = token.slice('# branch.ab '.length).match(/^\+(\d+)\s+-(\d+)/);
+    if (match) {
+      branchInfo.ahead = Number.parseInt(match[1], 10);
+      branchInfo.behind = Number.parseInt(match[2], 10);
+    }
+  } else if (token.startsWith('# stash ')) {
+    branchInfo.stashCount = Number.parseInt(token.slice('# stash '.length), 10) || 0;
+  }
+}
+
 /**
- * 解析 `git status --porcelain=v2 --branch --show-stash -z` 的原始 NUL 分隔字节流。
- * 严格按重命名条目 `2` 为 `newPath` 在前、`origPath` 在后消费双 token，并将 `MM` 同时归入 `staged` 与 `unstaged`。
+ * 创建 `git status --porcelain=v2 --branch --show-stash -z` 的增量解析器，边读 stdout 边解析 NUL 分隔字节流。
+ * 严格按重命名条目 `2` 为 `newPath` 在前、`origPath` 在后消费双 token（两者可能分属不同数据块），
+ * 并将 `MM` 同时归入 `staged` 与 `unstaged`。变更条目超过 `maxEntries` 后只保留前 `maxEntries` 条，
+ * `push` 返回 true，调用方据此提前结束 git 进程。
  *
- * @param {Buffer | Uint8Array | string} buffer Git status 原始 stdout 输出
- * @param {{ maxEntries?: number, worktreePath?: string | null }} [options] 解析上限与 fileUri 生成根路径
- * @returns {{ branchInfo: { headOid: string | null, branch: string | null, upstream: string | null, ahead: number, behind: number, isUnborn: boolean, isDetached: boolean, stashCount: number }, changes: { conflicted: Array<{ path: string, origPath: null, status: string, fileUri: string | null }>, staged: Array<{ path: string, origPath: string | null, status: string, fileUri: string | null }>, unstaged: Array<{ path: string, origPath: null, status: string, untracked: boolean, fileUri: string | null }>, totalEntries: number, truncated: boolean } }} 分支信息与变更列表
+ * @param {{ maxEntries?: number, worktreePath?: string | null }} [options] 条目上限与 fileUri 生成根路径
+ * @returns {{
+ *   push: (chunk: Buffer) => boolean,
+ *   finish: () => { branchInfo: { headOid: string | null, branch: string | null, upstream: string | null, ahead: number, behind: number, isUnborn: boolean, isDetached: boolean, stashCount: number }, changes: { conflicted: Array<{ path: string, origPath: null, status: string, fileUri: string | null }>, staged: Array<{ path: string, origPath: string | null, status: string, fileUri: string | null }>, unstaged: Array<{ path: string, origPath: null, status: string, untracked: boolean, fileUri: string | null }>, truncated: boolean } }
+ * }} 解析器：`push` 喂入一块 stdout 并返回是否已超出上限，`finish` 在输出结束后返回分支信息与变更列表
  */
-export function parseStatusPorcelainV2Z(buffer, options = {}) {
+export function createStatusParser(options = {}) {
   const {
     maxEntries = MAX_STATUS_ENTRIES,
     worktreePath = null,
   } = options;
 
-  const tokens = splitNullTokens(buffer);
   const branchInfo = {
     headOid: null,
     branch: null,
@@ -82,65 +107,56 @@ export function parseStatusPorcelainV2Z(buffer, options = {}) {
     isDetached: false,
     stashCount: 0,
   };
-
   const conflicted = [];
   const staged = [];
   const unstaged = [];
-  let totalEntries = 0;
+  let entryCount = 0;
   let truncated = false;
+  let remainder = Buffer.alloc(0);
+  let pendingRename = null;
 
   const appendItem = (target, item) => {
-    totalEntries += 1;
-    if (totalEntries <= maxEntries) {
+    entryCount += 1;
+    if (entryCount <= maxEntries) {
       target.push(item);
     } else {
       truncated = true;
     }
   };
 
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
+  const completeRename = ({ parsed }, origPath) => {
+    if (!parsed || parsed.fields[1].length < 2) {
+      return;
+    }
+    const [indexStatus, worktreeStatus] = parsed.fields[1];
+    const newPath = parsed.tail;
+    const fileUri = resolveChangeFileUri(worktreePath, newPath);
+    if (indexStatus !== '.') {
+      appendItem(staged, { path: newPath, origPath, status: indexStatus, fileUri });
+    }
+    if (worktreeStatus !== '.') {
+      appendItem(unstaged, { path: newPath, origPath: null, status: worktreeStatus, untracked: false, fileUri });
+    }
+  };
+
+  const consumeToken = (token) => {
+    if (pendingRename) {
+      const rename = pendingRename;
+      pendingRename = null;
+      completeRename(rename, token);
+      return;
+    }
     if (!token) {
-      continue;
+      return;
     }
-
     if (token.startsWith('# ')) {
-      if (token.startsWith('# branch.oid ')) {
-        const oid = token.slice('# branch.oid '.length).trim();
-        if (oid === '(initial)') {
-          branchInfo.isUnborn = true;
-          branchInfo.headOid = null;
-        } else {
-          branchInfo.isUnborn = false;
-          branchInfo.headOid = oid || null;
-        }
-      } else if (token.startsWith('# branch.head ')) {
-        const head = token.slice('# branch.head '.length).trim();
-        if (head === '(detached)') {
-          branchInfo.isDetached = true;
-          branchInfo.branch = null;
-        } else {
-          branchInfo.isDetached = false;
-          branchInfo.branch = head || null;
-        }
-      } else if (token.startsWith('# branch.upstream ')) {
-        branchInfo.upstream = token.slice('# branch.upstream '.length).trim() || null;
-      } else if (token.startsWith('# branch.ab ')) {
-        const match = token.slice('# branch.ab '.length).match(/^\+(\d+)\s+-(\d+)/);
-        if (match) {
-          branchInfo.ahead = Number.parseInt(match[1], 10);
-          branchInfo.behind = Number.parseInt(match[2], 10);
-        }
-      } else if (token.startsWith('# stash ')) {
-        branchInfo.stashCount = Number.parseInt(token.slice('# stash '.length), 10) || 0;
-      }
-      continue;
+      applyBranchHeader(branchInfo, token);
+      return;
     }
-
     if (token.startsWith('1 ')) {
       const parsed = splitAfterSpaces(token, 8);
       if (!parsed || parsed.fields[1].length < 2) {
-        continue;
+        return;
       }
       const [indexStatus, worktreeStatus] = parsed.fields[1];
       const filePath = parsed.tail;
@@ -151,43 +167,26 @@ export function parseStatusPorcelainV2Z(buffer, options = {}) {
       if (worktreeStatus !== '.') {
         appendItem(unstaged, { path: filePath, origPath: null, status: worktreeStatus, untracked: false, fileUri });
       }
-      continue;
+      return;
     }
-
     if (token.startsWith('2 ')) {
-      const parsed = splitAfterSpaces(token, 9);
-      const origPath = tokens[i + 1] ?? null;
-      i += 1;
-      if (!parsed || parsed.fields[1].length < 2) {
-        continue;
-      }
-      const [indexStatus, worktreeStatus] = parsed.fields[1];
-      const newPath = parsed.tail;
-      const fileUri = resolveChangeFileUri(worktreePath, newPath);
-      if (indexStatus !== '.') {
-        appendItem(staged, { path: newPath, origPath, status: indexStatus, fileUri });
-      }
-      if (worktreeStatus !== '.') {
-        appendItem(unstaged, { path: newPath, origPath: null, status: worktreeStatus, untracked: false, fileUri });
-      }
-      continue;
+      // 下一个 token 固定是 origPath，即使本条格式异常也要把它消费掉
+      pendingRename = { parsed: splitAfterSpaces(token, 9) };
+      return;
     }
-
     if (token.startsWith('u ')) {
       const parsed = splitAfterSpaces(token, 10);
       if (!parsed) {
-        continue;
+        return;
       }
-      const filePath = parsed.tail;
       appendItem(conflicted, {
-        path: filePath,
+        path: parsed.tail,
         origPath: null,
         status: parsed.fields[1],
-        fileUri: resolveChangeFileUri(worktreePath, filePath),
+        fileUri: resolveChangeFileUri(worktreePath, parsed.tail),
       });
-      continue;
+      return;
     }
-
     if (token.startsWith('? ')) {
       const filePath = token.slice(2);
       appendItem(unstaged, {
@@ -198,16 +197,44 @@ export function parseStatusPorcelainV2Z(buffer, options = {}) {
         fileUri: resolveChangeFileUri(worktreePath, filePath),
       });
     }
-  }
+  };
 
   return {
-    branchInfo,
-    changes: {
-      conflicted,
-      staged,
-      unstaged,
-      totalEntries,
-      truncated,
+    push(chunk) {
+      if (truncated) {
+        return true;
+      }
+      const data = remainder.length > 0 ? Buffer.concat([remainder, chunk]) : chunk;
+      // NUL 字节不会出现在 UTF-8 多字节序列内部，按最后一个 NUL 切分即可保证 token 完整
+      const lastNul = data.lastIndexOf(0x00);
+      if (lastNul === -1) {
+        remainder = Buffer.from(data);
+        return false;
+      }
+      for (const token of splitNullTokens(data.subarray(0, lastNul + 1))) {
+        consumeToken(token);
+        if (truncated) {
+          return true;
+        }
+      }
+      remainder = Buffer.from(data.subarray(lastNul + 1));
+      return false;
+    },
+    finish() {
+      if (!truncated) {
+        if (remainder.length > 0) {
+          consumeToken(remainder.toString('utf8'));
+          remainder = Buffer.alloc(0);
+        }
+        if (pendingRename) {
+          completeRename(pendingRename, null);
+          pendingRename = null;
+        }
+      }
+      return {
+        branchInfo,
+        changes: { conflicted, staged, unstaged, truncated },
+      };
     },
   };
 }
@@ -431,6 +458,7 @@ export function parseCommitNumstatZ(buffer) {
 
 /**
  * 查询指定 Worktree 的当前工作区变更列表与分支上下游状态。
+ * 边读 stdout 边解析，变更条目超过 `maxEntries`（默认 5000）时立即结束 git 进程，只返回前 `maxEntries` 条。
  *
  * @param {string} worktreePath Worktree 根目录路径
  * @param {{ maxEntries?: number, timeoutMs?: number, runGitRead?: typeof runGitRead }} [options] 查询选项
@@ -438,17 +466,36 @@ export function parseCommitNumstatZ(buffer) {
  */
 export async function queryWorktreeStatus(worktreePath, options = {}) {
   const runReadFn = options.runGitRead ?? runGitRead;
+  const parser = createStatusParser({ maxEntries: options.maxEntries, worktreePath });
   const args = buildGitArgs('status', {
     flags: ['--porcelain=v2', '--branch', '--show-stash', '-z'],
   });
-  const result = await runReadFn(args, {
+  await runReadFn(args, {
     cwd: worktreePath,
     timeoutMs: options.timeoutMs,
+    onStdout: (chunk) => parser.push(chunk),
   });
-  return parseStatusPorcelainV2Z(result.stdout, {
-    maxEntries: options.maxEntries ?? MAX_STATUS_ENTRIES,
-    worktreePath,
-  });
+  return parser.finish();
+}
+
+/**
+ * 把 `git status --branch` 解析出的 HEAD 与上游信息合并进仓库描述，得到面板使用的 `activeRepo`。
+ *
+ * @param {object} repo 仓库描述（id、名称、路径、remotes 等）
+ * @param {{ headOid: string | null, branch: string | null, upstream: string | null, ahead: number, behind: number, isUnborn: boolean, isDetached: boolean }} headInfo HEAD 信息
+ * @returns {object} 合并后的新 `activeRepo` 对象，不修改入参
+ */
+export function withHeadInfo(repo, headInfo) {
+  return {
+    ...repo,
+    isUnborn: headInfo.isUnborn,
+    isDetached: headInfo.isDetached,
+    headOid: headInfo.headOid,
+    branch: headInfo.branch,
+    upstream: headInfo.upstream,
+    ahead: headInfo.ahead,
+    behind: headInfo.behind,
+  };
 }
 
 function normalizeGraphOptions(options = {}) {
@@ -727,7 +774,6 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
         conflicted: [],
         staged: [],
         unstaged: [],
-        totalEntries: 0,
         truncated: false,
       },
       graph: {
@@ -774,7 +820,6 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
       conflicted: [],
       staged: [],
       unstaged: [],
-      totalEntries: 0,
       truncated: false,
     };
   } else {
@@ -804,22 +849,15 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
     });
   }
 
-  const activeRepo = {
+  const activeRepo = withHeadInfo({
     id: activeDiscovery.id,
     name: activeDiscovery.name,
     gitCommonDir: activeDiscovery.gitCommonDir,
     gitDir: activeDiscovery.gitDir,
     worktreePath: activeDiscovery.worktreePath,
     isBare: activeDiscovery.isBare,
-    isUnborn: branchMeta.isUnborn,
-    isDetached: branchMeta.isDetached,
-    headOid: branchMeta.headOid,
-    branch: branchMeta.branch,
-    upstream: branchMeta.upstream,
-    ahead: branchMeta.ahead,
-    behind: branchMeta.behind,
     remotes,
-  };
+  }, branchMeta);
 
   const repositories = discovered.map((repo) => ({
     id: repo.id,

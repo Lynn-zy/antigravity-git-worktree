@@ -19,7 +19,8 @@ import {
   parseCommitNumstatZ,
   parseLogRecordsZ,
   queryCommitDetail,
-  parseStatusPorcelainV2Z,
+  createStatusParser,
+  MAX_STATUS_ENTRIES,
   parseWorktreeListPorcelainZ,
 } from '../../sidecars/panel/backend/git-queries.mjs';
 import {
@@ -364,25 +365,33 @@ test('parseWorktreeListPorcelainZ 正确解析主工作树、链接工作树、b
   assert.equal(list[2].isBare, true);
 });
 
-test('parseStatusPorcelainV2Z 区分重命名顺序、MM 双态、空格路径、unborn、冲突与 2000 截断', () => {
-  const sample = Buffer.from(
-    [
-      '# branch.oid (initial)',
-      '# branch.head main',
-      '# branch.upstream origin/main',
-      '# branch.ab +2 -1',
-      '# stash 1',
-      '1 MM N... 100644 100644 100644 abc def src/spaced dir/中文 -weird.txt',
-      '2 RM N... 100644 100644 100644 abc def R100 new path/name.txt',
-      'old path/name.txt',
-      'u UU N... 100644 100644 100644 100644 h1 h2 h3 conflict file.txt',
-      '? untracked -file.txt',
-      '',
-    ].join('\0'),
-    'utf8'
-  );
+const parseStatusChunks = (chunks, options) => {
+  const parser = createStatusParser(options);
+  for (const chunk of chunks) {
+    if (parser.push(chunk)) break;
+  }
+  return parser.finish();
+};
 
-  const parsed = parseStatusPorcelainV2Z(sample);
+const STATUS_SAMPLE = Buffer.from(
+  [
+    '# branch.oid (initial)',
+    '# branch.head main',
+    '# branch.upstream origin/main',
+    '# branch.ab +2 -1',
+    '# stash 1',
+    '1 MM N... 100644 100644 100644 abc def src/spaced dir/中文 -weird.txt',
+    '2 RM N... 100644 100644 100644 abc def R100 new path/name.txt',
+    'old path/name.txt',
+    'u UU N... 100644 100644 100644 100644 h1 h2 h3 conflict file.txt',
+    '? untracked -file.txt',
+    '',
+  ].join('\0'),
+  'utf8'
+);
+
+test('createStatusParser 区分重命名顺序、MM 双态、空格路径、unborn 与冲突', () => {
+  const parsed = parseStatusChunks([STATUS_SAMPLE]);
   assert.equal(parsed.branchInfo.isUnborn, true);
   assert.equal(parsed.branchInfo.headOid, null);
   assert.equal(parsed.branchInfo.branch, 'main');
@@ -414,24 +423,40 @@ test('parseStatusPorcelainV2Z 区分重命名顺序、MM 双态、空格路径�
     ]
   );
   assert.equal(parsed.changes.truncated, false);
+});
 
-  const exact2000 = Buffer.from(
-    Array.from({ length: 2000 }, (_, i) => `? f-${i}.txt`).join('\0') + '\0',
+test('createStatusParser 分块喂入时与整块解析结果一致（任意切分点，含重命名双 token 与中文多字节跨块）', () => {
+  const whole = parseStatusChunks([STATUS_SAMPLE]);
+  for (let cut = 1; cut < STATUS_SAMPLE.length; cut += 1) {
+    const chunked = parseStatusChunks([STATUS_SAMPLE.subarray(0, cut), STATUS_SAMPLE.subarray(cut)]);
+    assert.deepEqual(chunked, whole, `split at byte ${cut}`);
+  }
+  const byteByByte = parseStatusChunks(Array.from(STATUS_SAMPLE, (byte) => Buffer.from([byte])));
+  assert.deepEqual(byteByByte, whole);
+});
+
+test('createStatusParser 默认上限 5000 条，超出后只保留前 5000 条并通知调用方停止', () => {
+  assert.equal(MAX_STATUS_ENTRIES, 5_000);
+  const untrackedLines = (count) => Buffer.from(
+    Array.from({ length: count }, (_, i) => `? f-${i}.txt`).join('\0') + '\0',
     'utf8'
   );
-  const notTruncated = parseStatusPorcelainV2Z(exact2000);
-  assert.equal(notTruncated.changes.truncated, false);
-  assert.equal(notTruncated.changes.totalEntries, 2000);
-  assert.equal(notTruncated.changes.unstaged.length, 2000);
 
-  const over2000 = Buffer.from(
-    Array.from({ length: 2001 }, (_, i) => `? f-${i}.txt`).join('\0') + '\0',
-    'utf8'
-  );
-  const truncated = parseStatusPorcelainV2Z(over2000);
-  assert.equal(truncated.changes.truncated, true);
-  assert.equal(truncated.changes.totalEntries, 2001);
-  assert.equal(truncated.changes.unstaged.length, 2000);
+  const exactLimit = parseStatusChunks([untrackedLines(5_000)]);
+  assert.equal(exactLimit.changes.truncated, false);
+  assert.equal(exactLimit.changes.unstaged.length, 5_000);
+
+  const parser = createStatusParser();
+  assert.equal(parser.push(untrackedLines(5_001)), true, '超过上限的那一块必须返回 true，供调用方结束 git 进程');
+  assert.equal(parser.push(untrackedLines(5)), true, '超限后继续喂入也只返回 true，不再追加');
+  const overLimit = parser.finish();
+  assert.equal(overLimit.changes.truncated, true);
+  assert.equal(overLimit.changes.unstaged.length, 5_000);
+  assert.equal(overLimit.changes.unstaged.at(-1).path, 'f-4999.txt');
+
+  const customLimit = parseStatusChunks([untrackedLines(3)], { maxEntries: 2 });
+  assert.equal(customLimit.changes.truncated, true);
+  assert.deepEqual(customLimit.changes.unstaged.map((item) => item.path), ['f-0.txt', 'f-1.txt']);
 });
 
 test('parseLogRecordsZ / parseCommitMessageB / parseCommitNameStatusZ 精确解析', () => {

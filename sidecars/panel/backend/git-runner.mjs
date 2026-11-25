@@ -566,6 +566,7 @@ function spawnGitProcess(args, options = {}) {
     maxOutputBytes = DEFAULT_MAX_OUTPUT_BYTES,
     allowNonZero = false,
     allowExitCodes = [0],
+    onStdout = null,
   } = options;
 
   if (cwd !== undefined && (typeof cwd !== 'string' || cwd.length === 0 || CONTROL_CHAR_PATTERN.test(cwd))) {
@@ -583,6 +584,7 @@ function spawnGitProcess(args, options = {}) {
     let settled = false;
     let timedOut = false;
     let overflowed = false;
+    let stopped = false;
     let totalStdoutBytes = 0;
     let totalStderrBytes = 0;
     const stdoutChunks = [];
@@ -721,6 +723,25 @@ function spawnGitProcess(args, options = {}) {
     timeoutTimer.unref?.();
 
     child.stdout.on('data', (chunk) => {
+      if (stopped) {
+        return;
+      }
+      if (onStdout) {
+        if (onStdout(chunk)) {
+          stopped = true;
+          terminateChildTree(() => {
+            const stderr = Buffer.concat(stderrChunks);
+            settleOnce(resolve, {
+              exitCode: null,
+              stdout: Buffer.alloc(0),
+              stderr,
+              stdoutText: '',
+              stderrText: stderr.toString('utf8'),
+            });
+          });
+        }
+        return;
+      }
       totalStdoutBytes += chunk.length;
       if (totalStdoutBytes > maxOutputBytes) {
         overflowed = true;
@@ -762,7 +783,7 @@ function spawnGitProcess(args, options = {}) {
     });
 
     child.once('close', (exitCode) => {
-      if (settled || timedOut || overflowed) {
+      if (settled || timedOut || overflowed || stopped) {
         return;
       }
       const stdout = Buffer.concat(stdoutChunks);
@@ -819,9 +840,11 @@ function runInConfiguredWriteQueue(options, task) {
 /**
  * 在全局只读并发池中安全执行只读 Git 命令。
  * 自动注入 `--no-optional-locks`、`GIT_OPTIONAL_LOCKS=0` 与 10s 默认硬超时。
+ * 传入 `onStdout` 时 stdout 不再缓冲，按块交给回调消费；回调返回 true 时立即结束 git 进程树，
+ * 结果中 `exitCode` 为 null、`stdout` 为空。
  *
  * @param {string[]} args 子命令及参数列表
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeoutMs?: number, allowNonZero?: boolean, allowExitCodes?: number[], maxOutputBytes?: number }} [options] 执行选项
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeoutMs?: number, allowNonZero?: boolean, allowExitCodes?: number[], maxOutputBytes?: number, onStdout?: (chunk: Buffer) => boolean }} [options] 执行选项
  * @returns {Promise<{ exitCode: number | null, stdout: Buffer, stderr: Buffer, stdoutText: string, stderrText: string }>} 执行结果
  */
 export function runGitRead(args, options = {}) {

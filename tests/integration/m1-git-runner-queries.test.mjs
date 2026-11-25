@@ -131,7 +131,7 @@ test('集成测试：多仓库去重、Worktree 顺序前缀匹配、非 Git 忽
   assert.equal(bareSnapshot.activeRepo.isBare, true);
   assert.equal(bareSnapshot.activeRepo.worktreePath, null);
   assert.equal(bareSnapshot.activeRepo.branch, 'main');
-  assert.equal(bareSnapshot.changes.totalEntries, 0);
+  assert.deepEqual(bareSnapshot.changes, { conflicted: [], staged: [], unstaged: [], truncated: false });
   assert.ok(bareSnapshot.graph.commits.length >= 2);
 });
 
@@ -256,21 +256,33 @@ test('集成测试：unborn 仓库、中文路径、-weird.txt、MM 双态、Det
   assert.deepEqual(await queryRemotes(repoDir), ['origin']);
 });
 
-test('集成测试：status 超过 2000 条自动置 truncated: true 且数组上限 2000', async (t) => {
+test('集成测试：status 超过上限时只保留前 maxEntries 条、置 truncated: true 并提前结束 git 进程', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm1-int-truncate-'));
   t.after(() => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
   await initConfiguredRepo(root, 'main');
-  for (let i = 0; i < 2005; i += 1) {
+  for (let i = 0; i < 300; i += 1) {
     fs.writeFileSync(path.join(root, `f-${i}.txt`), '');
   }
 
-  const { changes } = await queryWorktreeStatus(root);
+  const exitCodes = [];
+  const observeRead = async (args, options) => {
+    const result = await runGitRead(args, options);
+    exitCodes.push(result.exitCode);
+    return result;
+  };
+
+  const { changes } = await queryWorktreeStatus(root, { maxEntries: 50, runGitRead: observeRead });
   assert.equal(changes.truncated, true);
-  assert.equal(changes.totalEntries, 2005);
-  assert.equal(changes.unstaged.length, 2000);
+  assert.equal(changes.unstaged.length, 50);
+  assert.deepEqual(exitCodes, [null], '超限后 git 进程应被主动结束，而不是等它自然退出');
+
+  const full = await queryWorktreeStatus(root, { runGitRead: observeRead });
+  assert.equal(full.changes.truncated, false);
+  assert.equal(full.changes.unstaged.length, 300);
+  assert.equal(exitCodes.at(-1), 0);
 });
 
 test('集成测试：.git/index.lock 退避重试 3 次返回 GIT_LOCKED 且不删原锁文件，瞬时解锁后可成功', async (t) => {
