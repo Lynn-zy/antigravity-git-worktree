@@ -11,6 +11,10 @@ import { toFileUri } from '../../sidecars/panel/backend/discovery.mjs';
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TEST_DIR, '..', '..');
 const MAIN_MJS_PATH = path.join(REPO_ROOT, 'sidecars', 'panel', 'main.mjs');
+// 前端首屏加载 150 条、每页追加 200 条：420 条需要两次自动加载才能到底
+const SINGLE_REPO_COMMIT_COUNT = 420;
+const GRAPH_FIRST_PAGE = 150;
+const GRAPH_PAGE_STEP = 200;
 
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -102,10 +106,10 @@ const findBrowserExecutable = () => {
  *
  * @param {string[]} args Git 子命令与参数列表
  * @param {string} cwd 执行目录
- * @param {Record<string, string>} [extraEnv={}] 追加环境变量
+ * @param {{ env?: Record<string, string>, input?: string }} [options] env 为追加的环境变量；input 为写入标准输入的内容（如 fast-import 数据流）
  * @returns {Promise<string>} 标准输出去首尾空白字符串
  */
-const execGit = (args, cwd, extraEnv = {}) =>
+const execGit = (args, cwd, { env = {}, input } = {}) =>
   new Promise((resolve, reject) => {
     const child = spawn('git', args, {
       cwd,
@@ -113,12 +117,17 @@ const execGit = (args, cwd, extraEnv = {}) =>
         ...process.env,
         GIT_TERMINAL_PROMPT: '0',
         GCM_INTERACTIVE: 'never',
-        ...extraEnv,
+        ...env,
       },
       windowsHide: true,
       shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
+    if (input !== undefined) {
+      // git 提前退出时写入会报 EPIPE；交给 close 事件按退出码带上 stderr 报错，避免未捕获异常打断测试进程
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
     const stdout = [];
     const stderr = [];
     child.stdout.on('data', (chunk) => stdout.push(chunk));
@@ -719,10 +728,12 @@ const setupRealGitFixtures = async (rootDir) => {
     ['commit', '-m', 'feat: 新增中文目录并清理历史文件'],
     repoA,
     {
-      GIT_AUTHOR_NAME: '张协作',
-      GIT_AUTHOR_EMAIL: 'zhang@example.com',
-      GIT_COMMITTER_NAME: '张协作',
-      GIT_COMMITTER_EMAIL: 'zhang@example.com',
+      env: {
+        GIT_AUTHOR_NAME: '张协作',
+        GIT_AUTHOR_EMAIL: 'zhang@example.com',
+        GIT_COMMITTER_NAME: '张协作',
+        GIT_COMMITTER_EMAIL: 'zhang@example.com',
+      },
     },
   );
   const featSha = await execGit(['rev-parse', 'HEAD'], repoA);
@@ -770,11 +781,25 @@ const setupRealGitFixtures = async (rootDir) => {
   await execGit(['commit', '-m', 'feat(repoB): 第二个仓库初始提交'], repoB);
   writeRepoFile(repoB, 'app.mjs', 'console.log("repoB dirty");\n');
 
-  // 初始化纯单仓夹具 singleRepo
+  // 初始化纯单仓夹具 singleRepo：共 SINGLE_REPO_COMMIT_COUNT 条线性提交，超过首屏条数，用于验证滚动自动加载
   await initConfiguredRepo(singleRepo, 'main', { name: 'Solo', email: 'solo@example.com' });
   writeRepoFile(singleRepo, 'index.txt', 'solo\n');
   await execGit(['add', '-A'], singleRepo);
   await execGit(['commit', '-m', 'chore: single repo commit'], singleRepo);
+  // fast-import 一次写入其余空提交，比逐条 git commit 快得多
+  const historyBaseTime = Math.floor(Date.now() / 1000);
+  const historyStream = Array.from({ length: SINGLE_REPO_COMMIT_COUNT - 1 }, (_, index) => {
+    const message = `chore: history ${index + 1}`;
+    return [
+      'commit refs/heads/main',
+      `committer Solo <solo@example.com> ${historyBaseTime + index + 1} +0000`,
+      `data ${Buffer.byteLength(message)}`,
+      message,
+      ...(index === 0 ? ['from refs/heads/main^0'] : []),
+      '',
+    ].join('\n');
+  }).join('');
+  await execGit(['fast-import', '--quiet'], singleRepo, { input: historyStream });
 
   return {
     remoteA,
@@ -813,8 +838,9 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   // 1) 纯单仓夹具验证 [data-testid="repo-bar"] 隐藏
   const singlePage = await browser.newPage({ width: 420, height: 680 });
   await singlePage.navigate(singleServer.url);
+  const commitRowCount = 'document.querySelectorAll("[data-testid=commit-row]").length';
   await singlePage.waitFor(
-    '!document.getElementById("dual-pane")?.classList.contains("hidden") && document.querySelectorAll("[data-testid=commit-row]").length === 1',
+    `!document.getElementById("dual-pane")?.classList.contains("hidden") && ${commitRowCount} === ${GRAPH_FIRST_PAGE}`,
     { description: 'single-repo initial render' },
   );
   const singleRepoBarHidden = await singlePage.evaluate(`(() => {
@@ -822,6 +848,64 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     return Boolean(bar && bar.classList.contains('hidden') && bar.getBoundingClientRect().height === 0);
   })()`);
   assert.equal(singleRepoBarHidden, true, '单仓场景下 repo-bar 必须隐藏且零高度占位');
+
+  // 滚动分页：停在列表顶部时不加载；「加载更多」行进入可视区下方一屏以内即预先加载下一页，无需点击，直到全部加载完
+  const rowsWhileAtTop = await singlePage.evaluate(
+    `new Promise((resolve) => setTimeout(() => resolve(${commitRowCount}), 500))`,
+  );
+  assert.equal(rowsWhileAtTop, GRAPH_FIRST_PAGE, '「加载更多」行离可视区很远时不得自动加载');
+  const preloadScroll = await singlePage.evaluate(`new Promise((resolve) => {
+    const body = document.querySelector('[data-testid="section-graph-body"]');
+    body.scrollTop = body.scrollHeight - body.clientHeight * 1.5;
+    const footerTop = document.querySelector('[data-testid="graph-load-more-btn"]').getBoundingClientRect().top;
+    resolve({ footerBelowView: footerTop > body.getBoundingClientRect().bottom });
+  })`);
+  assert.equal(preloadScroll.footerBelowView, true, '「加载更多」行还没滚进可视区');
+  await singlePage.waitFor(`${commitRowCount} === ${GRAPH_FIRST_PAGE + GRAPH_PAGE_STEP}`, {
+    description: 'next page preloaded before reaching the end',
+  });
+  const scrollGraphBody = (where) => singlePage.evaluate(`(() => {
+    const body = document.querySelector('[data-testid="section-graph-body"]');
+    body.scrollTop = ${where === 'bottom' ? 'body.scrollHeight' : '0'};
+  })()`);
+
+  // 切换范围后列表回到首页，同一首页状态下自动加载仍然有效
+  const snapshotCount = 'performance.getEntriesByType("resource").filter((entry) => entry.name.includes("/api/snapshot")).length';
+  await scrollGraphBody('top');
+  const snapshotsBeforeToggle = await singlePage.evaluate(snapshotCount);
+  await singlePage.clickSelector('[data-testid="graph-scope-btn"]');
+  await singlePage.waitFor(`${snapshotCount} >= ${snapshotsBeforeToggle + 1} && ${commitRowCount} === ${GRAPH_FIRST_PAGE}`, {
+    description: 'switch to all scope',
+  });
+  await singlePage.clickSelector('[data-testid="graph-scope-btn"]');
+  await singlePage.waitFor(`${snapshotCount} >= ${snapshotsBeforeToggle + 2} && ${commitRowCount} === ${GRAPH_FIRST_PAGE}`, {
+    description: 'switch back to auto scope',
+  });
+  await scrollGraphBody('bottom');
+  await singlePage.waitFor(`${commitRowCount} === ${GRAPH_FIRST_PAGE + GRAPH_PAGE_STEP}`, {
+    description: 'auto-load works again after returning to the first page',
+  });
+
+  // 搜索结果很短、「加载更多」行就在可视区内时不自动加载；已加载的 350 条里只有 history 410–419 匹配
+  await singlePage.clickSelector('[data-testid="graph-more-btn"]');
+  await singlePage.clickSelector('[data-testid="graph-menu-toggle-search"]');
+  await singlePage.clickSelector('[data-testid="graph-search-input"]');
+  await singlePage.insertText('history 41');
+  await singlePage.waitFor(`${commitRowCount} === 10`, { description: 'search shows matches among loaded commits' });
+  const rowsWhileSearching = await singlePage.evaluate(
+    `new Promise((resolve) => setTimeout(() => resolve(${commitRowCount}), 1500))`,
+  );
+  assert.equal(rowsWhileSearching, 10, '搜索期间不得自动加载（全部加载后会多出 history 41 共 11 条）');
+  await singlePage.clickSelector('[data-testid="graph-search-clear"]');
+  await singlePage.waitFor(`${commitRowCount} === ${GRAPH_FIRST_PAGE + GRAPH_PAGE_STEP}`, {
+    description: 'search cleared',
+  });
+
+  await scrollGraphBody('bottom');
+  await singlePage.waitFor(
+    `${commitRowCount} === ${SINGLE_REPO_COMMIT_COUNT} && !document.querySelector('[data-testid="graph-load-more-btn"]')`,
+    { description: 'all commits loaded by scrolling' },
+  );
   const singleErrors = singlePage.getErrors();
   assert.deepEqual(singleErrors.consoleErrors, []);
   assert.deepEqual(singleErrors.pageErrors, []);
@@ -956,6 +1040,31 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     };
   })()`);
   assert.deepEqual(untrackedFolderRow, { iconPath: '/file-icons/folder_type_public.svg', name: 'public', dir: 'docs' });
+
+  // 更改区只滚动文件列表：列表滚到底时提交输入框原地不动，更改区本身不滚动
+  await page.setViewport(460, 480);
+  const changesScroll = await page.evaluate(`new Promise((resolve) => {
+    const body = document.querySelector('[data-testid="section-changes-body"]');
+    const list = document.querySelector('[data-testid="changes-groups"]');
+    const input = document.querySelector('[data-testid="commit-message-input"]');
+    const inputTopBefore = input.getBoundingClientRect().top;
+    list.scrollTop = list.scrollHeight;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      resolve({
+        listOverflow: list.scrollHeight - list.clientHeight,
+        listScrolled: list.scrollTop > 0,
+        bodyScrollTop: body.scrollTop,
+        inputMoved: Math.abs(input.getBoundingClientRect().top - inputTopBefore),
+      });
+      list.scrollTop = 0;
+    }));
+  })`);
+  assert.ok(changesScroll.listOverflow > 0, `文件列表需要溢出才能验证滚动: ${JSON.stringify(changesScroll)}`);
+  assert.deepEqual(
+    { listScrolled: changesScroll.listScrolled, bodyScrollTop: changesScroll.bodyScrollTop, inputMoved: changesScroll.inputMoved },
+    { listScrolled: true, bodyScrollTop: 0, inputMoved: 0 },
+  );
+  await page.setViewport(460, 760);
 
   // 验证 MM 双态文件存在于 staged 和 unstaged，放弃未暂存保留暂存区
   const mmBefore = await page.evaluate(`(() => ({
@@ -1106,9 +1215,9 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   })()`);
   assert.deepEqual(nativeTooltipCheck, { rowsWithTitle: 0, pillsWithTitle: 0 });
 
-  // 详情卡只由行尾「查看提交详情」按钮打开：悬停提交行超过旧版 260ms 悬停延迟也不得弹出；再次点击按钮关闭。
+  // 详情卡只由行尾「查看提交详情」按钮打开：悬停提交行超过旧版 260ms 悬停延迟也不得弹出；再次点击按钮或点右上角关闭按钮关闭。
   // 第 1、2 条向上弹出且不溢出视口，中部提交向下弹出；卡片宽度对齐侧边栏，无正文时提交说明只有标题一块
-  const checkCommitPopoverPlacement = async (rowIndex, expectedPlacement, { expectBody = null } = {}) => {
+  const checkCommitPopoverPlacement = async (rowIndex, expectedPlacement, { expectBody = null, closeVia = 'detailBtn' } = {}) => {
     await page.hoverSelector('[data-testid="commit-row"]', { index: rowIndex });
     await page.waitFor(
       `(() => {
@@ -1141,7 +1250,18 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       const author = p.querySelector('.gw-popover-person');
       const authorRect = author ? author.getBoundingClientRect() : null;
       const markdown = p.querySelector('.gw-markdown');
+      const closeBtn = p.querySelector('[data-testid="popover-close-btn"]');
+      const closeRect = closeBtn.getBoundingClientRect();
+      // 卡片内容超高时右侧有滚动条，按钮贴的是内容区右缘
+      const contentRight = r.left + p.clientLeft + p.clientWidth;
+      const authorRange = document.createRange();
+      authorRange.selectNodeContents(author);
       return {
+        closeTitle: closeBtn.title,
+        closeAtTopRight: closeRect.right <= contentRight && contentRight - closeRect.right <= 8 && closeRect.top - r.top <= 8,
+        authorClearOfClose: [...authorRange.getClientRects()].every(
+          (line) => line.right <= closeRect.left + 0.5 || line.top >= closeRect.bottom - 0.5,
+        ),
         placement: p.dataset.placement,
         width: r.width,
         expectedMaxWidth: window.innerWidth - 16,
@@ -1177,10 +1297,17 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       assert.equal(placementInfo.markdownListCode, 'CHANGELOG.md', '正文中的列表与行内代码应按 Markdown 渲染');
     }
     assert.match(placementInfo.statsText, /^已更改 \d+ 个文件/);
+    assert.equal(placementInfo.closeTitle, '关闭提交详情');
+    assert.equal(placementInfo.closeAtTopRight, true, '关闭按钮应位于详情卡右上角');
+    assert.equal(placementInfo.authorClearOfClose, true, '作者行文字应绕开关闭按钮');
 
-    await clickDetailBtn();
+    if (closeVia === 'closeBtn') {
+      await page.evaluate('document.querySelector("[data-testid=popover-close-btn]").click()');
+    } else {
+      await clickDetailBtn();
+    }
     await page.waitFor('document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")', {
-      description: 'second click on detail button closes popover',
+      description: `${closeVia} closes popover`,
     });
   };
 
@@ -1193,11 +1320,82 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
 
   await checkCommitPopoverPlacement(0, 'above', { expectBody: false });
   await checkCommitPopoverPlacement(1, 'above', { expectBody: 'Baseline release notes' });
-  await checkCommitPopoverPlacement(8, 'below', { expectBody: false });
+  await checkCommitPopoverPlacement(8, 'below', { expectBody: false, closeVia: 'closeBtn' });
 
   await page.setViewport(620, 760);
   await checkCommitPopoverPlacement(1, 'above', { expectBody: 'Baseline release notes' });
+
+  // 打开详情卡的提交行只滚出一部分时卡片保持打开，整行滚出图表可视区时卡片随之关闭
+  await page.setViewport(460, 480);
+  await page.evaluate(`document.querySelectorAll('[data-testid="commit-row"]')[1].querySelector('[data-testid="commit-detail-btn"]').click()`);
+  await page.waitFor('!document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")', {
+    description: 'popover opened before scrolling its row out',
+  });
+  const scrollOffsets = await page.evaluate(`(() => {
+    const body = document.querySelector('[data-testid="section-graph-body"]');
+    const bodyTop = body.getBoundingClientRect().top;
+    const rowRect = document.querySelectorAll('[data-testid="commit-row"]')[1].getBoundingClientRect();
+    return {
+      partial: Math.round(rowRect.top - bodyTop + rowRect.height / 2),
+      full: Math.ceil(rowRect.bottom - bodyTop) + 1,
+      maxScroll: body.scrollHeight - body.clientHeight,
+    };
+  })()`);
+  assert.ok(scrollOffsets.maxScroll >= scrollOffsets.full, `图表区需可滚动到第 2 行完全移出: ${JSON.stringify(scrollOffsets)}`);
+  const scrollGraphBodyTo = (offset) => page.evaluate(`new Promise((resolve) => {
+    document.querySelector('[data-testid="section-graph-body"]').scrollTop = ${offset};
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  })`);
+  await scrollGraphBodyTo(scrollOffsets.partial);
+  assert.equal(
+    await page.evaluate('!document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")'),
+    true,
+    '提交行仍露出一半时详情卡应保持打开',
+  );
+  await scrollGraphBodyTo(scrollOffsets.full);
+  await page.waitFor('document.querySelector("[data-testid=commit-popover]").classList.contains("hidden")', {
+    description: 'popover closes once its row scrolls out of view',
+  });
+  await scrollGraphBodyTo(0);
   await page.setViewport(460, 760);
+
+  // 后台刷新不重建打开着的详情卡：卡片内容节点与选中的文字保持不变
+  await page.evaluate(`(() => {
+    document.querySelectorAll('[data-testid="commit-row"]')[1].querySelector('[data-testid="commit-detail-btn"]').click();
+  })()`);
+  await page.waitFor('Boolean(document.querySelector("[data-testid=commit-popover]:not(.hidden) .gw-popover-stats"))', {
+    description: 'popover loaded before background refresh',
+  });
+  await page.evaluate(`(() => {
+    const markdown = document.querySelector('[data-testid="commit-popover"] .gw-markdown');
+    window.__popoverMarkdownBeforeRefresh = markdown;
+    window.__commitRowBeforeRefresh = document.querySelector('[data-testid="commit-row"]');
+    const range = document.createRange();
+    range.selectNodeContents(markdown.firstElementChild);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  })()`);
+  const refreshProbePath = writeRepoFile(fixtures.repoA, 'popover-refresh-probe.txt', 'probe\n');
+  await page.waitFor(
+    'Boolean(document.querySelector(\'[data-testid="change-file-unstaged"][data-file-path="popover-refresh-probe.txt"]\'))',
+    { description: 'background refresh lists the probe file' },
+  );
+  const afterRefresh = await page.evaluate(`(() => {
+    const popover = document.querySelector('[data-testid="commit-popover"]');
+    return {
+      graphRerendered: document.querySelector('[data-testid="commit-row"]') !== window.__commitRowBeforeRefresh,
+      open: !popover.classList.contains('hidden'),
+      sameContent: popover.querySelector('.gw-markdown') === window.__popoverMarkdownBeforeRefresh,
+      selectionKept: getSelection().toString().length > 0,
+    };
+  })()`);
+  assert.deepEqual(afterRefresh, { graphRerendered: true, open: true, sameContent: true, selectionKept: true });
+  await page.evaluate('document.querySelector("[data-testid=popover-close-btn]").click()');
+  fs.rmSync(refreshProbePath);
+  await page.waitFor(
+    '!document.querySelector(\'[data-testid="change-file-unstaged"][data-file-path="popover-refresh-probe.txt"]\')',
+    { description: 'probe file removed from changes list' },
+  );
 
   // 再展开 Merge 验证 ⋯ 菜单三项：搜索过滤、折叠全部、中英语言切换
   await page.clickSelector(`[data-testid="commit-row"][data-commit-sha="${fixtures.mergeSha}"]`);

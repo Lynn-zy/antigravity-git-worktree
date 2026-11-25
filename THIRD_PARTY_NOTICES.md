@@ -37,8 +37,8 @@ SOFTWARE.
 
 ## VS Code Codicons
 
-- 来源：<https://github.com/microsoft/vscode-codicons>，作者 Microsoft Corporation
-- 使用范围：`sidecars/panel/public/modules/codicons.js` 中的图标路径，由 `src/icons/*.svg` 源文件提取 `path` 数据转换而来，图形未作修改；文件头注明作者与许可链接。插件图标 `assets/logo.svg` 使用其中的 `git-branch` 字形并改为灰色填充。
+- 来源：<https://github.com/microsoft/vscode-codicons>，提交 `8d1826a9bce0a52283ecaeb63499c149e97a4f14`，作者 Microsoft Corporation
+- 使用范围：`sidecars/panel/public/modules/codicons.js` 中的图标路径，由 `scripts/gen-codicons.mjs` 从 `src/icons/*.svg` 源文件提取 `path` 数据生成，图形未作修改；文件头注明作者与许可链接。插件图标 `assets/logo.svg` 使用其中的 `git-branch` 字形并改为灰色填充。
 - 许可：Creative Commons Attribution 4.0 International（CC BY 4.0），<https://creativecommons.org/licenses/by/4.0/>
 
 ## vscode-icons
@@ -46,7 +46,7 @@ SOFTWARE.
 - 来源：<https://github.com/vscode-icons/vscode-icons>，提交 `dc003f665c8d91ee9ffb821b9064c6a79cff09c0`
 - 使用范围：
   - `sidecars/panel/public/file-icons/*.svg`：文件类型与文件夹图标原样复制，只包含映射表用到的图标及其浅色变体。同目录的 `LICENSE` 为下方许可原文，随插件安装分发。
-  - `sidecars/panel/public/modules/file-icon-map.js`：由 `src/iconsManifest/supportedExtensions.ts`、`languages.ts` 与 `supportedFolders.ts` 机械生成的文件名、扩展名与文件夹名映射。
+  - `sidecars/panel/public/modules/file-icon-map.js`：由 `scripts/gen-file-icons.mjs` 从 `src/iconsManifest/supportedExtensions.ts`、`languages.ts` 与 `supportedFolders.ts` 生成的文件名、扩展名与文件夹名映射。
 
 ```
 The MIT License (MIT)

@@ -1,8 +1,8 @@
 /**
  * VS Code Codicons 图标路径（16×16 填充式）。
- * 图标作者 Microsoft Corporation，来源 https://github.com/microsoft/vscode-codicons ，
+ * 图标作者 Microsoft Corporation，来源 https://github.com/microsoft/vscode-codicons （提交 8d1826a9bce0a52283ecaeb63499c149e97a4f14），
  * 以 CC BY 4.0（https://creativecommons.org/licenses/by/4.0/）授权。
- * 路径数据由源 SVG 机械提取、图形未作修改，请勿手工编辑。
+ * 由 scripts/gen-codicons.mjs 从源 SVG 机械提取路径数据，图形未作修改，请勿手工编辑。
  */
 
 /** @type {Readonly<Record<string, ReadonlyArray<string | { d: string, evenOdd: true }>>>} 图标名到路径列表的映射 */

@@ -5,7 +5,8 @@
  * 解析为纯数据（可在 Node.js 下测试），渲染只创建 DOM 节点、不拼接 HTML 字符串。
  */
 
-const FENCE_OPEN_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+// 反引号围栏的信息串里不能再出现反引号（CommonMark），否则这一行是以行内代码开头的普通段落
+const FENCE_OPEN_PATTERN = /^ {0,3}(`{3,}(?!.*`)|~{3,})/;
 const FENCE_CLOSE_PATTERN = /^ {0,3}(`{3,}|~{3,})[ \t]*$/;
 const RULE_PATTERN = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const HEADING_PATTERN = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
@@ -122,9 +123,10 @@ const EMPHASIS_RULES = [
  * 解析单行文本中的行内 Markdown（代码、粗体、斜体、删除线、链接与裸链接）。
  *
  * @param {string} text 单行文本
+ * @param {{ links?: boolean }} [options] links 为 false 时不识别任何链接，用于解析链接文字，链接里不再嵌套链接
  * @returns {InlineNode[]} 行内节点列表（无副作用）
  */
-export const parseInlineMarkdown = (text) => {
+export const parseInlineMarkdown = (text, { links = true } = {}) => {
   const nodes = [];
   let index = 0;
 
@@ -155,7 +157,7 @@ export const parseInlineMarkdown = (text) => {
       continue;
     }
 
-    if (char === '<') {
+    if (links && char === '<') {
       const autolink = AUTOLINK_PATTERN.exec(rest);
       if (autolink) {
         const target = autolink[1];
@@ -173,17 +175,18 @@ export const parseInlineMarkdown = (text) => {
       continue;
     }
 
-    if (char === '[') {
+    if (links && char === '[') {
       const labelEnd = findLinkLabelEnd(text, index + 1);
       const destination = labelEnd !== -1 && text[labelEnd + 1] === '('
         ? parseLinkDestination(text, labelEnd + 2)
         : null;
       if (destination) {
-        const children = parseInlineMarkdown(text.slice(index + 1, labelEnd));
+        const label = text.slice(index + 1, labelEnd);
         if (SAFE_LINK_PATTERN.test(destination.href)) {
-          nodes.push({ type: 'link', href: destination.href, children });
+          nodes.push({ type: 'link', href: destination.href, children: parseInlineMarkdown(label, { links: false }) });
         } else {
-          for (const child of children) {
+          // 不安全的链接只保留文字，文字里的链接照常识别
+          for (const child of parseInlineMarkdown(label)) {
             if (child.type === 'text') pushText(nodes, child.text);
             else nodes.push(child);
           }
@@ -201,13 +204,13 @@ export const parseInlineMarkdown = (text) => {
       if (rule) {
         const match = rule.pattern.exec(rest);
         const inner = match.length > 2 ? match[2] : match[1];
-        nodes.push({ type: rule.type, children: parseInlineMarkdown(inner) });
+        nodes.push({ type: rule.type, children: parseInlineMarkdown(inner, { links }) });
         index += match[0].length;
         continue;
       }
     }
 
-    if ((char === 'h' || char === 'H' || char === 'w' || char === 'W') && !isWordChar(text[index - 1])) {
+    if (links && (char === 'h' || char === 'H' || char === 'w' || char === 'W') && !isWordChar(text[index - 1])) {
       const bareUrl = BARE_URL_PATTERN.exec(rest);
       if (bareUrl) {
         const url = trimBareUrl(bareUrl[0]);

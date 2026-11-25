@@ -131,7 +131,7 @@ const formatFileStatus = (status) => {
  *   onPull: (repo: Record<string, any>) => Promise<void>,
  *   onPushOrPublish: (repo: Record<string, any>) => void,
  *   onRefresh: () => Promise<void>,
- *   onLoadMore: () => Promise<void>,
+ *   onLoadMore: () => Promise<boolean>,
  *   onSwitchLanguage: () => void,
  *   onLoadCommitDetail: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<any>
  * }} deps 外部服务与交互回调
@@ -166,6 +166,10 @@ export const createGraphView = (elements, deps) => {
   let latestViewModelBySha = new Map();
   // 当前打开详情卡的提交；详情卡只由行尾「查看提交详情」按钮打开
   let popoverSha = null;
+  // 卡片当前 DOM 由哪组输入渲染而来，关闭时清空
+  let renderedPopoverKey = null;
+  // 自动加载失败时的「仓库:范围:已加载条数」；列表仍停在这一状态时不再自动重试，改由用户点击「加载更多」
+  let failedAutoLoadKey = null;
 
   // 持久挂载搜索栏输入框，保证输入与 IME 期间不被后台刷新销毁
   const searchFieldEl = doc.createElement('div');
@@ -370,23 +374,61 @@ export const createGraphView = (elements, deps) => {
     popoverEl.scrollTop = scrollTop;
   };
 
+  // 行完全滚出图表可视区（或图表区已折叠）时视为没有锚点，卡片随之关闭
+  const findPopoverAnchor = (sha) => {
+    const rowEl = findCommitRowEl(sha);
+    if (!rowEl) return null;
+    const rowRect = rowEl.getBoundingClientRect();
+    const bodyRect = bodyEl.getBoundingClientRect();
+    return rowRect.bottom > bodyRect.top && rowRect.top < bodyRect.bottom ? rowEl : null;
+  };
+
+  const createPopoverCloseBtn = (t) => {
+    const closeBtn = doc.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'gw-icon-btn gw-popover-close';
+    closeBtn.dataset.testid = 'popover-close-btn';
+    closeBtn.title = t('popover.close');
+    closeBtn.setAttribute('aria-label', t('popover.close'));
+    closeBtn.append(deps.createIcon('close'));
+    closeBtn.addEventListener('click', () => closePopover());
+    return closeBtn;
+  };
+
+  // 后台刷新每次都会重渲染图表；卡片显示的内容（含相对时间）没变时只重新定位，保留卡片内选中的文字与按钮焦点
   const renderPopover = (sha) => {
     const viewModel = latestViewModelBySha.get(sha);
-    const anchorEl = findCommitRowEl(sha);
+    const anchorEl = findPopoverAnchor(sha);
     if (!latestRenderState || !viewModel || !anchorEl) {
       closePopover();
       return;
     }
-    popoverEl.setAttribute('aria-label', viewModel.commit.subject || viewModel.commit.sha);
-    popoverEl.replaceChildren(...buildPopoverSections(viewModel, latestRenderState));
+    const contentKey = JSON.stringify([
+      viewModel.commit,
+      viewModel.references,
+      latestRenderState.locale,
+      formatRelativeTime(viewModel.commit.timestamp, latestRenderState.locale),
+      commitDetailCache.has(sha),
+      loadingDetailShas.has(sha),
+    ]);
+    if (contentKey !== renderedPopoverKey) {
+      renderedPopoverKey = contentKey;
+      popoverEl.setAttribute('aria-label', viewModel.commit.subject || viewModel.commit.sha);
+      popoverEl.replaceChildren(
+        createPopoverCloseBtn(latestRenderState.t),
+        ...buildPopoverSections(viewModel, latestRenderState),
+      );
+    }
     popoverEl.classList.remove('hidden');
     positionPopover(anchorEl);
   };
 
   // 滚动与窗口缩放只移动卡片，不重建内容，保留卡片内的滚动位置与选中的文字
   const repositionPopover = () => {
-    const anchorEl = popoverSha ? findCommitRowEl(popoverSha) : null;
+    if (!popoverSha) return;
+    const anchorEl = findPopoverAnchor(popoverSha);
     if (anchorEl) positionPopover(anchorEl);
+    else closePopover();
   };
 
   const syncActiveCommitHighlight = () => {
@@ -400,6 +442,7 @@ export const createGraphView = (elements, deps) => {
   const closePopover = () => {
     if (popoverSha === null) return;
     popoverSha = null;
+    renderedPopoverKey = null;
     popoverEl.classList.add('hidden');
     popoverEl.replaceChildren();
     syncActiveCommitHighlight();
@@ -589,6 +632,17 @@ export const createGraphView = (elements, deps) => {
   bodyEl.addEventListener('scroll', () => {
     repositionPopover();
   }, { passive: true });
+
+  // 「加载更多」行进入可视区下方一屏以内时预先加载下一页，对应 VS Code 的 scm.graph.pageOnScroll
+  const loadMoreObserver = new win.IntersectionObserver((entries) => {
+    const footerRow = entries.find((entry) => entry.isIntersecting)?.target;
+    if (!footerRow || latestRenderState.loadingMore) return;
+    const { autoLoadKey } = footerRow.dataset;
+    if (autoLoadKey === failedAutoLoadKey) return;
+    void deps.onLoadMore().then((loaded) => {
+      failedAutoLoadKey = loaded ? null : autoLoadKey;
+    });
+  }, { root: bodyEl, rootMargin: '0px 0px 100% 0px' });
 
   doc.addEventListener('pointerdown', (event) => {
     const target = event.target;
@@ -884,7 +938,7 @@ export const createGraphView = (elements, deps) => {
     return rowEl;
   };
 
-  const renderListFooter = ({ graph, allCommits, lastViewModel, loadingMore, t }) => {
+  const renderListFooter = ({ graph, allCommits, lastViewModel, loadingMore, autoLoadKey, t }) => {
     const reachedSoftLimit = Boolean(graph?.reachedSoftLimit) || allCommits.length >= GRAPH_HARD_SOFT_LIMIT;
     if (reachedSoftLimit) {
       const noticeEl = doc.createElement('div');
@@ -897,6 +951,7 @@ export const createGraphView = (elements, deps) => {
 
     const rowEl = doc.createElement('div');
     rowEl.className = 'gw-load-more-row';
+    if (autoLoadKey) rowEl.dataset.autoLoadKey = autoLoadKey;
     const placeholder = computeGraphPlaceholder(lastViewModel.outputSwimlanes);
     const loadMoreBtn = doc.createElement('button');
     loadMoreBtn.type = 'button';
@@ -908,7 +963,9 @@ export const createGraphView = (elements, deps) => {
     labelEl.textContent = loadingMore ? t('graph.loadingMore') : t('graph.loadMore');
     loadMoreBtn.append(deps.createIcon('foldDown'), labelEl);
     loadMoreBtn.addEventListener('click', () => {
-      void deps.onLoadMore();
+      void deps.onLoadMore().then((loaded) => {
+        if (loaded) failedAutoLoadKey = null;
+      });
     });
     rowEl.append(renderGraphSvg(placeholder, 'gw-graph-placeholder is-fading'), loadMoreBtn);
     return rowEl;
@@ -917,6 +974,7 @@ export const createGraphView = (elements, deps) => {
   const renderCommitList = (state) => {
     const { activeRepo, graph, graphScope, loadingMore, t } = state;
     const savedFocus = deps.captureFocus(bodyEl);
+    loadMoreObserver.disconnect();
 
     if (!activeRepo) {
       closePopover();
@@ -990,10 +1048,13 @@ export const createGraphView = (elements, deps) => {
       allCommits,
       lastViewModel: viewModels.at(-1),
       loadingMore,
+      // 搜索结果短，「加载更多」行一出现就在可视区内，自动加载会一页页拉到软上限；搜索期间只能手动加载
+      autoLoadKey: normalizedQuery ? null : `${activeRepo.id}:${graphScope}:${allCommits.length}`,
       t,
     });
     bodyEl.replaceChildren(...(footerEl ? [listEl, footerEl] : [listEl]));
     deps.restoreFocus(bodyEl, savedFocus);
+    if (footerEl?.dataset.autoLoadKey) loadMoreObserver.observe(footerEl);
 
     if (popoverSha) renderPopover(popoverSha);
   };

@@ -135,6 +135,7 @@ export const MESSAGES = Object.freeze({
     'graph.expandCommit': '展开或收起提交文件列表',
 
     // 提交详情卡（改动统计文案沿用 VS Code 简体中文语言包）
+    'popover.close': '关闭提交详情',
     'popover.loading': '正在加载提交详情…',
     'popover.coAuthor': '共同作者',
     'popover.fileChanged': '已更改 {count} 个文件',
@@ -294,6 +295,7 @@ export const MESSAGES = Object.freeze({
     'graph.expandCommit': 'Expand or collapse commit files',
 
     // Commit detail popover (change statistics wording follows VS Code)
+    'popover.close': 'Close Commit Details',
     'popover.loading': 'Loading commit details…',
     'popover.coAuthor': 'Co-author',
     'popover.fileChanged': '{count} file changed',

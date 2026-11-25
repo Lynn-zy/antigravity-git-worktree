@@ -474,12 +474,15 @@ button:disabled {
   flex: 1 1 0;
 }
 
-/* 窗格标题栏：22px 高、粗体大写；标题用 13px 而非 VS Code 的 11px，中文标题在 11px 下偏小 */
+/*
+ * 窗格标题栏：粗体大写；标题用 13px 而非 VS Code 的 11px，中文标题在 11px 下偏小。
+ * 13px 标题放在 22px 高的栏里上下显得拥挤，栏高加到 28px，上下各多留 3px
+ */
 .gw-section-header {
   display: flex;
   align-items: center;
-  flex: 0 0 22px;
-  height: 22px;
+  flex: 0 0 28px;
+  height: 28px;
   padding-left: 5px;
   min-width: 0;
   overflow: hidden;
@@ -498,7 +501,7 @@ button:disabled {
   align-items: center;
   flex: 1 1 auto;
   min-width: 3ch;
-  height: 22px;
+  height: 100%;
   padding: 0;
   border: 0;
   background: transparent;
@@ -712,6 +715,36 @@ body.is-resizing-panes {
   font-size: 12px;
   color: var(--gw-status-warning);
   overflow-wrap: anywhere;
+}
+
+/*
+ * 上区只让文件列表滚动，横幅与提交输入区固定在列表上方。
+ * 上区矮到放不下输入区加三行列表时，整个上区退回整体滚动
+ */
+.gw-changes-body {
+  display: flex;
+  flex-direction: column;
+  scrollbar-gutter: auto;
+}
+
+/*
+ * 横幅与输入区不在列表的滚动体内，用 overflow: hidden 加稳定沟槽留出与列表滚动条等宽的右侧空白，
+ * 不论平台滚动条多宽都与文件行右缘对齐
+ */
+.gw-changes-body > .gw-banner-stack,
+.gw-changes-body > .gw-composer {
+  flex: none;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
+.gw-changes-body > .gw-changes-groups {
+  flex: 1 1 0;
+  min-height: 66px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 /* 上区：资源分组与文件行（树缩进 8px，展开箭头 16px + 6px 间距） */
@@ -1215,8 +1248,6 @@ body.is-resizing-panes {
 .gw-popover {
   position: fixed;
   z-index: 60;
-  display: flex;
-  flex-direction: column;
   max-width: calc(100vw - 16px);
   padding: 0;
   border: 1px solid var(--gw-widget-border);
@@ -1232,8 +1263,26 @@ body.is-resizing-panes {
   user-select: text;
 }
 
+/* 关闭按钮浮在右上角，作者行文字绕开它；sticky 让卡片内容滚动时按钮仍停在顶部 */
+.gw-popover-close {
+  position: sticky;
+  top: 4px;
+  z-index: 1;
+  float: right;
+  margin: 4px 4px 0;
+  background: var(--gw-widget-bg);
+}
+
+/* 悬停、按下色是半透明的，叠在卡片底色上，滚到按钮下方的文字才不会透出来 */
+.gw-popover-close:hover:not(:disabled) {
+  background: linear-gradient(var(--gw-toolbar-hover), var(--gw-toolbar-hover)), var(--gw-widget-bg);
+}
+
+.gw-popover-close:active:not(:disabled) {
+  background: linear-gradient(var(--gw-toolbar-active), var(--gw-toolbar-active)), var(--gw-widget-bg);
+}
+
 .gw-popover-section {
-  flex: none;
   padding: 4px 8px;
   overflow-wrap: anywhere;
 }

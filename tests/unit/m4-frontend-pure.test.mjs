@@ -768,6 +768,25 @@ test('file-icons: 以 / 结尾的未跟踪目录按文件夹名取文件夹图�
   assert.equal(resolveFileIconUrl('src/package.json', 'dark'), '/file-icons/file_type_npm.svg', '不以 / 结尾的仍按文件解析');
 });
 
+test('file-icons: 带父文件夹的文件名规则只在直接父文件夹同名时生效，且优先于同名文件规则', () => {
+  assert.equal(resolveFileIconUrl('.husky/pre-commit', 'dark'), '/file-icons/file_type_husky.svg');
+  assert.equal(resolveFileIconUrl('web/.husky/pre-commit', 'dark'), '/file-icons/file_type_husky.svg', '父文件夹只看直接上一级');
+  assert.equal(resolveFileIconUrl('pre-commit', 'dark'), '/file-icons/default_file.svg');
+  assert.equal(resolveFileIconUrl('.VSCode/Tasks.json', 'dark'), '/file-icons/file_type_vscode.svg', '父文件夹名大小写不敏感');
+  assert.equal(resolveFileIconUrl('src/launch.json', 'dark'), '/file-icons/file_type_json.svg', '父文件夹不同时按扩展名解析');
+});
+
+test('file-icons: 映射表里的每条文件名、扩展名规则都能被对应路径命中', () => {
+  const unreachable = [];
+  for (const [key, icon] of Object.entries(FILE_ICON_NAMES)) {
+    if (resolveFileIconUrl(key, 'dark') !== `/file-icons/file_type_${icon}.svg`) unreachable.push(key);
+  }
+  for (const [extension, icon] of Object.entries(FILE_ICON_EXTENSIONS)) {
+    if (resolveFileIconUrl(`probe.${extension}`, 'dark') !== `/file-icons/file_type_${icon}.svg`) unreachable.push(`*.${extension}`);
+  }
+  assert.deepEqual(unreachable, []);
+});
+
 test('file-icons: 映射表引用的每个图标（含浅色变体）都随插件分发', () => {
   const iconsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sidecars/panel/public/file-icons');
   const shipped = new Set(fs.readdirSync(iconsDir));
@@ -852,6 +871,12 @@ test('markdown: 行内代码、强调与安全链接按 Markdown 渲染，HTML�
     { type: 'link', href: 'https://x.dev/y_(z)', children: [text('https://x.dev/y_(z)')] },
     text(').'),
   ]);
+  assert.deepEqual(parseInlineMarkdown('[见 https://a.com 与 <https://c.com>](https://b.com)'), [
+    { type: 'link', href: 'https://b.com', children: [text('见 https://a.com 与 <https://c.com>')] },
+  ], '链接文字里的裸链接与尖括号链接不再嵌套成链接');
+  assert.deepEqual(parseInlineMarkdown('[https://a.com](./docs/x.md)'), [
+    { type: 'link', href: 'https://a.com', children: [text('https://a.com')] },
+  ], '不安全的外层链接被丢弃时，文字里的裸链接照常可点');
 });
 
 test('markdown: 围栏与缩进代码块整体保留内部空行，未闭合的围栏延续到结尾', () => {
@@ -861,6 +886,10 @@ test('markdown: 围栏与缩进代码块整体保留内部空行，未闭合的�
     { type: 'paragraph', inlines: [text('结束')], spaced: false },
     { type: 'code', text: 'x\n\n  y', spaced: false },
   ]);
+  assert.deepEqual(parseCommitMarkdown('```x``` 是行内代码\n第二行'), [
+    { type: 'paragraph', inlines: [{ type: 'code', text: 'x' }, text(' 是行内代码')], spaced: false },
+    { type: 'paragraph', inlines: [text('第二行')], spaced: false },
+  ], '反引号后同一行还有反引号时不是围栏');
   assert.deepEqual(parseCommitMarkdown('示例：\n\n    - 不是列表\n    * 也是代码'), [
     { type: 'paragraph', inlines: [text('示例：')], spaced: false },
     { type: 'code', text: '- 不是列表\n* 也是代码', spaced: true },

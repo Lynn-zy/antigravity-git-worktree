@@ -1,6 +1,7 @@
 /**
  * 文件与文件夹图标（vscode-icons）解析模块。
- * 文件的匹配顺序与 VS Code 文件图标主题一致：完整文件名优先，其次从最长到最短的多段扩展名，最后回退默认文件图标；
+ * 文件的匹配顺序与 VS Code 文件图标主题一致：带直接父文件夹的文件名（如 `.husky/pre-commit`）优先，
+ * 其次完整文件名，再次从最长到最短的多段扩展名，最后回退默认文件图标；
  * 文件夹按文件夹名匹配，未命中时回退默认文件夹图标。
  */
 
@@ -31,8 +32,9 @@ const folderLightVariants = new Set(FOLDER_ICON_LIGHT_VARIANTS);
  */
 export const resolveFileIconUrl = (filePath, themeMode) => {
   const isFolder = filePath.endsWith('/');
-  const trimmedPath = isFolder ? filePath.slice(0, -1) : filePath;
-  const baseName = trimmedPath.slice(trimmedPath.lastIndexOf('/') + 1).toLowerCase();
+  const pathSegments = (isFolder ? filePath.slice(0, -1) : filePath).toLowerCase().split('/');
+  const baseName = pathSegments.pop();
+  const parentName = pathSegments.pop();
   const isLight = themeMode === 'light';
 
   if (isFolder) {
@@ -42,7 +44,7 @@ export const resolveFileIconUrl = (filePath, themeMode) => {
     return `${FILE_ICON_URL_PREFIX}folder_type_${variant}${folderIcon}.svg`;
   }
 
-  let icon = iconByName.get(baseName);
+  let icon = (parentName && iconByName.get(`${parentName}/${baseName}`)) || iconByName.get(baseName);
   for (let dot = baseName.indexOf('.'); !icon && dot !== -1; dot = baseName.indexOf('.', dot + 1)) {
     icon = iconByExtension.get(baseName.slice(dot + 1));
   }

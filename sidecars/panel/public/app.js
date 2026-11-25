@@ -683,12 +683,12 @@ const bootstrapPanel = () => {
       onPushOrPublish: (repo) => runPushOrPublish(repo, graphHeaderEl),
       onRefresh: () => handleManualRefresh(graphHeaderEl),
       onLoadMore: async () => {
-        if (state.loadingMore) return;
+        if (state.loadingMore) return false;
         state.loadingMore = true;
         renderAll();
         try {
           state.graphLimit = Math.min(GRAPH_SOFT_LIMIT, state.graphLimit + GRAPH_PAGE_STEP);
-          await loadSnapshot({ forceRefresh: false });
+          return await loadSnapshot({ forceRefresh: false });
         } finally {
           state.loadingMore = false;
           renderAll();
