@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="372" viewBox="0 0 1200 372" role="img" aria-labelledby="title desc">
+  <title id="title">面板如何跟随对话</title>
+  <desc id="desc">对话 A 打开 ~/work/app，对话 B 打开 ~/work/app-feat。两个目录属于同一个 Repository 的两个 Worktree：main 与 feat/graph-view。对话 A 的面板显示 main 的更改与图表，对话 B 的面板显示 feat/graph-view 的更改与图表。</desc>
+
+  <rect width="1200" height="372" rx="24" fill="#111111"/>
+
+  <g font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+    <g id="column-titles" font-size="18" fill="#8a8a8a">
+      <text x="56" y="60">Antigravity 对话</text>
+      <text x="450" y="60">同一个 Repository 的两个 Worktree</text>
+      <text x="844" y="60">Git Graph 面板</text>
+    </g>
+
+    <g id="conversations">
+      <rect x="56" y="88" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
+      <text x="80" y="128" font-size="22" font-weight="600" fill="#e6e6e6">对话 A</text>
+      <text x="80" y="162" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#9d9d9d">~/work/app</text>
+
+      <rect x="56" y="236" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
+      <text x="80" y="276" font-size="22" font-weight="600" fill="#e6e6e6">对话 B</text>
+      <text x="80" y="310" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#9d9d9d">~/work/app-feat</text>
+    </g>
+
+    <g id="repository">
+      <rect x="450" y="88" width="308" height="244" rx="12" fill="#181818" stroke="#2c2c2c"/>
+      <text x="474" y="128" font-size="22" font-weight="600" fill="#e6e6e6">app</text>
+      <text x="520" y="128" font-size="18" fill="#8f8f8f">共享一套 .git</text>
+
+      <rect x="470" y="160" width="268" height="64" rx="8" fill="#1f1f1f"/>
+      <text x="516" y="188" font-size="20" font-weight="600" fill="#e6e6e6">main</text>
+      <text x="516" y="212" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#8f8f8f">~/work/app</text>
+
+      <rect x="470" y="252" width="268" height="64" rx="8" fill="#1f1f1f"/>
+      <text x="516" y="280" font-size="20" font-weight="600" fill="#e6e6e6">feat/graph-view</text>
+      <text x="516" y="304" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#8f8f8f">~/work/app-feat</text>
+    </g>
+
+    <g id="panels">
+      <rect x="844" y="88" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
+      <text x="868" y="128" font-size="22" font-weight="600" fill="#e6e6e6">面板 A</text>
+      <text x="868" y="162" font-size="18" fill="#a3a3a3">main 的更改与图表</text>
+
+      <rect x="844" y="236" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
+      <text x="868" y="276" font-size="22" font-weight="600" fill="#e6e6e6">面板 B</text>
+      <text x="868" y="310" font-size="18" fill="#a3a3a3">feat/graph-view 的更改与图表</text>
+    </g>
+
+    <g id="lanes" fill="none" stroke-width="3" stroke-linecap="round">
+      <path d="M 356 136 H 386 A 14 14 0 0 1 400 150 V 178 A 14 14 0 0 0 414 192 H 494" stroke="#3794ff"/>
+      <path d="M 356 284 H 494" stroke="#dc267f"/>
+      <path d="M 738 192 H 790 A 14 14 0 0 0 804 178 V 150 A 14 14 0 0 1 818 136 H 844" stroke="#3794ff"/>
+      <path d="M 738 284 H 844" stroke="#dc267f"/>
+    </g>
+
+    <g id="worktree-dots" stroke="#1f1f1f" stroke-width="3">
+      <circle cx="494" cy="192" r="8" fill="#3794ff"/>
+      <circle cx="494" cy="284" r="8" fill="#dc267f"/>
+    </g>
+  </g>
+</svg>
