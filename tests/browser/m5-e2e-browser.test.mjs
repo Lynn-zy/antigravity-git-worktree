@@ -2001,18 +2001,111 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     })()`, { sessionId: iframeSessionId });
   };
   assert.match(await openChangelogFromHeadCommit('HEAD commit files in repoA'), /\/repoA\/CHANGELOG\.md$/);
-  await page.evaluate(`(() => {
-    const frame = document.getElementById('sidecar-frame');
-    frame.contentWindow.postMessage({
-      type: 'workspace-change',
-      payload: { workspaceUris: [${JSON.stringify(toFileUri(linkedWorktree))}] }
-    }, '*');
-  })()`);
-  await page.waitFor('Boolean(document.querySelector("[data-testid=banner-detached]"))', {
+
+  // 切换 Worktree 后更改列表与图表都回到顶部，原键盘焦点随之释放。两边各写 60 个未跟踪文件让更改列表能滚动，缩小视口让图表也能滚动。
+  // 两边文件名不同：焦点停在 repoA 独有的行上时，不能按行号还原到新列表里把列表又滚下去
+  const probeCount = 60;
+  const probeNamesIn = (tag) => Array.from({ length: probeCount }, (_, i) => `scroll-probe-${tag}-${String(i).padStart(3, '0')}.txt`);
+  const probeDirs = [[fixtures.repoA, probeNamesIn('a')], [linkedWorktree, probeNamesIn('b')]];
+  for (const [dir, names] of probeDirs) {
+    for (const name of names) fs.writeFileSync(path.join(dir, name), 'probe\n');
+  }
+  const probeRowCount = (prefix) => `document.querySelectorAll('[data-testid="change-file-unstaged"][data-file-path^="scroll-probe-${prefix}"]').length`;
+  await page.waitFor(`${probeRowCount('a-')} === ${probeCount}`, {
     sessionId: iframeSessionId,
-    description: 'workspace-change to linked worktree of repoA',
+    description: 'scroll probe files listed in repoA',
+    timeoutMs: 20_000,
   });
+  await page.setViewport(420, 420);
+  // 键盘事件发给获得焦点的 frame；iframe 没有焦点时，在它里面调用 focus() 也不生效
+  await page.evaluate('document.getElementById("sidecar-frame").focus()');
+  const viewState = `({
+    changes: document.querySelector('[data-testid="changes-groups"]').scrollTop,
+    graph: document.querySelector('[data-testid="section-graph-body"]').scrollTop,
+    graphScrollable: (() => {
+      const graph = document.querySelector('[data-testid="section-graph-body"]');
+      return graph.scrollHeight > graph.clientHeight;
+    })(),
+    focusInLists: Boolean(document.activeElement?.closest('[data-testid="changes-groups"], [data-testid="section-graph-body"]')),
+  })`;
+  const switchWorkspaceTo = async (worktreePath, description, readyExpression) => {
+    await page.evaluate(`(() => {
+      document.getElementById('sidecar-frame').contentWindow.postMessage({
+        type: 'workspace-change',
+        payload: { workspaceUris: [${JSON.stringify(toFileUri(worktreePath))}] }
+      }, '*');
+    })()`);
+    await page.waitFor(readyExpression, { sessionId: iframeSessionId, description, timeoutMs: 20_000 });
+    await page.evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))', { sessionId: iframeSessionId });
+  };
+
+  // 第一次切换（repoA → linked）：键盘焦点在更改列表里 repoA 独有的行上
+  const scrolledBeforeSwitch = await page.evaluate(`(() => {
+    const changes = document.querySelector('[data-testid="changes-groups"]');
+    changes.scrollTop = 600;
+    const graph = document.querySelector('[data-testid="section-graph-body"]');
+    graph.scrollTop = graph.scrollHeight;
+    const top = changes.getBoundingClientRect().top;
+    [...changes.querySelectorAll('[data-file-path^="scroll-probe-a-"]')].find((row) => row.getBoundingClientRect().top >= top).focus();
+    return ${viewState};
+  })()`, { sessionId: iframeSessionId });
+  assert.ok(
+    scrolledBeforeSwitch.changes === 600 && scrolledBeforeSwitch.graph > 0,
+    `切换前两个列表都应已滚动：${JSON.stringify(scrolledBeforeSwitch)}`,
+  );
+  await page.pressKey('Tab', 'Tab', 9);
+  assert.equal(
+    await page.evaluate('document.activeElement.closest("[data-file-path]")?.dataset.filePath.startsWith("scroll-probe-a-") && document.activeElement.matches(":focus-visible")', { sessionId: iframeSessionId }),
+    true,
+    '切换前键盘焦点应在 repoA 独有的文件行上',
+  );
+  await switchWorkspaceTo(
+    linkedWorktree,
+    'workspace-change to linked worktree of repoA',
+    `Boolean(document.querySelector("[data-testid=banner-detached]")) && ${probeRowCount('b-')} === ${probeCount}`,
+  );
+  assert.deepEqual(
+    await page.evaluate(viewState, { sessionId: iframeSessionId }),
+    { changes: 0, graph: 0, graphScrollable: true, focusInLists: false },
+  );
   assert.match(await openChangelogFromHeadCommit('HEAD commit files in linked worktree'), /\/repoA-linked\/CHANGELOG\.md$/);
+
+  // 第二次切换（linked → repoA）：键盘焦点在图表底部一行的详情按钮上。两个 Worktree 的提交相同，不释放焦点会按 sha 还原到这一行
+  await page.evaluate(`(() => {
+    const graph = document.querySelector('[data-testid="section-graph-body"]');
+    graph.scrollTop = graph.scrollHeight;
+    const box = graph.getBoundingClientRect();
+    [...graph.querySelectorAll('[data-testid="commit-row"]')].filter((row) => row.getBoundingClientRect().bottom <= box.bottom).at(-1).focus();
+  })()`, { sessionId: iframeSessionId });
+  await page.pressKey('Tab', 'Tab', 9);
+  const graphFocusBefore = await page.evaluate(`({
+    graph: document.querySelector('[data-testid="section-graph-body"]').scrollTop,
+    focusId: document.activeElement?.dataset?.focusId ?? null,
+    focusVisible: document.activeElement.matches(':focus-visible'),
+  })`, { sessionId: iframeSessionId });
+  assert.ok(
+    graphFocusBefore.graph > 0 && graphFocusBefore.focusId?.startsWith('commit-detail:') && graphFocusBefore.focusVisible,
+    `切换前键盘焦点应在图表底部提交行的详情按钮上：${JSON.stringify(graphFocusBefore)}`,
+  );
+  await switchWorkspaceTo(
+    fixtures.repoA,
+    'workspace-change back to repoA',
+    `!document.querySelector("[data-testid=banner-detached]") && ${probeRowCount('a-')} === ${probeCount}`,
+  );
+  assert.deepEqual(
+    await page.evaluate(viewState, { sessionId: iframeSessionId }),
+    { changes: 0, graph: 0, graphScrollable: true, focusInLists: false },
+  );
+
+  await page.setViewport(420, 760);
+  for (const [dir, names] of probeDirs) {
+    for (const name of names) fs.rmSync(path.join(dir, name), { force: true });
+  }
+  await page.waitFor(`${probeRowCount('')} === 0`, {
+    sessionId: iframeSessionId,
+    description: 'scroll probe files removed',
+    timeoutMs: 20_000,
+  });
 
   // 通过 postMessage 测试 workspace-change 动态切换：单仓 repoB -> 非 Git 空态 -> 双仓 (repoA + repoB)
   await page.evaluate(`(() => {

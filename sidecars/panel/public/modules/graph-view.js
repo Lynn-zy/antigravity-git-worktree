@@ -139,6 +139,7 @@ const formatFileStatus = (status) => {
  * @returns {{
  *   render: (state: { activeRepo: Record<string, any> | null, graph: Record<string, any> | null, graphScope: 'auto' | 'all', pendingOp: string | null, loadingMore: boolean, locale: 'zh-CN' | 'en', t: (key: string, params?: Record<string, unknown>) => string }) => void,
  *   clearDetailCache: () => void,
+ *   handleWorktreeSwitch: () => void,
  *   closeOverlays: () => void
  * }} 图表视图控制接口（有 DOM 读写与事件监听副作用）
  */
@@ -1101,6 +1102,16 @@ export const createGraphView = (elements, deps) => {
     closePopover();
   };
 
+  /**
+   * 切换到另一个仓库或 Worktree 时、渲染新快照之前调用：清空提交详情缓存并收起展开的提交、关闭详情卡，
+   * 图表回到顶部，释放图表里的键盘焦点。各 Worktree 的提交相同，不释放焦点会按 sha 还原到原来那一行，下一次按键又把图表滚回去。
+   */
+  const handleWorktreeSwitch = () => {
+    clearDetailCache();
+    bodyEl.scrollTop = 0;
+    if (bodyEl.contains(doc.activeElement)) doc.activeElement.blur();
+  };
+
   const closeOverlays = () => {
     closeMoreMenu();
     closePopover();
@@ -1109,6 +1120,7 @@ export const createGraphView = (elements, deps) => {
   return {
     render,
     clearDetailCache,
+    handleWorktreeSwitch,
     closeOverlays,
   };
 };

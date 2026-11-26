@@ -1140,9 +1140,10 @@ const bootstrapPanel = () => {
     const prevRepo = state.snapshot?.activeRepo;
     const nextRepo = nextSnapshot?.activeRepo;
     const nextRepoId = nextRepo?.id ?? null;
-    // 同一仓库的各个 Worktree 共用 id，但提交详情里的文件链接指向各自的目录
+    // 同一仓库的各个 Worktree 共用 id，但提交详情里的文件链接与更改列表都按 Worktree 区分；裸仓库没有 worktreePath，所以连同 id 一起比较
     if (prevRepo?.id !== nextRepo?.id || prevRepo?.worktreePath !== nextRepo?.worktreePath) {
-      graphView.clearDetailCache();
+      graphView.handleWorktreeSwitch();
+      changesView.handleWorktreeSwitch();
       state.graphLimit = INITIAL_GRAPH_LIMIT;
     }
 

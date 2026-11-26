@@ -220,7 +220,8 @@ export const computePrimaryButtonState = ({ activeRepo, changes, pendingOp, t })
  * }} deps 外部服务与交互回调
  * @returns {{
  *   render: (state: { activeRepo: Record<string, any> | null, changes: Record<string, any> | null, pendingOp: string | null, t: (key: string, params?: Record<string, unknown>) => string }) => void,
- *   clearDraft: (repoId: string) => void
+ *   clearDraft: (repoId: string) => void,
+ *   handleWorktreeSwitch: () => void
  * }} 上区视图控制接口（有 DOM 读写与事件监听副作用）
  */
 export const createChangesView = (elements, deps) => {
@@ -891,8 +892,18 @@ export const createChangesView = (elements, deps) => {
     }
   };
 
+  /**
+   * 切换到另一个 Worktree 时、渲染新快照之前调用：列表回到顶部，释放列表里的键盘焦点。
+   * 原焦点属于上一个 Worktree，不释放会在重渲染时按行号还原到新列表里，把列表又滚下去。
+   */
+  const handleWorktreeSwitch = () => {
+    groupsEl.scrollTop = 0;
+    if (groupsEl.contains(doc.activeElement)) doc.activeElement.blur();
+  };
+
   return {
     render,
     clearDraft,
+    handleWorktreeSwitch,
   };
 };
