@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import {
   createWorktreePathResolver,
   discoverRepositories,
+  normalizeFsPath,
   parseWorktreeListPorcelainZ,
+  toFileUri,
   toPathKey,
 } from './discovery.mjs';
 import {
@@ -45,15 +47,18 @@ function splitAfterSpaces(token, fieldCount) {
   return { fields, tail: token.slice(start) };
 }
 
-function resolveChangeFileUri(resolvePath, relPath) {
-  if (!resolvePath) {
-    return null;
+// 变更列表的相对路径来自 git 自身，URI 只用于宿主只读预览（不进 Agent 上下文），所以直接拼接、不查文件系统；
+// 写操作的路径另由 createWorktreePathResolver 完整校验（见 spec 4.1）
+function createChangeFileUriBuilder(worktreePath) {
+  const root = worktreePath ? normalizeFsPath(worktreePath) : null;
+  if (!root) {
+    return () => null;
   }
-  try {
-    return resolvePath(relPath).fileUri;
-  } catch {
-    return null;
-  }
+  const prefix = root.endsWith('/') ? root : `${root}/`;
+  return (relPath) => {
+    const segments = relPath.split('/').filter(Boolean);
+    return segments.length > 0 ? toFileUri(prefix + segments.join('/')) : null;
+  };
 }
 
 function applyBranchHeader(branchInfo, token) {
@@ -106,7 +111,7 @@ export function createStatusParser(options = {}) {
     isDetached: false,
     stashCount: 0,
   };
-  const resolvePath = worktreePath ? createWorktreePathResolver(worktreePath) : null;
+  const toChangeFileUri = createChangeFileUriBuilder(worktreePath);
   const conflicted = [];
   const staged = [];
   const unstaged = [];
@@ -130,7 +135,7 @@ export function createStatusParser(options = {}) {
     }
     const [indexStatus, worktreeStatus] = parsed.fields[1];
     const newPath = parsed.tail;
-    const fileUri = resolveChangeFileUri(resolvePath, newPath);
+    const fileUri = toChangeFileUri(newPath);
     if (indexStatus !== '.') {
       appendItem(staged, { path: newPath, origPath, status: indexStatus, fileUri });
     }
@@ -160,7 +165,7 @@ export function createStatusParser(options = {}) {
       }
       const [indexStatus, worktreeStatus] = parsed.fields[1];
       const filePath = parsed.tail;
-      const fileUri = resolveChangeFileUri(resolvePath, filePath);
+      const fileUri = toChangeFileUri(filePath);
       if (indexStatus !== '.') {
         appendItem(staged, { path: filePath, origPath: null, status: indexStatus, fileUri });
       }
@@ -183,7 +188,7 @@ export function createStatusParser(options = {}) {
         path: parsed.tail,
         origPath: null,
         status: parsed.fields[1],
-        fileUri: resolveChangeFileUri(resolvePath, parsed.tail),
+        fileUri: toChangeFileUri(parsed.tail),
       });
       return;
     }
@@ -194,7 +199,7 @@ export function createStatusParser(options = {}) {
         origPath: null,
         status: 'U',
         untracked: true,
-        fileUri: resolveChangeFileUri(resolvePath, filePath),
+        fileUri: toChangeFileUri(filePath),
       });
     }
   };

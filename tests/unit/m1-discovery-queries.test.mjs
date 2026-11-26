@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 import {
   createWorktreePathResolver,
   discoverRepositories,
@@ -465,6 +466,40 @@ test('createStatusParser 分块喂入时与整块解析结果一致（任意切�
   }
   const byteByByte = parseStatusChunks(Array.from(STATUS_SAMPLE, (byte) => Buffer.from([byte])));
   assert.deepEqual(byteByByte, whole);
+});
+
+test('createStatusParser 由 Worktree 根目录直接拼出 file URI：指向 Worktree 外的链接也可打开，未跟踪目录不带末尾斜杠', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm1-status-uri-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'm1-status-uri-outside-'));
+  t.after(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+  // Windows 上 junction 不需要管理员权限；POSIX 上这个参数被忽略，建的是目录符号链接
+  fs.symlinkSync(outside, path.join(root, 'ext'), 'junction');
+  const realRoot = fs.realpathSync.native(root);
+
+  const { changes } = parseStatusChunks(
+    [Buffer.from([
+      '? ext',
+      '? 中文 目录/新 文件.txt',
+      '? newdir/',
+      '1 .M N... 100644 100644 100644 abc def src/改动.js',
+      '2 R. N... 100644 100644 100644 abc def R100 docs/新名.md',
+      'docs/旧名.md',
+      'u UU N... 100644 100644 100644 100644 h1 h2 h3 冲突.txt',
+      '',
+    ].join('\0'), 'utf8')],
+    { worktreePath: root },
+  );
+  const expectedUri = (...segments) => pathToFileURL(path.join(realRoot, ...segments)).href;
+  const uriOf = (group, relPath) => changes[group].find((item) => item.path === relPath)?.fileUri;
+  assert.equal(uriOf('unstaged', 'ext'), expectedUri('ext'), '指向 Worktree 外的链接照常给出 URI');
+  assert.equal(uriOf('unstaged', '中文 目录/新 文件.txt'), expectedUri('中文 目录', '新 文件.txt'));
+  assert.equal(uriOf('unstaged', 'newdir/'), expectedUri('newdir'));
+  assert.equal(uriOf('unstaged', 'src/改动.js'), expectedUri('src', '改动.js'));
+  assert.equal(uriOf('staged', 'docs/新名.md'), expectedUri('docs', '新名.md'), '重命名指向新路径');
+  assert.equal(uriOf('conflicted', '冲突.txt'), expectedUri('冲突.txt'));
 });
 
 test('createStatusParser 默认上限 5000 条，超出后只保留前 5000 条并通知调用方停止', () => {

@@ -141,7 +141,8 @@ Standalone 模式用于本地开发调试与自动化回归，支持以下配置
 2. 路径存在于磁盘时，调用 `fs.realpathSync.native(fsPath)` 展开符号链接/Junction 并获取 Windows 真实盘符大写与 NTFS 大小写。
 3. 路径不存在或不可达时，走非抛出兜底规范化：`path.win32.normalize()`（Windows）或 `path.normalize()`（POSIX），去掉非盘符根目录的末尾分隔符，Windows 下统一大写盘符。
 4. 路径比较键（`pathKey`）：Windows 统一转为正斜杠并小写化；POSIX 保持大小写敏感并规范斜杠。
-5. Worktree 内相对路径（变更列表与提交文件的链接、写操作的 `paths`）由 `createWorktreePathResolver(worktreePath)` 校验：拒绝空字节、控制字符、绝对路径、`..`，以及经符号链接或 Junction 指到 Worktree 外的路径（`OUT_OF_WORKTREE`）。每个请求建一个解析器：根目录真实路径只求一次，文件本身只做 `lstat`（是符号链接时才求它指向的真实路径），所在目录的真实路径在解析器内缓存。Windows 上 `realpath` 要打开文件句柄，逐个文件求真实路径会让 1120 个文件的提交详情多花约 700 ms、3000 条变更的 status 刷新多花约 1.7 s。文件是否存在也取自 `lstat` 结果，符号链接按指向判断。
+5. 写操作的 `paths` 与提交文件的链接由 `createWorktreePathResolver(worktreePath)` 校验：拒绝空字节、控制字符、绝对路径、`..`，以及经符号链接或 Junction 指到 Worktree 外的路径（`OUT_OF_WORKTREE`）。每个请求建一个解析器：根目录真实路径只求一次，文件本身只做 `lstat`（是符号链接时才求它指向的真实路径），所在目录的真实路径在解析器内缓存。Windows 上 `realpath` 要打开文件句柄，逐个文件求真实路径会让 1120 个文件的提交详情多花约 700 ms。文件是否存在也取自 `lstat` 结果，符号链接按指向判断。
+6. 变更列表的链接不经过上述解析器，也不做第 5 条的各项拒绝：根目录真实路径只求一次，再与 `git status` 输出的相对路径直接拼成 `file:` URI，不查文件系统；文件名含控制字符时按百分号编码。路径来自 git 自身；宿主 `fileView` 是只读预览，打开的文件也不进入 Agent 上下文，所以指向 Worktree 外的符号链接照常可打开，与编辑器行为一致，安全边界在写操作的路径校验上。逐条 `lstat` 与路径规范化会让 5000 条变更的解析多花约 120 ms。
 
 ### 4.2 Repository 发现与去重
 
