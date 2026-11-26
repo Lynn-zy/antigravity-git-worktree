@@ -609,12 +609,12 @@ const bootstrapPanel = () => {
           await apiClient.discardChanges(payload);
         }, commitButtonEl);
       },
-      onCommit: async ({ worktreePath, repoId, message, autoStageAll }) => {
+      onCommit: async ({ worktreePath, message, autoStageAll }) => {
         const t = getT();
         let committedSha = '';
         const ok = await runMutation('commit', async () => {
           const res = await apiClient.commitChanges({ worktreePath, message, autoStageAll });
-          changesView.clearDraft(repoId);
+          changesView.clearDraft();
           committedSha = typeof res?.sha === 'string' ? res.sha : '';
         }, commitButtonEl);
         if (ok) {

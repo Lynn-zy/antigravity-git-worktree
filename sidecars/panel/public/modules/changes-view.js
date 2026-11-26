@@ -213,14 +213,14 @@ export const computePrimaryButtonState = ({ activeRepo, changes, pendingOp, t })
  *   onStage: (payload: { worktreePath: string, all: boolean, paths?: string[] }) => Promise<void>,
  *   onUnstage: (payload: { worktreePath: string, all: boolean, paths?: string[] }) => Promise<void>,
  *   onDiscard: (payload: { worktreePath: string, allTracked: boolean, paths?: string[], untracked: boolean }) => Promise<void>,
- *   onCommit: (payload: { worktreePath: string, repoId: string, message: string, autoStageAll: boolean }) => Promise<boolean>,
+ *   onCommit: (payload: { worktreePath: string, message: string, autoStageAll: boolean }) => Promise<boolean>,
  *   onPublish: (repo: Record<string, any>) => void,
  *   onPush: (repo: Record<string, any>) => Promise<void>,
  *   onPull: (repo: Record<string, any>) => Promise<void>
  * }} deps 外部服务与交互回调
  * @returns {{
  *   render: (state: { activeRepo: Record<string, any> | null, changes: Record<string, any> | null, pendingOp: string | null, t: (key: string, params?: Record<string, unknown>) => string }) => void,
- *   clearDraft: (repoId: string) => void,
+ *   clearDraft: () => void,
  *   handleWorktreeSwitch: () => void
  * }} 上区视图控制接口（有 DOM 读写与事件监听副作用）
  */
@@ -229,14 +229,12 @@ export const createChangesView = (elements, deps) => {
   const doc = bodyEl.ownerDocument;
   const commitShortcut = /Mac|iPhone|iPad/.test(doc.defaultView.navigator.platform) ? 'Cmd+Enter' : 'Ctrl+Enter';
 
-  const draftsByRepo = new Map();
   const groupCollapsed = {
     conflicted: false,
     staged: false,
     unstaged: false,
   };
 
-  let currentRepoId = null;
   let showValidationError = false;
   let latestRenderState = null;
   let groupViews = [];
@@ -314,7 +312,6 @@ export const createChangesView = (elements, deps) => {
     if (staged.length > 0) {
       void deps.onCommit({
         worktreePath: activeRepo.worktreePath,
-        repoId: activeRepo.id,
         message,
         autoStageAll: false,
       });
@@ -330,7 +327,6 @@ export const createChangesView = (elements, deps) => {
       onConfirm: () => {
         void deps.onCommit({
           worktreePath: activeRepo.worktreePath,
-          repoId: activeRepo.id,
           message,
           autoStageAll: true,
         });
@@ -364,9 +360,6 @@ export const createChangesView = (elements, deps) => {
   };
 
   textareaEl.addEventListener('input', () => {
-    if (currentRepoId) {
-      draftsByRepo.set(currentRepoId, textareaEl.value);
-    }
     if (showValidationError && textareaEl.value.trim() && latestRenderState) {
       showValidationError = false;
       syncValidationUi(latestRenderState.t);
@@ -796,15 +789,6 @@ export const createChangesView = (elements, deps) => {
       return;
     }
 
-    if (currentRepoId !== activeRepo.id) {
-      if (currentRepoId) {
-        draftsByRepo.set(currentRepoId, textareaEl.value);
-      }
-      currentRepoId = activeRepo.id;
-      textareaEl.value = draftsByRepo.get(currentRepoId) ?? '';
-      showValidationError = false;
-    }
-
     const conflicted = changes?.conflicted ?? [];
     const staged = changes?.staged ?? [];
     const unstaged = changes?.unstaged ?? [];
@@ -883,20 +867,18 @@ export const createChangesView = (elements, deps) => {
     deps.restoreFocus(groupsEl, savedFocus);
   };
 
-  const clearDraft = (repoId) => {
-    if (repoId) draftsByRepo.delete(repoId);
-    if (repoId === currentRepoId) {
-      textareaEl.value = '';
-      showValidationError = false;
-      if (latestRenderState) syncValidationUi(latestRenderState.t);
-    }
+  const clearDraft = () => {
+    textareaEl.value = '';
+    showValidationError = false;
+    if (latestRenderState) syncValidationUi(latestRenderState.t);
   };
 
   /**
-   * 切换到另一个 Worktree 时、渲染新快照之前调用：列表回到顶部，释放列表里的键盘焦点。
+   * 切换到另一个仓库或 Worktree 时、渲染新快照之前调用：清空提交说明输入框，列表回到顶部，释放列表里的键盘焦点。
    * 原焦点属于上一个 Worktree，不释放会在重渲染时按行号还原到新列表里，把列表又滚下去。
    */
   const handleWorktreeSwitch = () => {
+    clearDraft();
     groupsEl.scrollTop = 0;
     if (groupsEl.contains(doc.activeElement)) doc.activeElement.blur();
   };

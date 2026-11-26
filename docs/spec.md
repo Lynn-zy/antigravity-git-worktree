@@ -450,7 +450,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 处于 `Detached HEAD` 时显示紧凑提示条。
 2. **提交输入区**：
    - 使用原生 `<textarea>`（自动匹配 `preload.js` 文本编辑快捷键豁免，并保留宿主 `Cmd/Ctrl+B` 侧栏切换），单行起始、随内容增高至 10 行；占位文案为 `消息(Ctrl+Enter 在“<分支>”提交)`，游离 HEAD 时省略分支名。
-   - 按 `repo.id` 在前端内存中保留未提交草稿（切换多仓不丢字，提交成功后清空）。
+   - 不保留草稿：切换仓库或 Worktree 时清空输入框（不同 Worktree 的提交说明不应带到另一个 Worktree 提交），提交成功后也清空。
    - 监听 `keydown`：`Ctrl/Cmd + Enter` 时必须调用 `e.preventDefault()` 阻断 `preload.js` 转发，并触发智能主按钮提交逻辑。
 3. **智能主按钮状态机**（按以下优先级互斥判定）：
    - **冲突阻断态**（`conflicted.length > 0`）：按钮禁用，文案「存在冲突，请先解决」。

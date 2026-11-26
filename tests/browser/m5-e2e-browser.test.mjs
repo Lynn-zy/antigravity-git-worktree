@@ -945,6 +945,13 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
 
   const repoBOptionValue = multiRepoState.options[1].value;
   const repoAOptionValue = multiRepoState.options[0].value;
+  // 切换仓库时清空提交说明输入框，不保留草稿；切回原仓库也不恢复
+  const commitInputValue = 'document.querySelector(\'[data-testid="commit-message-input"]\').value';
+  await page.evaluate(`(() => {
+    const input = document.querySelector('[data-testid="commit-message-input"]');
+    input.value = 'wip: 只属于 repoA 的说明';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
   await page.evaluate(`(() => {
     const sel = document.querySelector('[data-testid="repo-select"]');
     sel.value = ${JSON.stringify(repoBOptionValue)};
@@ -954,6 +961,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     'document.body.innerText.includes("第二个仓库初始提交")',
     { description: 'switch to repoB' },
   );
+  assert.equal(await page.evaluate(commitInputValue), '', '切换到 repoB 后提交说明输入框应为空');
 
   await page.evaluate(`(() => {
     const sel = document.querySelector('[data-testid="repo-select"]');
@@ -964,6 +972,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     'document.body.innerText.includes("tag multi-ref baseline")',
     { description: 'switch back to repoA' },
   );
+  assert.equal(await page.evaluate(commitInputValue), '', '切回 repoA 后不恢复原来的草稿');
 
   // 验证 auto 范围引用徽标：当前分支带名称，上游只显示云图标，标签等无关引用不显示
   const autoBadges = await page.evaluate(`(() => {
@@ -2039,7 +2048,12 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     await page.evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))', { sessionId: iframeSessionId });
   };
 
-  // 第一次切换（repoA → linked）：键盘焦点在更改列表里 repoA 独有的行上
+  // 第一次切换（repoA → linked）：键盘焦点在更改列表里 repoA 独有的行上，提交说明输入框里有未提交的文字
+  await page.evaluate(`(() => {
+    const input = document.querySelector('[data-testid="commit-message-input"]');
+    input.value = 'wip: 只属于 repoA 的说明';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`, { sessionId: iframeSessionId });
   const scrolledBeforeSwitch = await page.evaluate(`(() => {
     const changes = document.querySelector('[data-testid="changes-groups"]');
     changes.scrollTop = 600;
@@ -2067,6 +2081,11 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
   assert.deepEqual(
     await page.evaluate(viewState, { sessionId: iframeSessionId }),
     { changes: 0, graph: 0, graphScrollable: true, focusInLists: false },
+  );
+  assert.equal(
+    await page.evaluate('document.querySelector(\'[data-testid="commit-message-input"]\').value', { sessionId: iframeSessionId }),
+    '',
+    '切换 Worktree 后提交说明输入框应为空',
   );
   assert.match(await openChangelogFromHeadCommit('HEAD commit files in linked worktree'), /\/repoA-linked\/CHANGELOG\.md$/);
 
