@@ -309,6 +309,7 @@ function createInitialMockRepositories() {
  *   reset: () => void,
  *   getSnapshot: (params?: object, preferences?: object) => object,
  *   getCommitDetail: (params: object) => object,
+ *   getCommitStats: (params: object) => { files: number, insertions: number, deletions: number },
  *   stage: (params: object) => { revision: number },
  *   unstage: (params: object) => { revision: number },
  *   discard: (params: object) => { revision: number },
@@ -435,7 +436,7 @@ export function createMockFixtureStore(options = {}) {
     };
   };
 
-  const getCommitDetail = (params = {}) => {
+  const findMockCommit = (params) => {
     const sha = params.sha;
     if (typeof sha !== 'string' || !SHA_PATTERN.test(sha)) {
       throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Invalid commit SHA.');
@@ -445,12 +446,21 @@ export function createMockFixtureStore(options = {}) {
     if (!target) {
       throw new AppError(ERROR_CODES.GIT_ERROR, `Commit "${sha}" not found in mock fixture.`);
     }
+    return { repo, target };
+  };
+
+  const getCommitStats = (params = {}) => {
+    const { target } = findMockCommit(params);
+    return { files: target.files.length, insertions: target.insertions ?? 0, deletions: target.deletions ?? 0 };
+  };
+
+  const getCommitDetail = (params = {}) => {
+    const { repo, target } = findMockCommit(params);
     return {
       sha: target.sha,
       subject: target.subject,
       body: target.body,
       coAuthors: target.coAuthors.map((item) => ({ ...item })),
-      stats: { files: target.files.length, insertions: target.insertions ?? 0, deletions: target.deletions ?? 0 },
       files: target.files.map((item) => {
         const canBuildFileUri = Boolean(repo.worktreePath) && !repo.isBare && item.existsInWorktree;
         return {
@@ -728,6 +738,7 @@ export function createMockFixtureStore(options = {}) {
     reset,
     getSnapshot,
     getCommitDetail,
+    getCommitStats,
     stage,
     unstage,
     discard,

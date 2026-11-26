@@ -133,7 +133,8 @@ const formatFileStatus = (status) => {
  *   onRefresh: () => Promise<void>,
  *   onLoadMore: () => Promise<boolean>,
  *   onSwitchLanguage: () => void,
- *   onLoadCommitDetail: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<any>
+ *   onLoadCommitDetail: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<any>,
+ *   onLoadCommitStats: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<{ files: number, insertions: number, deletions: number }>
  * }} deps 外部服务与交互回调
  * @returns {{
  *   render: (state: { activeRepo: Record<string, any> | null, graph: Record<string, any> | null, graphScope: 'auto' | 'all', pendingOp: string | null, loadingMore: boolean, locale: 'zh-CN' | 'en', t: (key: string, params?: Record<string, unknown>) => string }) => void,
@@ -159,6 +160,9 @@ export const createGraphView = (elements, deps) => {
     details: new Map(),
     detailErrors: new Map(),
     loadingDetails: new Set(),
+    // 超大提交统计超时记为 null：卡片不显示统计区，也不再重试；其他失败不记，下次打开卡片重试
+    stats: new Map(),
+    loadingStats: new Set(),
   });
   let detailStore = createDetailStore();
   const expandedCommits = new Set();
@@ -278,6 +282,7 @@ export const createGraphView = (elements, deps) => {
   const buildPopoverSections = (viewModel, { t, locale }) => {
     const { commit } = viewModel;
     const detail = detailStore.details.get(commit.sha);
+    const stats = detailStore.stats.get(commit.sha);
 
     // 不联网取头像，与 VS Code 取不到头像时一样显示账号图标
     const authorEl = createPopoverPerson(commit.authorName || '', commit.authorEmail);
@@ -299,8 +304,8 @@ export const createGraphView = (elements, deps) => {
     }
     const sections = [createPopoverSection('gw-popover-content', contentChildren)];
 
-    if (detail?.stats) {
-      sections.push(createPopoverSection('gw-popover-stats', [createStatsLine(detail.stats, t)]));
+    if (stats) {
+      sections.push(createPopoverSection('gw-popover-stats', [createStatsLine(stats, t)]));
     }
 
     if (viewModel.references.length > 0) {
@@ -414,6 +419,7 @@ export const createGraphView = (elements, deps) => {
       formatRelativeTime(viewModel.commit.timestamp, latestRenderState.locale),
       detailStore.details.has(sha),
       detailStore.loadingDetails.has(sha),
+      detailStore.stats.has(sha),
     ]);
     if (contentKey !== renderedPopoverKey) {
       renderedPopoverKey = contentKey;
@@ -485,6 +491,25 @@ export const createGraphView = (elements, deps) => {
     }
   };
 
+  // 统计只在详情卡里显示，单独请求，展开文件列表不必等它
+  const ensureCommitStats = async (sha) => {
+    const store = detailStore;
+    const activeRepo = latestRenderState?.activeRepo;
+    if (!activeRepo || (!activeRepo.worktreePath && !activeRepo.id)) return;
+    if (store.stats.has(sha) || store.loadingStats.has(sha)) return;
+
+    store.loadingStats.add(sha);
+    try {
+      store.stats.set(sha, await deps.onLoadCommitStats(activeRepo.worktreePath ?? null, sha, activeRepo.id ?? null));
+    } catch (err) {
+      if (err?.code === 'GIT_TIMEOUT') store.stats.set(sha, null);
+    }
+    store.loadingStats.delete(sha);
+    if (popoverSha === sha) {
+      renderPopover(sha);
+    }
+  };
+
   const togglePopover = (sha) => {
     if (popoverSha === sha) {
       closePopover();
@@ -494,6 +519,7 @@ export const createGraphView = (elements, deps) => {
     syncActiveCommitHighlight();
     // 先触发详情加载使加载状态同步入集，首次渲染即显示加载提示
     void ensureCommitDetail(sha);
+    void ensureCommitStats(sha);
     renderPopover(sha);
     popoverEl.scrollTop = 0;
   };

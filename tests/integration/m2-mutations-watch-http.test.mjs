@@ -384,8 +384,13 @@ test('集成测试：全套 POST /api/* 写操作、unborn rm --cached、MM 保�
   assert.equal(detailRes.json.data.subject, 'feat: initial commit');
   assert.deepEqual(detailRes.json.data.coAuthors, [{ name: 'Pair', email: 'pair@example.com' }]);
   assert.equal(detailRes.json.data.files.length, 2);
+  const statsRes = await postApi(server.url, '/api/commit/stats', {
+    worktreePath: unbornRepo,
+    sha: firstCommitRes.json.data.sha,
+  });
+  assert.equal(statsRes.response.status, 200);
   // 根提交与空树比较：两个文件各新增 1 行
-  assert.deepEqual(detailRes.json.data.stats, { files: 2, insertions: 2, deletions: 0 });
+  assert.deepEqual(statsRes.json.data, { files: 2, insertions: 2, deletions: 0 });
 
   const badShaRes = await postApi(server.url, '/api/commit/detail', {
     worktreePath: unbornRepo,
@@ -635,7 +640,7 @@ test('集成测试：fetch / pull / push 远程同步、禁 force、无远端 NO
   assert.equal(pullDivergedRes.response.status, 409);
   assert.equal(pullDivergedRes.json.error.code, ERROR_CODES.NON_FAST_FORWARD);
 
-  // 5) bare 仓库支持 /api/snapshot、/api/commit/detail（worktreePath: null）与 /api/remote/fetch（有/无 remote）
+  // 5) bare 仓库支持 /api/snapshot、/api/commit/detail 与 /api/commit/stats（worktreePath: null）、/api/remote/fetch（有/无 remote）
   const bareMirror = path.join(root, 'bare-mirror.git');
   await execGit(['clone', '--bare', cloneB, bareMirror], root);
   const bareSnap = await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(bareMirror)] });
@@ -651,6 +656,12 @@ test('集成测试：fetch / pull / push 远程同步、禁 force、无远端 NO
   assert.equal(bareDetail.response.status, 200);
   assert.equal(bareDetail.json.data.sha, bareHeadSha);
   assert.equal(bareDetail.json.data.files[0].existsInWorktree, false);
+  const bareStats = await postApi(server.url, '/api/commit/stats', {
+    worktreePath: null,
+    sha: bareHeadSha,
+  });
+  assert.equal(bareStats.response.status, 200);
+  assert.equal(bareStats.json.data.files, bareDetail.json.data.files.length);
 
   const bareFetch = await postApi(server.url, '/api/remote/fetch', { worktreePath: null });
   assert.equal(bareFetch.response.status, 200);

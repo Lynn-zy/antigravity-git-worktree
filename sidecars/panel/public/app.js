@@ -706,6 +706,8 @@ const bootstrapPanel = () => {
       },
       onLoadCommitDetail: async (worktreePath, sha, repoId) =>
         apiClient.fetchCommitDetail({ worktreePath, repoId, sha }),
+      onLoadCommitStats: async (worktreePath, sha, repoId) =>
+        apiClient.fetchCommitStats({ worktreePath, repoId, sha }),
     },
   );
 

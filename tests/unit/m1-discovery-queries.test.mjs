@@ -535,27 +535,16 @@ test('parseCommitNumstatZ 汇总文件数与增删行数：重命名路径不计
   assert.deepEqual(parseCommitNumstatZ(numstatBuf), { files: 4, insertions: 17, deletions: 3 });
 });
 
-test('queryCommitDetail：改动统计超时只省略统计，其他统计错误仍让请求失败', async () => {
-  const fakeRead = (numstatError) => async (args) => {
-    if (args.includes('--numstat')) throw numstatError;
+test('queryCommitDetail：文件列表不等改动统计，不运行比 name-status 慢数倍的 numstat', async () => {
+  const gitCommands = [];
+  const fakeRead = async (args) => {
+    gitCommands.push(args);
     if (args.includes('--name-status')) return { stdout: Buffer.from('M\0src/app.js\0', 'utf8') };
     return { stdout: Buffer.from('fix: 修复\n\n正文\n', 'utf8') };
   };
-  const sha = 'abcdef1234567';
 
-  const detail = await queryCommitDetail('/repo', sha, {
-    isBare: true,
-    runGitRead: fakeRead(new AppError(ERROR_CODES.GIT_TIMEOUT, 'Git command timed out.')),
-  });
-  assert.equal(detail.stats, null);
+  const detail = await queryCommitDetail('/repo', 'abcdef1234567', { isBare: true, runGitRead: fakeRead });
   assert.equal(detail.subject, 'fix: 修复');
   assert.deepEqual(detail.files.map((file) => file.path), ['src/app.js']);
-
-  await assert.rejects(
-    queryCommitDetail('/repo', sha, {
-      isBare: true,
-      runGitRead: fakeRead(new AppError(ERROR_CODES.GIT_ERROR, 'bad object')),
-    }),
-    (error) => error instanceof AppError && error.code === ERROR_CODES.GIT_ERROR,
-  );
+  assert.deepEqual(gitCommands.filter((args) => args.includes('--numstat')), []);
 });

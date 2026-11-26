@@ -288,19 +288,18 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 - **Response `data`**：`{ "workspaceKey", "revision", "activeRepo", "changes", "watchState" }`，字段格式与 `/api/snapshot` 相同；`activeRepo` 的 HEAD、分支、上游与领先落后数取自本次 status，其余字段沿用上次快照。
 - **版本号**：在执行 `git status` 前取当前版本号返回，执行期间到达的变更由下一轮长轮询补上；若 `sinceRevision` 之后还有未处理的 `full` 级变更，则原样返回 `sinceRevision`，让下一轮长轮询立即要求完整快照。
 
-#### 3. `POST /api/commit/detail`
+#### 3. `POST /api/commit/detail` 与 `POST /api/commit/stats`
 
-用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时按需调用。前端按 `sha` 做内存缓存，切换仓库或 Worktree、强制刷新时清空；切换前发出、切换后才返回的请求结果直接丢弃，不写进新缓存。
+用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时调用 `detail`；`stats` 只在打开详情卡时调用，展开文件列表不等它。前端按 `sha` 做内存缓存，切换仓库或 Worktree、强制刷新时清空；切换前发出、切换后才返回的请求结果直接丢弃，不写进新缓存。
 
-- **Request**：`{ "worktreePath": "...", "sha": "2a76567..." }`（校验 `sha` 匹配 `/^[0-9a-f]{7,64}$/i`）
-- **Response `data`**：
+- **Request**（两者相同）：`{ "worktreePath": "...", "sha": "2a76567..." }`（校验 `sha` 匹配 `/^[0-9a-f]{7,64}$/i`）
+- **`detail` 的 Response `data`**：
   ```json
   {
     "sha": "2a76567...",
     "subject": "docs: align domain docs with dual-pane passive scope",
     "body": "完整提交正文（不含已解析出的 Co-authored-by 行）",
     "coAuthors": [{ "name": "Claude Opus 5.5", "email": "noreply@anthropic.com" }],
-    "stats": { "files": 6, "insertions": 336, "deletions": 78 },
     "files": [
       {
         "status": "M",
@@ -312,6 +311,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
     ]
   }
   ```
+- **`stats` 的 Response `data`**：`{ "files": 6, "insertions": 336, "deletions": 78 }`。出错时前端不显示统计区：超时（`GIT_TIMEOUT`）说明提交太大，不再重试；其他错误在下次打开详情卡时重试。
 
 #### 4. `POST /api/events/wait`
 
@@ -378,7 +378,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 | 图谱分页 | 首屏 `limit = 150`，每加载一页 `+200`，硬上限 `2000` | 采用增大 `limit` 重拉并在前端按 `sha` 稳定合并，避免提交新增导致 `--skip` 漂移重复。达到 `2000` 时置 `reachedSoftLimit: true` 提示缩小范围。 |
 | 提交正文 | `git ... --no-optional-locks show -s --format=%B --end-of-options <sha>` | 逐行提取末尾 `Co-authored-by: Name <email>`（大小写不敏感）至 `coAuthors[]`，其余文本归入 `body`。 |
 | 提交文件清单 | `git ... --no-optional-locks show --name-status -M -m --first-parent --format= -z --end-of-options <sha>` | 根提交与 Merge Commit 均稳定输出标准状态，空提交返回空 Buffer 解析为 `files: []`。普通项占 2 token（`<status>`, `<path>`），`R*`/`C*` 重命名复制项占 3 token（`<status>`, **`origPath` 在前、`newPath` 在后**，与 `status -z` 相反）。对每个最终路径检查 `existsSync` 返回 `existsInWorktree`。 |
-| 提交改动统计 | `git ... --no-optional-locks show --numstat -M -m --first-parent --format= -z --end-of-options <sha>` | 每个文件一条 `<增>\t<删>\t<路径>`，汇总为 `stats.files`、`stats.insertions`、`stats.deletions`。重命名复制项的路径字段为空，源路径与新路径各占随后一个 token；二进制文件的增删为 `-`，只计入文件数。不用 `--shortstat`，因为它的文案会随 Git 界面语言翻译。numstat 要逐个比较文件内容，在 1120 个文件的提交上实测比 name-status 慢约 4 倍。numstat 单独超时（`GIT_TIMEOUT`）时 `stats` 为 `null`，正文与文件清单照常返回；其他错误仍让请求失败。 |
+| 提交改动统计 | `git ... --no-optional-locks show --numstat -M -m --first-parent --format= -z --end-of-options <sha>` | 每个文件一条 `<增>\t<删>\t<路径>`，汇总为 `stats.files`、`stats.insertions`、`stats.deletions`。重命名复制项的路径字段为空，源路径与新路径各占随后一个 token；二进制文件的增删为 `-`，只计入文件数。不用 `--shortstat`，因为它的文案会随 Git 界面语言翻译。numstat 要逐个比较文件内容，在 1120 个文件的提交上实测比 name-status 慢约 3 倍（约 370 ms 对 115 ms），所以由 `/api/commit/stats` 单独执行，不拖慢文件列表。 |
 | 暂存 | 单/多文件 `git add -- <paths>`；全部 `git add -A` | 走 Worktree 级写队列。 |
 | 取消暂存 | 有提交：`git restore --staged -- <paths>`（全部不传路径或传 `.`）；**unborn 仓库**：`git rm --cached -r -- <paths>` | 实测 unborn 仓库执行 `git restore --staged` 会报 `fatal: could not resolve 'HEAD'`，必须走 `git rm --cached`。 |
 | 放弃更改 | 已跟踪：`git restore --worktree -- <paths>`（批量 `git restore --worktree -- .`）；单文件未跟踪：`git clean -f -- <path>` | 仅还原工作区，保留已暂存改动（`MM` 态不伤暂存区）；批量绝不执行 `git clean`。 |
@@ -502,13 +502,13 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 ### 7.5 最小遮挡提交详情卡（`popover.js`、`markdown.js`）
 
-点击提交行行尾的「查看提交详情」按钮打开提交详情卡。点击卡片右上角的关闭按钮、再次点击「查看提交详情」按钮、点击卡片外部或按 `Escape` 关闭。关闭按钮在卡片内容滚动时始终停在右上角，作者行文字绕开它。悬停提交行不弹出卡片。卡片打开期间该行保持高亮。列表滚动、窗口缩放或后台刷新时卡片只跟随该行移动、不重建内容，卡片内的滚动位置、选中的文字与按钮焦点保持不变；只有详情加载完成、该提交的引用变化或切换界面语言时才重建。该行整行滚出图表可视区时卡片关闭，还露出一部分时保持打开。卡片的无障碍名称是提交标题。
+点击提交行行尾的「查看提交详情」按钮打开提交详情卡。点击卡片右上角的关闭按钮、再次点击「查看提交详情」按钮、点击卡片外部或按 `Escape` 关闭。关闭按钮在卡片内容滚动时始终停在右上角，作者行文字绕开它。悬停提交行不弹出卡片。卡片打开期间该行保持高亮。列表滚动、窗口缩放或后台刷新时卡片只跟随该行移动、不重建内容，卡片内的滚动位置、选中的文字与按钮焦点保持不变；只有详情或统计加载完成、该提交的引用变化或切换界面语言时才重建。该行整行滚出图表可视区时卡片关闭，还露出一部分时保持打开。卡片的无障碍名称是提交标题。
 
 卡片分区与 VS Code Git 扩展的提交悬浮卡一致，各区之间以横线分隔：
 
 1. **作者行**：账号图标、作者名（链接色粗体）、时钟图标、相对时间与长日期，如 `9 小时前 (2026年11月24日 11:21)`、`9 hours ago (November 24, 2026 at 11:21 AM)`。插件不联网获取头像，始终显示账号图标，与 VS Code 取不到头像时一致。每位共同作者另起一行，名字后标注「(共同作者)」。
 2. **提交说明**：标题与正文按 Markdown 渲染，分块规则取自 VS Code 的 `formatCommitMessage`。每行各自成块，空行处留出段落间距，围栏代码块与缩进代码块整体保留。支持标题、列表（含嵌套）、引用、分隔线、行内代码、粗体、斜体、删除线与链接。HTML 标签与图片语法按原文显示。链接文字里不再识别链接。链接只保留 `http`、`https`、`mailto` 三种协议，以新窗口打开，由宿主交给系统浏览器。渲染只创建 DOM 节点，不拼接 HTML 字符串。
-3. **改动统计**：相对第一父提交的改动，如 `已更改 6 个文件, 336 行插入(+), 78 行删除(-)`。插入、删除分别用 Git 新增、删除装饰色；为 0 的部分省略。详情加载完成前不显示这一区，提交说明下方显示「正在加载提交详情…」；统计超时（`stats: null`）时也不显示。
+3. **改动统计**：相对第一父提交的改动，如 `已更改 6 个文件, 336 行插入(+), 78 行删除(-)`。插入、删除分别用 Git 新增、删除装饰色；为 0 的部分省略。统计与详情分开请求，统计返回前不显示这一区，统计超时或失败时也不显示；详情返回前提交说明下方显示「正在加载提交详情…」。
 4. **引用**：提交上有引用时显示，样式同图表行的引用徽标。
 5. **SHA**：提交图标、短 SHA 与复制完整 SHA 按钮。
 

@@ -603,12 +603,13 @@ export async function queryCommitGraph(repoPath, options = {}) {
 }
 
 /**
- * 查询单个提交的详情正文、`Co-authored-by` 列表、改动文件清单与增删行数（统计超时时为 `null`），并校验文件是否仍存在于当前 Worktree。
+ * 查询单个提交的详情正文、`Co-authored-by` 列表与改动文件清单，并校验文件是否仍存在于当前 Worktree。
+ * 增删行数由 `queryCommitStats` 单独查询：numstat 比 name-status 慢数倍，放在一起会拖慢文件列表。
  *
  * @param {string} repoPath Repository 或 Worktree 目录路径
  * @param {string} sha 提交 SHA（7-64 位十六进制）
  * @param {{ worktreePath?: string | null, isBare?: boolean, timeoutMs?: number, runGitRead?: typeof runGitRead }} [options] 查询选项
- * @returns {Promise<{ sha: string, subject: string, body: string, coAuthors: Array<{ name: string, email: string }>, stats: { files: number, insertions: number, deletions: number } | null, files: Array<{ status: string, path: string, origPath: string | null, existsInWorktree: boolean, fileUri: string | null }> }>} 提交详情对象
+ * @returns {Promise<{ sha: string, subject: string, body: string, coAuthors: Array<{ name: string, email: string }>, files: Array<{ status: string, path: string, origPath: string | null, existsInWorktree: boolean, fileUri: string | null }> }>} 提交详情对象
  */
 export async function queryCommitDetail(repoPath, sha, options = {}) {
   if (typeof sha !== 'string' || !SHA_PATTERN.test(sha)) {
@@ -626,19 +627,10 @@ export async function queryCommitDetail(repoPath, sha, options = {}) {
     flags: ['--name-status', '-M', '-m', '--first-parent', '--format=', '-z'],
     refs: [sha],
   });
-  const numstatArgs = buildGitArgs('show', {
-    flags: ['--numstat', '-M', '-m', '--first-parent', '--format=', '-z'],
-    refs: [sha],
-  });
 
-  const [messageResult, filesResult, numstatResult] = await Promise.all([
+  const [messageResult, filesResult] = await Promise.all([
     runReadFn(messageArgs, { cwd: repoPath, timeoutMs: options.timeoutMs }),
     runReadFn(nameStatusArgs, { cwd: repoPath, timeoutMs: options.timeoutMs }),
-    // numstat 要逐个比较文件内容，比 name-status 慢数倍；超大提交超时时只省略统计，正文与文件清单照常返回
-    runReadFn(numstatArgs, { cwd: repoPath, timeoutMs: options.timeoutMs }).catch((error) => {
-      if (error instanceof AppError && error.code === ERROR_CODES.GIT_TIMEOUT) return null;
-      throw error;
-    }),
   ]);
 
   const { subject, body, coAuthors } = parseCommitMessageB(messageResult.stdout);
@@ -674,9 +666,30 @@ export async function queryCommitDetail(repoPath, sha, options = {}) {
     subject,
     body,
     coAuthors,
-    stats: numstatResult ? parseCommitNumstatZ(numstatResult.stdout) : null,
     files,
   };
+}
+
+/**
+ * 查询单个提交相对第一父提交的改动文件数与增删行数。
+ *
+ * @param {string} repoPath Repository 或 Worktree 目录路径
+ * @param {string} sha 提交 SHA（7-64 位十六进制）
+ * @param {{ timeoutMs?: number, runGitRead?: typeof runGitRead }} [options] 查询选项
+ * @returns {Promise<{ files: number, insertions: number, deletions: number }>} 改动统计；超大提交可能因超时抛出 `GIT_TIMEOUT`
+ */
+export async function queryCommitStats(repoPath, sha, options = {}) {
+  if (typeof sha !== 'string' || !SHA_PATTERN.test(sha)) {
+    throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Invalid commit SHA.');
+  }
+
+  const runReadFn = options.runGitRead ?? runGitRead;
+  const args = buildGitArgs('show', {
+    flags: ['--numstat', '-M', '-m', '--first-parent', '--format=', '-z'],
+    refs: [sha],
+  });
+  const result = await runReadFn(args, { cwd: repoPath, timeoutMs: options.timeoutMs });
+  return parseCommitNumstatZ(result.stdout);
 }
 
 /**

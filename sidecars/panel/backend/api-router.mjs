@@ -15,6 +15,7 @@ import {
   DEFAULT_GRAPH_LIMIT,
   discoverAndBuildSnapshotBase,
   queryCommitDetail,
+  queryCommitStats,
   queryWorktreeStatus,
   withHeadInfo,
 } from './git-queries.mjs';
@@ -28,6 +29,7 @@ export const API_ROUTES = Object.freeze([
   '/api/snapshot',
   '/api/status',
   '/api/commit/detail',
+  '/api/commit/stats',
   '/api/events/wait',
   '/api/changes/stage',
   '/api/changes/unstage',
@@ -457,7 +459,7 @@ export function createApiRouter(deps) {
     };
   };
 
-  const handleCommitDetail = async (rawBody, context) => {
+  const parseCommitRequest = (rawBody) => {
     const body = assertPlainObject(rawBody);
     const worktreePath = body.worktreePath == null ? null : assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
     const repoId = assertOptionalNonEmptyString(body.repoId, 'repoId');
@@ -467,7 +469,11 @@ export function createApiRouter(deps) {
     if (!SHA_PATTERN.test(sha)) {
       throw new AppError(ERROR_CODES.INVALID_REQUEST, 'sha must be a 7-64 character hexadecimal string.');
     }
+    return { worktreePath, repoId, workspaceUris, sha };
+  };
 
+  const handleCommitDetail = async (rawBody, context) => {
+    const { worktreePath, repoId, workspaceUris, sha } = parseCommitRequest(rawBody);
     if (context?.fixture === 'mock') {
       return mockFixture.getCommitDetail({ worktreePath, repoId, sha });
     }
@@ -478,6 +484,16 @@ export function createApiRouter(deps) {
       worktreePath: repo.worktreePath,
       isBare: repo.isBare,
     });
+  };
+
+  const handleCommitStats = async (rawBody, context) => {
+    const { worktreePath, repoId, workspaceUris, sha } = parseCommitRequest(rawBody);
+    if (context?.fixture === 'mock') {
+      return mockFixture.getCommitStats({ worktreePath, repoId, sha });
+    }
+
+    const repo = await resolveAuthorizedRepo({ worktreePath, repoId, workspaceUris, allowBare: true });
+    return queryCommitStats(repo.isBare ? repo.gitCommonDir : repo.worktreePath, sha);
   };
 
   const handleEventsWait = async (rawBody, context) => {
@@ -701,6 +717,7 @@ export function createApiRouter(deps) {
     ['/api/snapshot', handleSnapshot],
     ['/api/status', handleStatus],
     ['/api/commit/detail', handleCommitDetail],
+    ['/api/commit/stats', handleCommitStats],
     ['/api/events/wait', handleEventsWait],
     ['/api/changes/stage', handleStage],
     ['/api/changes/unstage', handleUnstage],
