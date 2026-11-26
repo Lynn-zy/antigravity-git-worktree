@@ -61,6 +61,7 @@ import {
 } from '../../sidecars/panel/public/modules/file-icon-map.js';
 import { computeToastPlacement } from '../../sidecars/panel/public/modules/toast.js';
 import { parseCommitMarkdown, parseInlineMarkdown } from '../../sidecars/panel/public/modules/markdown.js';
+import { CODICON_PATHS } from '../../sidecars/panel/public/modules/codicons.js';
 import fs from 'node:fs';
 
 /**
@@ -807,6 +808,49 @@ test('file-icons: 映射表引用的每个图标（含浅色变体）都随插�
     if (!shipped.has(name)) missing.push(name);
   }
   assert.deepEqual(missing, []);
+});
+
+// 图标名出现在 createIcon 的第一个参数、icon / iconName 属性或变量、*_ICON_BY_* 映射表里
+const ICON_EXPRESSION_START = /createIcon\(|\b(?:icon|iconName)\s*[:=](?!=)|_ICON_BY_[A-Z_]+\s*=/g;
+// 只取位于表达式开头或 `(`、`?`、`:`、`??` 之后的字符串，排除 `variant === 'danger'` 这类比较值与映射表的键
+const ICON_NAME_LITERAL = /(?:^|[(?:])\s*'([^']*)'/g;
+
+// 读到同层的 `,`、`;`、换行或外层右括号为止，跳过字符串里的符号
+const readExpression = (source, start) => {
+  let depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    const char = source[i];
+    if (char === "'" || char === '"' || char === '`') {
+      i = source.indexOf(char, i + 1);
+    } else if ('([{'.includes(char)) {
+      depth += 1;
+    } else if (')]}'.includes(char)) {
+      if (depth === 0) return source.slice(start, i);
+      depth -= 1;
+    } else if (depth === 0 && ',;\n'.includes(char)) {
+      return source.slice(start, i);
+    }
+  }
+  return source.slice(start);
+};
+
+test('codicons: 前端引用的图标名都在 CODICON_PATHS 里（写错会让 createIcon 抛错、面板空白），表里也没有不再使用的图标', () => {
+  const publicDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sidecars/panel/public');
+  const referenced = new Map();
+  for (const file of fs.readdirSync(publicDir, { recursive: true }).filter((name) => name.endsWith('.js'))) {
+    const source = fs.readFileSync(path.join(publicDir, file), 'utf8');
+    for (const start of source.matchAll(ICON_EXPRESSION_START)) {
+      const expression = readExpression(source, start.index + start[0].length);
+      for (const [, name] of expression.matchAll(ICON_NAME_LITERAL)) {
+        referenced.set(name, file);
+      }
+    }
+  }
+
+  const missing = [...referenced].filter(([name]) => !Object.hasOwn(CODICON_PATHS, name)).map(([name, file]) => `${file}: ${name}`);
+  assert.deepEqual(missing, [], '引用了 codicons.js 里没有的图标');
+  const unused = Object.keys(CODICON_PATHS).filter((name) => !referenced.has(name));
+  assert.deepEqual(unused, [], '这些图标已不再使用，从 scripts/gen-codicons.mjs 的 ICON_NAMES 里删掉并重新生成');
 });
 
 const text = (value) => ({ type: 'text', text: value });

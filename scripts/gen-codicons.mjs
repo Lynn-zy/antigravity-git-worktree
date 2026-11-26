@@ -15,7 +15,7 @@ const CODICONS_SHA = '8d1826a9bce0a52283ecaeb63499c149e97a4f14';
 const ICON_NAMES = [
   'chevron-down', 'chevron-right', 'git-branch', 'git-commit', 'target', 'cloud', 'cloud-upload', 'tag',
   'repo-fetch', 'repo-pull', 'repo-push', 'fold-down', 'refresh', 'ellipsis', 'check', 'discard', 'add', 'remove',
-  'go-to-file', 'file', 'copy', 'close', 'search', 'info', 'warning', 'error', 'account', 'history',
+  'go-to-file', 'copy', 'close', 'search', 'info', 'warning', 'error', 'account', 'history',
 ];
 
 const OUT_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../sidecars/panel/public/modules/codicons.js');
