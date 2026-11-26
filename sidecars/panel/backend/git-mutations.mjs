@@ -1,6 +1,6 @@
 import {
+  createWorktreePathResolver,
   normalizeFsPath,
-  resolvePathInsideWorktree,
 } from './discovery.mjs';
 import {
   queryRemotes,
@@ -45,10 +45,11 @@ function validateAndNormalizePaths(worktreePath, paths) {
   if (!Array.isArray(paths) || paths.length === 0) {
     throw new AppError(ERROR_CODES.INVALID_REQUEST, 'paths must be a non-empty array of relative file paths.');
   }
+  const resolvePath = createWorktreePathResolver(worktreePath);
   const seen = new Set();
   const normalizedPaths = [];
   for (const rawPath of paths) {
-    const resolved = resolvePathInsideWorktree(worktreePath, rawPath);
+    const resolved = resolvePath(rawPath);
     if (!seen.has(resolved.relativePath)) {
       seen.add(resolved.relativePath);
       normalizedPaths.push(resolved.relativePath);

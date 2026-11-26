@@ -141,6 +141,7 @@ Standalone 模式用于本地开发调试与自动化回归，支持以下配置
 2. 路径存在于磁盘时，调用 `fs.realpathSync.native(fsPath)` 展开符号链接/Junction 并获取 Windows 真实盘符大写与 NTFS 大小写。
 3. 路径不存在或不可达时，走非抛出兜底规范化：`path.win32.normalize()`（Windows）或 `path.normalize()`（POSIX），去掉非盘符根目录的末尾分隔符，Windows 下统一大写盘符。
 4. 路径比较键（`pathKey`）：Windows 统一转为正斜杠并小写化；POSIX 保持大小写敏感并规范斜杠。
+5. Worktree 内相对路径（变更列表与提交文件的链接、写操作的 `paths`）由 `createWorktreePathResolver(worktreePath)` 校验：拒绝空字节、控制字符、绝对路径、`..`，以及经符号链接或 Junction 指到 Worktree 外的路径（`OUT_OF_WORKTREE`）。每个请求建一个解析器：根目录真实路径只求一次，文件本身只做 `lstat`（是符号链接时才求它指向的真实路径），所在目录的真实路径在解析器内缓存。Windows 上 `realpath` 要打开文件句柄，逐个文件求真实路径会让 1120 个文件的提交详情多花约 700 ms、3000 条变更的 status 刷新多花约 1.7 s。文件是否存在也取自 `lstat` 结果，符号链接按指向判断。
 
 ### 4.2 Repository 发现与去重
 
@@ -377,7 +378,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 | 图谱（`自动`） | 非 unborn 时：`git ... --no-optional-locks log --topo-order --decorate=full -z -n <limit+1> --format=... --end-of-options HEAD [<upstream>]` | 若当前分支有上游跟踪分支则同时传入 `HEAD` 与 `<upstream>`，同时显示领先与落后分支；unborn 仓库跳过调用直接返回空数组。 |
 | 图谱分页 | 首屏 `limit = 150`，每加载一页 `+200`，硬上限 `2000` | 采用增大 `limit` 重拉并在前端按 `sha` 稳定合并，避免提交新增导致 `--skip` 漂移重复。达到 `2000` 时置 `reachedSoftLimit: true` 提示缩小范围。 |
 | 提交正文 | `git ... --no-optional-locks show -s --format=%B --end-of-options <sha>` | 逐行提取末尾 `Co-authored-by: Name <email>`（大小写不敏感）至 `coAuthors[]`，其余文本归入 `body`。 |
-| 提交文件清单 | `git ... --no-optional-locks show --name-status -M -m --first-parent --format= -z --end-of-options <sha>` | 根提交与 Merge Commit 均稳定输出标准状态，空提交返回空 Buffer 解析为 `files: []`。普通项占 2 token（`<status>`, `<path>`），`R*`/`C*` 重命名复制项占 3 token（`<status>`, **`origPath` 在前、`newPath` 在后**，与 `status -z` 相反）。对每个最终路径检查 `existsSync` 返回 `existsInWorktree`。 |
+| 提交文件清单 | `git ... --no-optional-locks show --name-status -M -m --first-parent --format= -z --end-of-options <sha>` | 根提交与 Merge Commit 均稳定输出标准状态，空提交返回空 Buffer 解析为 `files: []`。普通项占 2 token（`<status>`, `<path>`），`R*`/`C*` 重命名复制项占 3 token（`<status>`, **`origPath` 在前、`newPath` 在后**，与 `status -z` 相反）。每个最终路径经 Worktree 路径解析器校验（见 4.1），并由它返回 `existsInWorktree`。 |
 | 提交改动统计 | `git ... --no-optional-locks show --numstat -M -m --first-parent --format= -z --end-of-options <sha>` | 每个文件一条 `<增>\t<删>\t<路径>`，汇总为 `stats.files`、`stats.insertions`、`stats.deletions`。重命名复制项的路径字段为空，源路径与新路径各占随后一个 token；二进制文件的增删为 `-`，只计入文件数。不用 `--shortstat`，因为它的文案会随 Git 界面语言翻译。numstat 要逐个比较文件内容，在 1120 个文件的提交上实测比 name-status 慢约 3 倍（约 370 ms 对 115 ms），所以由 `/api/commit/stats` 单独执行，不拖慢文件列表。 |
 | 暂存 | 单/多文件 `git add -- <paths>`；全部 `git add -A` | 走 Worktree 级写队列。 |
 | 取消暂存 | 有提交：`git restore --staged -- <paths>`（全部不传路径或传 `.`）；**unborn 仓库**：`git rm --cached -r -- <paths>` | 实测 unborn 仓库执行 `git restore --staged` 会报 `fatal: could not resolve 'HEAD'`，必须走 `git rm --cached`。 |

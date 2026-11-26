@@ -1645,6 +1645,39 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { description: 'scrolling to the bottom renders the last unstaged row' },
   );
 
+  // 尾部刷新按钮发起一次强制快照；变更仍超过上限时提示条保留
+  const snapshotsBeforeBannerClick = await page.evaluate(snapshotCount);
+  await page.clickSelector('[data-testid="watch-degraded-refresh-btn"]');
+  await page.waitFor(`${snapshotCount} > ${snapshotsBeforeBannerClick}`, {
+    description: 'trailing refresh button triggers a snapshot',
+    timeoutMs: 15_000,
+  });
+  await page.evaluate('new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+  assert.equal(
+    await page.evaluate('Boolean(document.querySelector("[data-testid=watch-degraded-banner]"))'),
+    true,
+    '变更仍超过 5000 条时刷新后提示条应保留',
+  );
+
+  // 删除后变更回落到上限以下，提示条消失。此前排队的刷新可能在删除期间完成并自动恢复，提示条仍在时再点一次刷新
+  for (const filePath of bulkFiles) {
+    fs.rmSync(filePath, { force: true });
+  }
+  await page.evaluate('document.querySelector("[data-testid=watch-degraded-refresh-btn]")?.click()');
+  await page.waitFor(
+    'document.getElementById("global-banners").classList.contains("hidden") && !document.querySelector("[data-testid=watch-degraded-banner]")',
+    { description: 'banner cleared once changes drop below the limit', timeoutMs: 15_000 },
+  );
+
+  // 在 600 个文件的长列表（超过 500 行只渲染可视区附近）上验证滚动位置、键盘暂存与焦点交接。
+  // 和上面的「变更过多」分开：这里的暂存与取消暂存会触发自动刷新，不能干扰提示条与刷新按钮的断言
+  const vlistFiles = Array.from({ length: 600 }, (_, i) => path.join(fixtures.repoA, `vlist-${String(i).padStart(4, '0')}.txt`));
+  for (const filePath of vlistFiles) {
+    fs.writeFileSync(filePath, 'vlist\n', 'utf8');
+  }
+  const unstagedCountExpr = 'Number(document.querySelector(\'[data-testid="changes-group-unstaged"] .gw-count-badge\')?.textContent ?? 0)';
+  await page.waitFor(`${unstagedCountExpr} >= 600`, { description: 'long list of 600 files rendered', timeoutMs: 20_000 });
+
   // 长列表滚到中部后刷新：滚动位置与首个可见行不变
   const nextFrames = 'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))';
   const groupsScrollState = `(() => {
@@ -1653,7 +1686,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     const firstRow = [...el.querySelectorAll('[data-testid="change-file-unstaged"]')].find((row) => row.getBoundingClientRect().top >= top);
     return { scrollTop: el.scrollTop, firstVisiblePath: firstRow?.dataset.filePath ?? null };
   })()`;
-  await page.evaluate('(() => { document.querySelector("[data-testid=changes-groups]").scrollTop = 50000; })()');
+  await page.evaluate('(() => { document.querySelector("[data-testid=changes-groups]").scrollTop = 6000; })()');
   await page.evaluate(nextFrames);
   const scrollBeforeRefresh = await page.evaluate(groupsScrollState);
   // 给当前列表元素打标记，标记消失说明列表已整体重建
@@ -1701,7 +1734,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       focusVisible: active.matches(':focus-visible'),
       // 滚动位置可能是小数像素，留 1px 容差
       fullyVisible: rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1,
-      nearPreviousScroll: el.scrollTop > 40000,
+      nearPreviousScroll: el.scrollTop > 4000,
     };
   })()`);
   assert.deepEqual(focusAfterStage, {
@@ -1713,7 +1746,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   });
 
   // 带焦点的行滚出渲染窗口后焦点留在列表上；下一次 Tab 进入可视区第一行，列表不跳动
-  await page.evaluate('(() => { document.querySelector("[data-testid=changes-groups]").scrollTop = 10000; })()');
+  await page.evaluate('(() => { document.querySelector("[data-testid=changes-groups]").scrollTop = 2000; })()');
   await page.evaluate(nextFrames);
   assert.equal(await page.evaluate('document.activeElement?.dataset?.focusId ?? document.activeElement?.tagName'), 'list:unstaged');
   await page.pressKey('Tab', 'Tab', 9);
@@ -1728,17 +1761,12 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
       scrollTop: el.scrollTop,
     };
   })()`);
-  assert.deepEqual(focusAfterListTab, { group: 'unstaged', fullyVisible: true, scrollTop: 10000 });
+  assert.deepEqual(focusAfterListTab, { group: 'unstaged', fullyVisible: true, scrollTop: 2000 });
   await execGit(['reset', '-q', '--', stageTarget.path], fixtures.repoA);
-
-  for (const filePath of bulkFiles) {
+  for (const filePath of vlistFiles) {
     fs.rmSync(filePath, { force: true });
   }
-  await page.clickSelector('[data-testid="watch-degraded-refresh-btn"]');
-  await page.waitFor(
-    'document.getElementById("global-banners").classList.contains("hidden") && !document.querySelector("[data-testid=watch-degraded-banner]")',
-    { description: 'banner cleared after clicking trailing refresh button', timeoutMs: 15_000 },
-  );
+  await page.waitFor(`${unstagedCountExpr} < 100`, { description: 'long list files removed', timeoutMs: 20_000 });
 
   const sceneAErrors = page.getErrors();
   assert.deepEqual(sceneAErrors.consoleErrors, [], `Scenario A had console errors: ${sceneAErrors.consoleErrors.join('; ')}`);

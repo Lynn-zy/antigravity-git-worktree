@@ -4,12 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  createWorktreePathResolver,
   discoverRepositories,
   isPathInside,
   normalizeFsPath,
   normalizeWorkspaceUri,
   probeWorkspaceGitRoot,
-  resolvePathInsideWorktree,
   toFileUri,
   toPathKey,
 } from '../../sidecars/panel/backend/discovery.mjs';
@@ -216,7 +216,7 @@ test('normalizeWorkspaceUri / normalizeFsPath / toPathKey / isPathInside 边界�
   assert.equal(isPathInside('D:/repo', 'D:/repo-wt', { resolveRealpath: false, platform: 'win32' }), false);
 });
 
-test('resolvePathInsideWorktree 拒绝空字节、控制字符、绝对路径、.. 与符号链接逃逸', (t) => {
+test('createWorktreePathResolver 拒绝空字节、控制字符、绝对路径、.. 与符号链接逃逸，并报告目标是否存在', (t) => {
   const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'm1-path-sec-'));
   const worktreeDir = path.join(sandbox, 'wt');
   const outsideDir = path.join(sandbox, 'outside');
@@ -229,50 +229,82 @@ test('resolvePathInsideWorktree 拒绝空字节、控制字符、绝对路径、
     fs.rmSync(sandbox, { recursive: true, force: true });
   });
 
-  const valid = resolvePathInsideWorktree(worktreeDir, 'src/中文 文件.txt');
+  // 同一个解析器贯穿整个用例：先校验过的目录被缓存，不能掩盖之后才出现的逃逸目录
+  const resolvePath = createWorktreePathResolver(worktreeDir);
+  const valid = resolvePath('src/中文 文件.txt');
   assert.equal(valid.relativePath, 'src/中文 文件.txt');
   assert.equal(valid.fileUri, toFileUri(valid.fullPath));
+  assert.equal(valid.exists, true);
 
-  const validDash = resolvePathInsideWorktree(worktreeDir, '-weird.txt');
+  const validDash = resolvePath('-weird.txt');
   assert.equal(validDash.relativePath, '-weird.txt');
+  assert.equal(validDash.exists, false);
+  assert.equal(resolvePath('src/deleted/gone.txt').exists, false);
 
   assert.throws(
-    () => resolvePathInsideWorktree(worktreeDir, ''),
+    () => resolvePath(''),
     (err) => err instanceof AppError && err.code === ERROR_CODES.INVALID_REQUEST
   );
   assert.throws(
-    () => resolvePathInsideWorktree(worktreeDir, 'a\0b.txt'),
+    () => resolvePath('a\0b.txt'),
     (err) => err instanceof AppError && err.code === ERROR_CODES.INVALID_REQUEST
   );
   assert.throws(
-    () => resolvePathInsideWorktree(worktreeDir, 'a\nb.txt'),
+    () => resolvePath('a\nb.txt'),
     (err) => err instanceof AppError && err.code === ERROR_CODES.INVALID_REQUEST
   );
   assert.throws(
-    () => resolvePathInsideWorktree(worktreeDir, '.'),
+    () => resolvePath('.'),
     (err) => err instanceof AppError && err.code === ERROR_CODES.INVALID_REQUEST
   );
 
   for (const escapePath of ['../outside/secret.txt', 'src/../../outside/secret.txt', '/etc/passwd', 'C:\\Windows\\win.ini', 'D:relative.txt', '\\\\server\\share\\x']) {
     assert.throws(
-      () => resolvePathInsideWorktree(worktreeDir, escapePath),
+      () => resolvePath(escapePath),
       (err) => err instanceof AppError && err.code === ERROR_CODES.OUT_OF_WORKTREE,
       `Expected OUT_OF_WORKTREE for ${escapePath}`
     );
   }
 
+  // escape-dir 此刻还不存在，解析它下面的路径不能把它记成已校验，否则之后建成外部链接也会被放行
+  assert.equal(resolvePath('escape-dir/probe.txt').exists, false);
   const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
-  const linkDir = path.join(worktreeDir, 'escape-dir');
-  fs.symlinkSync(outsideDir, linkDir, symlinkType);
+  fs.symlinkSync(outsideDir, path.join(worktreeDir, 'escape-dir'), symlinkType);
 
   assert.throws(
-    () => resolvePathInsideWorktree(worktreeDir, 'escape-dir/secret.txt'),
+    () => resolvePath('escape-dir/secret.txt'),
     (err) => err instanceof AppError && err.code === ERROR_CODES.OUT_OF_WORKTREE
   );
   assert.throws(
-    () => resolvePathInsideWorktree(worktreeDir, 'escape-dir/nonexistent-deep/file.txt'),
+    () => resolvePath('escape-dir/nonexistent-deep/file.txt'),
     (err) => err instanceof AppError && err.code === ERROR_CODES.OUT_OF_WORKTREE
   );
+  assert.throws(
+    () => resolvePath('escape-dir'),
+    (err) => err instanceof AppError && err.code === ERROR_CODES.OUT_OF_WORKTREE,
+    '指向 Worktree 外的符号链接本身也要拒绝'
+  );
+
+  // 指向外部的链接即使目标已删除（悬空），无论作为文件本身还是中间目录都要拒绝
+  const goneOutside = path.join(sandbox, 'gone-outside');
+  fs.mkdirSync(goneOutside);
+  fs.symlinkSync(goneOutside, path.join(worktreeDir, 'dangling-out'), symlinkType);
+  fs.rmSync(goneOutside, { recursive: true });
+  for (const danglingPath of ['dangling-out', 'dangling-out/file.txt']) {
+    assert.throws(
+      () => resolvePath(danglingPath),
+      (err) => err instanceof AppError && err.code === ERROR_CODES.OUT_OF_WORKTREE,
+      `Expected OUT_OF_WORKTREE for ${danglingPath}`
+    );
+  }
+
+  // 指向 Worktree 内的链接放行；目标被删除后成为悬空链接，按不存在处理
+  const innerTarget = path.join(worktreeDir, 'inner-target');
+  fs.mkdirSync(innerTarget);
+  fs.symlinkSync(innerTarget, path.join(worktreeDir, 'inner-link'), symlinkType);
+  assert.equal(resolvePath('inner-link').exists, true);
+  fs.rmSync(innerTarget, { recursive: true });
+  assert.equal(resolvePath('inner-link').exists, false);
 });
 
 test('discovery 两阶段 rev-parse 不含 --show-toplevel 且兼容 Git <2.31 缺少 --path-format=absolute', async (t) => {

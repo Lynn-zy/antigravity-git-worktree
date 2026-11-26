@@ -138,133 +138,130 @@ export function isPathInside(parentPath, childPath, options = {}) {
   return childKey.startsWith(prefix);
 }
 
-function assertNoSymlinkEscape(candidatePath, rootPath, rootRealPath, segmentCount) {
-  try {
-    const stat = fs.lstatSync(candidatePath);
-    if (stat.isSymbolicLink()) {
-      let targetReal;
-      try {
-        targetReal = fs.realpathSync.native(candidatePath);
-      } catch {
-        const rawTarget = fs.readlinkSync(candidatePath);
-        targetReal = path.resolve(path.dirname(candidatePath), rawTarget);
-      }
-      if (!isPathInside(rootRealPath, targetReal, { resolveRealpath: false })) {
-        throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Target symlink resolves outside the active worktree.');
-      }
-    }
-  } catch (error) {
-    if (error instanceof AppError) {
-      throw error;
-    }
-  }
-
-  let current = candidatePath;
-  for (let step = 0; step <= segmentCount + 1; step += 1) {
-    try {
-      const realAncestor = fs.realpathSync.native(current);
-      if (!isPathInside(rootRealPath, realAncestor, { resolveRealpath: false })) {
-        throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Path traverses through a symlink outside the active worktree.');
-      }
-      return;
-    } catch (error) {
-      if (error instanceof AppError) {
-        throw error;
-      }
-      // 悬空目录符号链接会导致 realpathSync 抛 ENOENT，需额外读取其 link 目标防绕过
-      try {
-        const lstat = fs.lstatSync(current);
-        if (lstat.isSymbolicLink()) {
-          const linkTarget = path.resolve(path.dirname(current), fs.readlinkSync(current));
-          if (!isPathInside(rootRealPath, linkTarget, { resolveRealpath: false })) {
-            throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Path traverses through a dangling symlink outside worktree.');
-          }
-          return;
-        }
-      } catch (lstatError) {
-        if (lstatError instanceof AppError) {
-          throw lstatError;
-        }
-      }
-    }
-
-    if (toPathKey(current, { resolveRealpath: false }) === toPathKey(rootPath, { resolveRealpath: false })) {
-      return;
-    }
-    const parent = path.dirname(current);
-    if (parent === current) {
-      return;
-    }
-    current = parent;
-  }
-}
-
 /**
- * 校验并解析位于指定 Worktree 根目录内的相对路径，拒绝空字节、控制字符、绝对路径、`..` 与符号链接逃逸。
- * 供查询层与 M2 写操作层共同复用，越界时抛出 `OUT_OF_WORKTREE` 错误。
+ * 为同一 Worktree 内的一批相对路径创建校验解析器，拒绝空字节、控制字符、绝对路径、`..` 与符号链接逃逸，越界时抛出 `OUT_OF_WORKTREE`。
+ * 根目录的真实路径在创建时只求一次，各级目录的校验结果在解析器内缓存：Windows 上 realpath 要打开文件句柄，
+ * 逐个文件求真实路径会让上千个文件的列表多花数百毫秒。缓存假设一次请求期间目录结构不变，因此每个请求各建一个解析器。
  *
  * @param {string} worktreePath Worktree 根目录路径
- * @param {string} relPath 待校验的相对路径
- * @param {{ allowRoot?: boolean }} [options] 选项（默认禁止指向 Worktree 根本身）
- * @returns {{ fullPath: string, relativePath: string, fileUri: string }} 校验后的绝对路径、POSIX 相对路径与 file URI
+ * @returns {(relPath: string) => { fullPath: string, relativePath: string, fileUri: string, exists: boolean }}
+ *   解析函数：返回校验后的绝对路径、POSIX 相对路径、file URI，以及目标是否存在（符号链接按指向判断，悬空链接视为不存在）
  */
-export function resolvePathInsideWorktree(worktreePath, relPath, options = {}) {
+export function createWorktreePathResolver(worktreePath) {
   const normalizedRoot = normalizeFsPath(worktreePath);
   if (!normalizedRoot) {
     throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Invalid worktreePath.');
   }
-  if (typeof relPath !== 'string' || relPath.length === 0 || CONTROL_CHAR_PATTERN.test(relPath)) {
-    throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Relative path must be a non-empty string without control characters.');
-  }
-
-  if (
-    relPath.startsWith('/') ||
-    relPath.startsWith('\\') ||
-    /^[A-Za-z]:/.test(relPath) ||
-    path.isAbsolute(relPath) ||
-    path.win32.isAbsolute(relPath) ||
-    path.posix.isAbsolute(relPath)
-  ) {
-    throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Absolute paths are not allowed inside worktree scope.');
-  }
-
-  const rawSegments = relPath.split(/[\\/]+/);
-  const cleanSegments = [];
-  for (const segment of rawSegments) {
-    if (segment === '' || segment === '.') {
-      continue;
-    }
-    if (segment === '..') {
-      throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Path traversal ("..") outside worktree is forbidden.');
-    }
-    cleanSegments.push(segment);
-  }
-
-  if (cleanSegments.length === 0) {
-    if (options.allowRoot) {
-      return {
-        fullPath: normalizedRoot,
-        relativePath: '.',
-        fileUri: toFileUri(normalizedRoot),
-      };
-    }
-    throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Relative file path must target a file inside the worktree.');
-  }
-
-  const relativePath = cleanSegments.join('/');
-  const candidatePath = path.join(normalizedRoot, ...cleanSegments);
-  if (!isPathInside(normalizedRoot, candidatePath, { resolveRealpath: false })) {
-    throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Resolved path escapes worktree boundary.');
-  }
-
   const rootRealPath = normalizeFsPath(normalizedRoot, { resolveRealpath: true }) ?? normalizedRoot;
-  assertNoSymlinkEscape(candidatePath, normalizedRoot, rootRealPath, cleanSegments.length);
+  const rootKey = toPathKey(normalizedRoot, { resolveRealpath: false });
+  const assertTargetInside = (targetPath, message) => {
+    if (!isPathInside(rootRealPath, targetPath, { resolveRealpath: false })) {
+      throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, message);
+    }
+  };
+  // 悬空符号链接按它记录的目标判断；读不出目标时无法确认没有越界，按越界处理
+  const readLinkTarget = (linkPath) => {
+    try {
+      return path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath));
+    } catch {
+      throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Cannot read symlink target.');
+    }
+  };
 
-  const normalizedFullPath = normalizeFsPath(candidatePath, { resolveRealpath: false }) ?? candidatePath;
-  return {
-    fullPath: normalizedFullPath,
-    relativePath,
-    fileUri: toFileUri(normalizedFullPath),
+  // 目录存在时它的真实路径须在 Worktree 内；不存在时检查悬空符号链接的目标，再逐级向上，直到根目录。
+  // 只缓存已确认存在的目录：此刻不存在的目录之后可能被建成指向外部的链接
+  const verifiedDirs = new Set();
+  const assertDirectoryInside = (dirPath) => {
+    if (verifiedDirs.has(dirPath)) {
+      return;
+    }
+    let realDir = null;
+    try {
+      realDir = fs.realpathSync.native(dirPath);
+    } catch {
+      // 目录不存在或是悬空符号链接
+    }
+    if (realDir) {
+      assertTargetInside(realDir, 'Path traverses through a symlink outside the active worktree.');
+      verifiedDirs.add(dirPath);
+      return;
+    }
+    let lstat = null;
+    try {
+      lstat = fs.lstatSync(dirPath);
+    } catch {
+      // 目录不存在
+    }
+    if (lstat?.isSymbolicLink()) {
+      assertTargetInside(readLinkTarget(dirPath), 'Path traverses through a dangling symlink outside worktree.');
+    } else if (toPathKey(dirPath, { resolveRealpath: false }) !== rootKey && path.dirname(dirPath) !== dirPath) {
+      assertDirectoryInside(path.dirname(dirPath));
+    }
+  };
+
+  return (relPath) => {
+    if (typeof relPath !== 'string' || relPath.length === 0 || CONTROL_CHAR_PATTERN.test(relPath)) {
+      throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Relative path must be a non-empty string without control characters.');
+    }
+
+    if (
+      relPath.startsWith('/') ||
+      relPath.startsWith('\\') ||
+      /^[A-Za-z]:/.test(relPath) ||
+      path.isAbsolute(relPath) ||
+      path.win32.isAbsolute(relPath) ||
+      path.posix.isAbsolute(relPath)
+    ) {
+      throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Absolute paths are not allowed inside worktree scope.');
+    }
+
+    const cleanSegments = [];
+    for (const segment of relPath.split(/[\\/]+/)) {
+      if (segment === '' || segment === '.') {
+        continue;
+      }
+      if (segment === '..') {
+        throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Path traversal ("..") outside worktree is forbidden.');
+      }
+      cleanSegments.push(segment);
+    }
+    if (cleanSegments.length === 0) {
+      throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Relative file path must target a file inside the worktree.');
+    }
+
+    const relativePath = cleanSegments.join('/');
+    const candidatePath = path.join(normalizedRoot, ...cleanSegments);
+    if (!isPathInside(normalizedRoot, candidatePath, { resolveRealpath: false })) {
+      throw new AppError(ERROR_CODES.OUT_OF_WORKTREE, 'Resolved path escapes worktree boundary.');
+    }
+
+    // lstat 不打开文件句柄，比 realpath 快一两个数量级；只有目标本身是符号链接时才求它指向的真实路径
+    let stat = null;
+    try {
+      stat = fs.lstatSync(candidatePath);
+    } catch {
+      // 文件不存在
+    }
+    let exists = stat !== null;
+    if (stat?.isSymbolicLink()) {
+      let targetReal = null;
+      try {
+        targetReal = fs.realpathSync.native(candidatePath);
+      } catch {
+        // 悬空符号链接
+      }
+      assertTargetInside(targetReal ?? readLinkTarget(candidatePath), 'Target symlink resolves outside the active worktree.');
+      exists = targetReal !== null;
+    }
+    assertDirectoryInside(path.dirname(candidatePath));
+
+    const normalizedFullPath = normalizeFsPath(candidatePath, { resolveRealpath: false }) ?? candidatePath;
+    return {
+      fullPath: normalizedFullPath,
+      relativePath,
+      fileUri: toFileUri(normalizedFullPath),
+      exists,
+    };
   };
 }
 

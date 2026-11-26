@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
-import fs from 'node:fs';
 import {
+  createWorktreePathResolver,
   discoverRepositories,
   parseWorktreeListPorcelainZ,
-  resolvePathInsideWorktree,
   toPathKey,
 } from './discovery.mjs';
 import {
@@ -46,12 +45,12 @@ function splitAfterSpaces(token, fieldCount) {
   return { fields, tail: token.slice(start) };
 }
 
-function resolveChangeFileUri(worktreePath, relPath) {
-  if (!worktreePath) {
+function resolveChangeFileUri(resolvePath, relPath) {
+  if (!resolvePath) {
     return null;
   }
   try {
-    return resolvePathInsideWorktree(worktreePath, relPath).fileUri;
+    return resolvePath(relPath).fileUri;
   } catch {
     return null;
   }
@@ -107,6 +106,7 @@ export function createStatusParser(options = {}) {
     isDetached: false,
     stashCount: 0,
   };
+  const resolvePath = worktreePath ? createWorktreePathResolver(worktreePath) : null;
   const conflicted = [];
   const staged = [];
   const unstaged = [];
@@ -130,7 +130,7 @@ export function createStatusParser(options = {}) {
     }
     const [indexStatus, worktreeStatus] = parsed.fields[1];
     const newPath = parsed.tail;
-    const fileUri = resolveChangeFileUri(worktreePath, newPath);
+    const fileUri = resolveChangeFileUri(resolvePath, newPath);
     if (indexStatus !== '.') {
       appendItem(staged, { path: newPath, origPath, status: indexStatus, fileUri });
     }
@@ -160,7 +160,7 @@ export function createStatusParser(options = {}) {
       }
       const [indexStatus, worktreeStatus] = parsed.fields[1];
       const filePath = parsed.tail;
-      const fileUri = resolveChangeFileUri(worktreePath, filePath);
+      const fileUri = resolveChangeFileUri(resolvePath, filePath);
       if (indexStatus !== '.') {
         appendItem(staged, { path: filePath, origPath: null, status: indexStatus, fileUri });
       }
@@ -183,7 +183,7 @@ export function createStatusParser(options = {}) {
         path: parsed.tail,
         origPath: null,
         status: parsed.fields[1],
-        fileUri: resolveChangeFileUri(worktreePath, parsed.tail),
+        fileUri: resolveChangeFileUri(resolvePath, parsed.tail),
       });
       return;
     }
@@ -194,7 +194,7 @@ export function createStatusParser(options = {}) {
         origPath: null,
         status: 'U',
         untracked: true,
-        fileUri: resolveChangeFileUri(worktreePath, filePath),
+        fileUri: resolveChangeFileUri(resolvePath, filePath),
       });
     }
   };
@@ -636,8 +636,9 @@ export async function queryCommitDetail(repoPath, sha, options = {}) {
   const { subject, body, coAuthors } = parseCommitMessageB(messageResult.stdout);
   const rawFiles = parseCommitNameStatusZ(filesResult.stdout);
 
+  const resolvePath = effectiveWorktreePath ? createWorktreePathResolver(effectiveWorktreePath) : null;
   const files = rawFiles.map((entry) => {
-    if (!effectiveWorktreePath) {
+    if (!resolvePath) {
       return {
         ...entry,
         existsInWorktree: false,
@@ -645,12 +646,11 @@ export async function queryCommitDetail(repoPath, sha, options = {}) {
       };
     }
     try {
-      const resolved = resolvePathInsideWorktree(effectiveWorktreePath, entry.path);
-      const existsInWorktree = fs.existsSync(resolved.fullPath);
+      const resolved = resolvePath(entry.path);
       return {
         ...entry,
-        existsInWorktree,
-        fileUri: existsInWorktree ? resolved.fileUri : null,
+        existsInWorktree: resolved.exists,
+        fileUri: resolved.exists ? resolved.fileUri : null,
       };
     } catch {
       return {
