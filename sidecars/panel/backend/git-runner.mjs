@@ -627,7 +627,7 @@ function spawnGitProcess(args, options = {}) {
       return;
     }
 
-    const terminateChildTree = (onTerminated) => {
+    const terminateChildTree = (onTerminated, { includeDescendants = true } = {}) => {
       let finished = false;
       const done = () => {
         if (finished) {
@@ -642,8 +642,24 @@ function spawnGitProcess(args, options = {}) {
       const safetyTimer = setTimeout(done, 1500);
       safetyTimer.unref?.();
 
+      const killChildOnly = () => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // 忽略进程已退出错误
+        }
+        child.once('close', () => {
+          clearTimeout(safetyTimer);
+          done();
+        });
+      };
+
       if (process.platform === 'win32' && child.pid) {
-        // Windows 下 git 会拉起 git-remote-http 等子进程，需整棵进程树强杀以释放目录与锁句柄
+        if (!includeDescendants) {
+          killChildOnly();
+          return;
+        }
+        // Windows 下 git 会拉起 git-remote-http、hook 等子进程，需整棵进程树强杀以释放目录与锁句柄
         try {
           const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
             shell: false,
@@ -654,27 +670,9 @@ function spawnGitProcess(args, options = {}) {
             clearTimeout(safetyTimer);
             done();
           });
-          killer.once('error', () => {
-            try {
-              child.kill('SIGKILL');
-            } catch {
-              // 忽略进程已退出错误
-            }
-            child.once('close', () => {
-              clearTimeout(safetyTimer);
-              done();
-            });
-          });
+          killer.once('error', killChildOnly);
         } catch {
-          try {
-            child.kill('SIGKILL');
-          } catch {
-            // 忽略进程已退出错误
-          }
-          child.once('close', () => {
-            clearTimeout(safetyTimer);
-            done();
-          });
+          killChildOnly();
         }
         return;
       }
@@ -729,6 +727,9 @@ function spawnGitProcess(args, options = {}) {
       if (onStdout) {
         if (onStdout(chunk)) {
           stopped = true;
+          // 只有只读的 git status 会提前结束。Windows 上只结束直接启动的进程，不调用 taskkill：
+          // PATH 指向 mingw64 的 git 时立即结束；指向 Git\cmd 启动器时，真正的 git 仍持有输出管道，
+          // close 要等它写完退出，耗时与 git 跑完相当。两种情况都比 taskkill /T 快（启动器下实测 0.25–0.3s 对 1.1–1.5s）
           terminateChildTree(() => {
             const stderr = Buffer.concat(stderrChunks);
             settleOnce(resolve, {
@@ -738,7 +739,7 @@ function spawnGitProcess(args, options = {}) {
               stdoutText: '',
               stderrText: stderr.toString('utf8'),
             });
-          });
+          }, { includeDescendants: false });
         }
         return;
       }
@@ -840,7 +841,8 @@ function runInConfiguredWriteQueue(options, task) {
 /**
  * 在全局只读并发池中安全执行只读 Git 命令。
  * 自动注入 `--no-optional-locks`、`GIT_OPTIONAL_LOCKS=0` 与 10s 默认硬超时。
- * 传入 `onStdout` 时 stdout 不再缓冲，按块交给回调消费；回调返回 true 时立即结束 git 进程树，
+ * 传入 `onStdout` 时 stdout 不再缓冲，按块交给回调消费；回调返回 true 时立即结束 git 进程
+ * （Windows 上只结束直接启动的进程，POSIX 上结束整个进程组），
  * 结果中 `exitCode` 为 null、`stdout` 为空。
  *
  * @param {string[]} args 子命令及参数列表
