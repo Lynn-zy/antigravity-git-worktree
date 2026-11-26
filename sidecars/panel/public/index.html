@@ -12,15 +12,21 @@
   <main id="app" class="gw-pane" data-testid="app-pane">
     <!-- 多仓库顶部切换条：仅在命中 2 个及以上仓库时显示 -->
     <header id="repo-bar" class="gw-repo-bar hidden" data-testid="repo-bar">
-      <div class="gw-repo-select-wrap">
-        <span id="repo-bar-icon" class="gw-repo-bar-icon" aria-hidden="true"></span>
+      <!-- 可见部分只显示仓库名；透明的原生 select 盖在上面负责点击、键盘与读屏 -->
+      <div class="gw-repo-picker">
+        <span id="repo-bar-icon" class="gw-repo-picker-icon" aria-hidden="true"></span>
+        <span id="repo-name" class="gw-repo-name" aria-hidden="true"></span>
+        <span id="repo-chevron" class="gw-repo-picker-icon" aria-hidden="true"></span>
         <select
           id="repo-select"
           class="gw-repo-select"
           data-testid="repo-select"
         ></select>
       </div>
-      <span id="repo-branch-meta" class="gw-repo-branch-meta" data-testid="repo-branch-meta"></span>
+      <span id="repo-branch-meta" class="gw-repo-branch-meta" data-testid="repo-branch-meta">
+        <span id="repo-branch-icon" class="gw-repo-picker-icon" aria-hidden="true"></span>
+        <span id="repo-branch-text" class="gw-repo-branch-text"></span>
+      </span>
     </header>
 
     <!-- 全局状态横幅（如文件监听风暴降级告警） -->

@@ -172,8 +172,12 @@ const bootstrapPanel = () => {
 
   const repoBarEl = document.getElementById('repo-bar');
   const repoBarIconEl = document.getElementById('repo-bar-icon');
+  const repoNameEl = document.getElementById('repo-name');
+  const repoChevronEl = document.getElementById('repo-chevron');
   const repoSelectEl = document.getElementById('repo-select');
   const repoBranchMetaEl = document.getElementById('repo-branch-meta');
+  const repoBranchIconEl = document.getElementById('repo-branch-icon');
+  const repoBranchTextEl = document.getElementById('repo-branch-text');
   const globalBannersEl = document.getElementById('global-banners');
   const loadingStateEl = document.getElementById('loading-state');
   const loadingStateTextEl = document.getElementById('loading-state-text');
@@ -206,7 +210,9 @@ const bootstrapPanel = () => {
   const modalDialogEl = document.getElementById('modal-dialog');
   const toastContainerEl = document.getElementById('toast-container');
 
-  repoBarIconEl.replaceChildren(createIcon('gitBranch'));
+  repoBarIconEl.replaceChildren(createIcon('repo'));
+  repoChevronEl.replaceChildren(createIcon('chevronDown'));
+  repoBranchIconEl.replaceChildren(createIcon('gitBranch'));
   emptyStateIconEl.replaceChildren(createIcon('gitBranch'));
 
   const localPrefs = safeReadLocalPrefs();
@@ -836,13 +842,11 @@ const bootstrapPanel = () => {
     if (repositories.length < 2) {
       repoBarEl.classList.add('hidden');
       repoSelectEl.replaceChildren();
-      repoBranchMetaEl.textContent = '';
       return;
     }
 
     repoBarEl.classList.remove('hidden');
     repoSelectEl.setAttribute('aria-label', t('repo.switcherAria'));
-    repoSelectEl.title = t('repo.switcherLabel');
 
     const activeId = snapshot.activeRepo?.id ?? state.selectedRepoId ?? repositories[0].id;
     const fragment = document.createDocumentFragment();
@@ -857,10 +861,17 @@ const bootstrapPanel = () => {
     }
     repoSelectEl.replaceChildren(fragment);
     repoSelectEl.value = activeId;
+    // select 盖在可见仓库名上，悬停提示取选中项全文，仓库名被截断时也能看到全名
+    repoSelectEl.title = repoSelectEl.selectedOptions[0]?.textContent ?? '';
+    repoNameEl.textContent = repositories.find((repo) => repo.id === activeId)?.name ?? '';
 
-    const activeMeta = snapshot.activeRepo ? formatRepoBranchSuffix(snapshot.activeRepo, t) : '';
-    repoBranchMetaEl.textContent = activeMeta;
+    const activeRepo = snapshot.activeRepo;
+    const activeMeta = activeRepo ? formatRepoBranchSuffix(activeRepo, t) : '';
+    repoBranchTextEl.textContent = activeMeta;
     repoBranchMetaEl.title = activeMeta;
+    repoBranchMetaEl.classList.toggle('hidden', !activeMeta);
+    // 裸仓库与游离 HEAD 显示的是状态而不是分支名，不配分支图标
+    repoBranchIconEl.classList.toggle('hidden', Boolean(activeRepo?.isBare || activeRepo?.isDetached));
   };
 
   repoSelectEl.addEventListener('change', () => {

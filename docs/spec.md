@@ -166,7 +166,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 | --- | --- | --- |
 | 无仓库（`repositories.length === 0`） | 当前 `Workspace` 全部为非 Git 目录或为空 | 返回空仓库列表；前端显示单页空态提示（说明当前对话工作区未包含 Git 仓库） |
 | 单个 `Repository` | `repositories.length === 1` | 顶部不渲染仓库切换栏，垂直空间全部留给上下双区 |
-| 多个 `Repository` | `repositories.length >= 2` | 面板最顶部显示一行紧凑下拉切换条（仓库目录名 + 当前分支），默认按 `workspaceUris` 顺序选中第一个，切换后仅在当前会话内存中保持（当 `workspaceUris` 列表变化且旧 `selectedRepoId` 不再命中时自动切回第一个） |
+| 多个 `Repository` | `repositories.length >= 2` | 面板最顶部显示一行紧凑切换条：左侧是无边框的仓库目录名与下拉箭头，外观同图表顶栏按钮，点击弹出原生下拉列表（列表项为「仓库名 (当前分支)」，悬停提示为选中项全文）；右侧显示当前分支，裸仓库与游离 HEAD 时只显示状态文字、不带分支图标。默认按 `workspaceUris` 顺序选中第一个，切换后仅在当前会话内存中保持（当 `workspaceUris` 列表变化且旧 `selectedRepoId` 不再命中时自动切回第一个） |
 | `bare` 仓库 | `isBareRepository === true` 且未命中非 bare 工作树 | 进入只读态：上区提示「裸仓库不支持工作区修改」并隐藏提交/暂存区，下区仍可正常浏览 `Commit Graph` 与执行 `Fetch` |
 | 0 提交（Unborn） | `status --porcelain=v2 --branch` 返回 `# branch.oid (initial)` | `Commit Graph` 返回空列表并显示空提交提示（不执行带 `HEAD` 的 `git log`）；上区支持正常暂存、取消暂存（走 `git rm --cached`）与首次提交；工作区干净且无提交时隐藏推送/发布主按钮 |
 | 游离 HEAD（`Detached HEAD`） | `# branch.head (detached)` | 上区顶部显示轻量提示条，允许知情提交；工作区干净时不展示推送/发布主按钮；下区顶栏 `Pull` 与 `Push` 禁用，`Fetch` 与 `Refresh` 保持可用 |

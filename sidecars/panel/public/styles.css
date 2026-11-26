@@ -180,8 +180,7 @@ button:disabled {
 .gw-commit-row:focus-visible,
 .gw-commit-file-row:focus-visible,
 .gw-load-more-btn:focus-visible,
-.gw-menu-item:focus-visible,
-.gw-repo-select:focus-visible {
+.gw-menu-item:focus-visible {
   outline: 1px solid var(--gw-focus-border);
   outline-offset: -1px;
 }
@@ -237,40 +236,60 @@ button:disabled {
 .gw-repo-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: 0 0 auto;
-  height: 30px;
-  padding: 0 12px 0 8px;
+  height: 28px;
+  padding: 0 12px 0 4px;
   border-bottom: 1px solid var(--gw-section-border);
   min-width: 0;
   overflow: hidden;
 }
 
-.gw-repo-select-wrap {
+/* 外观同图表顶栏按钮：平时无底色，悬停才显示 */
+.gw-repo-picker {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 1 1 0;
-  min-width: 0;
-}
-
-.gw-repo-bar-icon {
-  display: inline-flex;
-  flex: none;
-  color: var(--gw-fg);
-}
-
-.gw-repo-select {
-  flex: 1 1 0;
+  gap: 4px;
+  flex: 0 1 auto;
   min-width: 0;
   height: 22px;
   padding: 0 4px;
-  border: 1px solid var(--gw-input-border);
-  border-radius: 2px;
-  background: var(--gw-input-bg);
+  border-radius: 5px;
   color: var(--gw-fg);
   font-size: 13px;
+}
+
+.gw-repo-picker:hover {
+  background: var(--gw-toolbar-hover);
+}
+
+/* select 本身透明，焦点框画在外层 */
+.gw-repo-picker:has(.gw-repo-select:focus-visible) {
+  outline: 1px solid var(--gw-focus-border);
+  outline-offset: -1px;
+}
+
+.gw-repo-picker-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.gw-repo-name,
+.gw-repo-branch-text {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-repo-select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 13px;
 }
 
 .gw-repo-select option {
@@ -279,12 +298,13 @@ button:disabled {
 }
 
 .gw-repo-branch-meta {
-  flex: 0 1 auto;
-  max-width: 120px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* 不参与收缩，空间不够时先截断仓库名；分支名过长时在 45% 处截断 */
+  flex: 0 0 auto;
+  max-width: 45%;
+  margin-left: auto;
   font-size: 12px;
   color: var(--gw-fg);
   opacity: var(--gw-description-opacity);
