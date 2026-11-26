@@ -21,7 +21,7 @@ export const MESSAGES = Object.freeze({
     'repo.bareLabel': '裸仓库',
 
     // 特殊仓库与监听状态横幅
-    'watch.tooManyChangesBanner': '变更超过 {count} 条，只显示前 {count} 条；文件改动暂停自动刷新',
+    'watch.tooManyChangesBanner': '变更超过 {count} 条，只显示前 {count} 条；文件改动的自动刷新已放慢',
     'watch.errorBanner': '文件监听出错，已暂停自动刷新，请手动刷新',
     'repo.detachedBanner': '当前处于游离 HEAD（Detached HEAD）状态：可正常提交，但无法直接推送或拉取。',
     'repo.bareNotice': '裸仓库不支持工作区修改，可在下方浏览提交图表或执行提取（Fetch）。',
@@ -180,7 +180,7 @@ export const MESSAGES = Object.freeze({
     'repo.bareLabel': 'Bare repository',
 
     // Special repository & file-watch banners
-    'watch.tooManyChangesBanner': 'More than {count} changes; only the first {count} are shown. Auto refresh on file edits is paused.',
+    'watch.tooManyChangesBanner': 'More than {count} changes; only the first {count} are shown. Auto refresh on file edits is slowed down.',
     'watch.errorBanner': 'File watching failed; auto refresh is paused. Please refresh manually.',
     'repo.detachedBanner': 'HEAD is detached: you can still commit, but push and pull are disabled.',
     'repo.bareNotice': 'Bare repositories do not support working tree modifications. You can still browse the Commit Graph and fetch.',

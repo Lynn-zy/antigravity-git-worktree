@@ -422,8 +422,8 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 元数据通道防抖 `200ms`，工作区通道防抖 `300ms`、连续写入时最长等待 `1s`。写入再频繁也只是合并成更少的刷新，不暂停监听。
    - 工作区通道触发 `status` 级刷新（前端只调用 `/api/status`），元数据通道触发 `full` 级刷新（前端调用 `/api/snapshot`）。
 4. **变更过多降级**：
-   - 每次 `status`（快照或 `/api/status`）之后都按结果重新判断。`truncated: true` 时关闭工作区监听，置 `watchState = { active: false, degraded: true, reason: "too_many_changes" }`，状态随这次响应返回，不另行递增 `revision`（避免前端为同一结果再跑一遍 status）；前端在顶部展示「变更超过 5,000 条，只显示前 5,000 条；文件改动暂停自动刷新」与刷新按钮。
-   - 降级期间 `.git` 元数据监听照常工作，提交、切分支、暂存等操作仍会触发完整快照；某次 `status` 回落到上限以内时自动恢复工作区监听，并补一次工作区同步覆盖恢复前的空窗。
+   - 每次 `status`（快照或 `/api/status`）之后都按结果重新判断。`truncated: true` 时置 `watchState = { active: true, degraded: true, reason: "too_many_changes" }`，状态随这次响应返回，不另行递增 `revision`（避免前端为同一结果再跑一遍 status）；前端在顶部展示「变更超过 5,000 条，只显示前 5,000 条；文件改动的自动刷新已放慢」与刷新按钮。
+   - 降级期间工作区监听照常挂载，但工作区通道的刷新放慢：距上次 `status`（刷新触发时即开始计时，不等 status 跑完）不满 `15s` 时等到满 `15s` 再触发，已排期的刷新不再被后续事件推迟；监听出错（`watch_error`）期间 status 结果不改变降级原因；没有文件变化时不触发任何 `status`。在 Git 之外删掉多余文件后，最迟 `15s` 内会跑一次 `status`，回落到上限以内即恢复正常节奏。`.git` 元数据监听不受影响，提交、切分支、暂存等操作仍立即触发完整快照。
    - 工作区监听连续出错 3 次时置 `reason: "watch_error"` 并递增 `revision`（`status` 级）通知前端，前端提示「文件监听出错，已暂停自动刷新，请手动刷新」。用户点击刷新（`forceRefresh: true`）时清除降级并重新挂载监听。
 
 ## 7. 前端架构、交互与视觉规范

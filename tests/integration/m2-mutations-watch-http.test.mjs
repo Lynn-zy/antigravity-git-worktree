@@ -793,7 +793,7 @@ test('集成测试：文件修改返回 status 级刷新并由 /api/status 只�
   }
   assert.equal(server.runtime.eventBus.pendingCount, 0);
 
-  // 2) 高频写入只推迟刷新，不再暂停监听；变更过多时暂停，回落后自动恢复并补一次同步
+  // 2) 高频写入只推迟刷新，不暂停监听；变更过多时监听照常但刷新放慢，回落后恢复正常节奏
   const worktreeTarget = {
     gitCommonDir: path.join(repoDir, '.git'),
     gitDir: path.join(repoDir, '.git'),
@@ -806,6 +806,7 @@ test('集成测试：文件修改返回 status 级刷新并由 /api/status 只�
   const fakeWatcher = createRepositoryWatcher({
     worktreeDebounceMs: 20,
     worktreeMaxWaitMs: 40,
+    tooManyChangesRefreshMs: 300,
     existsFn: () => true,
     watchFn: (dir, _opts, listener) => {
       if (normalizeFsPath(dir) === normalizeFsPath(repoDir)) {
@@ -827,19 +828,66 @@ test('集成测试：文件修改返回 status 级刷新并由 /api/status 只�
   assert.deepEqual(fakeWatcher.getWatchState(), { active: true, degraded: false, reason: null });
   assert.deepEqual(emittedChannels, ['worktree'], '1000 次事件应合并为一次工作区刷新');
 
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   fakeWatcher.applyStatusBudget({ truncated: true });
   fakeWatcher.applyStatusBudget({ truncated: true });
-  assert.deepEqual(fakeWatcher.getWatchState(), { active: false, degraded: true, reason: 'too_many_changes' });
+  assert.deepEqual(fakeWatcher.getWatchState(), { active: true, degraded: true, reason: 'too_many_changes' });
   assert.equal(degradeNotifications, 0, 'status 结果触发的降级随响应返回，不另发通知');
-  fakeEmit('change', 'src/while-degraded.js');
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  assert.deepEqual(emittedChannels, ['worktree'], '变更过多期间工作区事件不触发刷新');
+  fakeEmit('change', 'src/deleted-outside-git-1.js');
+  await sleep(100);
+  fakeEmit('change', 'src/deleted-outside-git-2.js');
+  await sleep(80);
+  assert.deepEqual(emittedChannels, ['worktree'], '距上次 status 不满间隔时不刷新');
+  await sleep(250);
+  assert.deepEqual(emittedChannels, ['worktree', 'worktree'], '间隔满后两次事件合并为一次刷新，在 Git 之外删掉文件也能被发现');
 
+  fakeWatcher.applyStatusBudget({ truncated: true });
+  await sleep(400);
+  assert.equal(emittedChannels.length, 2, '变更过多期间没有文件变化时不触发刷新');
+
+  // 间隔已满后持续写入：已排期的刷新不被后续事件推迟；刷新之后、status 跑完之前到达的事件也不会立刻再排一次
+  const beforeBurst = emittedChannels.length;
+  const ticker = setInterval(() => fakeEmit('change', 'src/build-output.js'), 5);
+  await sleep(150);
+  clearInterval(ticker);
+  assert.equal(emittedChannels.length, beforeBurst + 1, '持续写入时只刷新一次，下一次要等满间隔');
+
+  fakeWatcher.applyStatusBudget({ truncated: true });
+  fakeEmit('change', 'src/pending-before-recovery.js');
+  const beforeRecovery = emittedChannels.length;
   fakeWatcher.applyStatusBudget({ truncated: false });
   assert.deepEqual(fakeWatcher.getWatchState(), { active: true, degraded: false, reason: null });
-  await new Promise((resolve) => setTimeout(resolve, 80));
-  assert.deepEqual(emittedChannels, ['worktree', 'worktree'], '恢复监听后应补一次工作区同步');
+  await sleep(80);
+  assert.equal(emittedChannels.length, beforeRecovery + 1, '恢复后已排期的刷新不再等满间隔');
   fakeWatcher.close();
+
+  // 变更过多且间隔已满时持续写入：事件间隔稳定小于防抖，已排期的刷新仍按时触发，不被后续事件推迟。
+  // 用假时钟让「间隔已满」成立，计时器仍是真实的
+  let fakeNow = 0;
+  let burstEmit = null;
+  const burstRefreshes = [];
+  const burstWatcher = createRepositoryWatcher({
+    worktreeDebounceMs: 100,
+    tooManyChangesRefreshMs: 1000,
+    nowFn: () => fakeNow,
+    existsFn: () => true,
+    watchFn: (dir, _opts, listener) => {
+      if (normalizeFsPath(dir) === normalizeFsPath(repoDir)) {
+        burstEmit = listener;
+      }
+      return { close() {}, on() {} };
+    },
+    onChange: (info) => burstRefreshes.push(info.channel),
+  });
+  burstWatcher.setTarget(worktreeTarget);
+  burstWatcher.applyStatusBudget({ truncated: true });
+  fakeNow = 10_000;
+  const burstTicker = setInterval(() => burstEmit('change', 'out/build.log'), 20);
+  await sleep(300);
+  const refreshesDuringBurst = burstRefreshes.length;
+  clearInterval(burstTicker);
+  burstWatcher.close();
+  assert.equal(refreshesDuringBurst, 1, '持续写入时已排期的刷新照常触发，不被后续事件推迟');
 
   // 真实服务器：变更过多后，下一次 status 已回落到上限内时监听自动恢复，无需手动刷新
   const snapBeforeDegrade = (await postApi(server.url, '/api/snapshot', {
@@ -1508,6 +1556,12 @@ test('集成测试：工作区监听瞬时错误自动重挂与降级、连续�
   assert.equal(resilientWatcher.getWatchState().degraded, true);
   assert.equal(resilientWatcher.getWatchState().reason, 'watch_error');
   assert.equal(degradedStates.at(-1)?.reason, 'watch_error');
+
+  // 监听出错只由手动刷新清除：被截断的 status 不能把它改写成「变更过多」，也不借机重新挂载
+  const mountsBeforeTruncatedStatus = wtMountCount;
+  resilientWatcher.applyStatusBudget({ truncated: true });
+  assert.equal(resilientWatcher.getWatchState().reason, 'watch_error', '被截断的 status 不能掩盖监听出错');
+  assert.equal(wtMountCount, mountsBeforeTruncatedStatus, '监听出错期间 status 结果不触发重新挂载');
 
   // 2) 非降级状态下若 worktree watcher 意外关闭，同目标 setTarget({ forceRefresh: false }) 必须补挂
   let manualHealMounts = 0;

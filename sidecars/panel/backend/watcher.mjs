@@ -5,6 +5,7 @@ import { toPathKey } from './discovery.mjs';
 export const METADATA_DEBOUNCE_MS = 200;
 export const WORKTREE_DEBOUNCE_MS = 300;
 export const WORKTREE_MAX_WAIT_MS = 1000;
+export const TOO_MANY_CHANGES_REFRESH_MS = 15_000;
 export const WORKTREE_RETRY_DELAY_MS = 500;
 export const MAX_WORKTREE_ERROR_RETRIES = 3;
 export const MAX_POOL_TARGETS = 8;
@@ -106,7 +107,8 @@ function isIgnoredWorktreePath(filename) {
 /**
  * 仅面向当前活跃 `Repository` 与当前命中 `Worktree` 的局部文件系统监听器。
  * 内置 Windows `ReadDirectoryChangesW` 自毁守卫与元数据/工作区双通道防抖。
- * 写入再频繁也只是延后刷新；`status` 变更数超过上限时暂停工作区监听，回落到上限以内自动恢复。
+ * 写入再频繁也只是延后刷新；`status` 变更数超过上限时工作区刷新放慢到距上次 status 至少
+ * `TOO_MANY_CHANGES_REFRESH_MS`，监听照常，所以在 Git 之外删掉文件也能在下一次刷新时恢复。
  */
 export class RepositoryWatcher {
   #watchFn;
@@ -116,6 +118,7 @@ export class RepositoryWatcher {
   #metadataDebounceMs;
   #worktreeDebounceMs;
   #worktreeMaxWaitMs;
+  #tooManyChangesRefreshMs;
   #worktreeRetryDelayMs;
   #maxWorktreeErrorRetries;
   #onChange;
@@ -132,6 +135,8 @@ export class RepositoryWatcher {
   #gitRetryCount = 0;
   #worktreeRetryTimer = null;
   #worktreePendingSince = null;
+  // 工作区刷新触发时与 status 跑完时都会更新，变更过多时据此限制刷新间隔
+  #lastStatusAt = null;
   #worktreeRetryCount = 0;
   #eventSeq = 0;
   #lastMetadataEventSeq = 0;
@@ -157,6 +162,7 @@ export class RepositoryWatcher {
    *   metadataDebounceMs?: number,
    *   worktreeDebounceMs?: number,
    *   worktreeMaxWaitMs?: number,
+   *   tooManyChangesRefreshMs?: number,
    *   worktreeRetryDelayMs?: number,
    *   maxWorktreeErrorRetries?: number,
    *   watchFn?: typeof fs.watch,
@@ -171,12 +177,18 @@ export class RepositoryWatcher {
     this.#metadataDebounceMs = options.metadataDebounceMs ?? METADATA_DEBOUNCE_MS;
     this.#worktreeDebounceMs = options.worktreeDebounceMs ?? WORKTREE_DEBOUNCE_MS;
     this.#worktreeMaxWaitMs = options.worktreeMaxWaitMs ?? Math.max(this.#worktreeDebounceMs, WORKTREE_MAX_WAIT_MS);
+    this.#tooManyChangesRefreshMs = options.tooManyChangesRefreshMs ?? TOO_MANY_CHANGES_REFRESH_MS;
     this.#worktreeRetryDelayMs = options.worktreeRetryDelayMs ?? WORKTREE_RETRY_DELAY_MS;
     this.#maxWorktreeErrorRetries = options.maxWorktreeErrorRetries ?? MAX_WORKTREE_ERROR_RETRIES;
     this.#watchFn = options.watchFn ?? fs.watch;
     this.#existsFn = options.existsFn ?? fs.existsSync;
     this.#statFn = options.statFn ?? fs.statSync;
     this.#nowFn = options.nowFn ?? Date.now;
+  }
+
+  // 只有监听出错才关闭工作区监听；变更过多时监听照常，只放慢刷新
+  get #watchFailed() {
+    return this.#watchState.reason === 'watch_error';
   }
 
   /**
@@ -242,9 +254,9 @@ export class RepositoryWatcher {
         this.#gitWatchers = [];
         this.#mountGitWatchers();
       }
-      if (!this.#watchState.degraded) {
+      if (!this.#watchFailed) {
         this.#ensureWorktreesDirWatcher();
-        // 非降级状态下若工作区监听句柄曾因瞬时错误关闭，自动补挂恢复文件同步
+        // 监听未判定出错时，若工作区监听句柄曾因瞬时错误关闭，自动补挂恢复文件同步
         this.#ensureWorktreeWatcher();
         this.#recomputeActiveFlag();
       }
@@ -273,24 +285,32 @@ export class RepositoryWatcher {
 
   /**
    * 按最新一次 `status` 结果同步「变更过多」状态，每次 status 后都重新判断。
-   * `truncated` 为 true 时暂停工作区监听；状态随这次 status 的响应返回，不再另发 `onDegraded` 通知，
-   * 免得前端为同一结果再跑一遍代价最高的 status。之后变更数回落到上限以内则自动恢复监听，
-   * 并补一次工作区同步，覆盖这次 status 与重新挂载监听之间的空窗。
+   * `truncated` 为 true 时进入「变更过多」：工作区监听照常，但刷新放慢到距上次 status 至少
+   * `tooManyChangesRefreshMs`；下一次 status 回落到上限以内即恢复正常节奏。
+   * 状态随这次 status 的响应返回，不另发 `onDegraded` 通知，免得前端为同一结果再跑一遍 status。
    *
    * @param {{ truncated?: boolean } | null | undefined} changes 最新 status 的变更列表
    * @returns {{ active: boolean, degraded: boolean, reason: string | null }} 最新监听状态
    */
   applyStatusBudget(changes) {
-    if (!this.#target || !this.#target.worktreePath) {
+    // 监听出错只由手动刷新（forceRefresh）清除，不让 status 结果把它改写成「变更过多」
+    if (!this.#target || !this.#target.worktreePath || this.#watchFailed) {
       return this.getWatchState();
     }
+    this.#lastStatusAt = this.#nowFn();
     if (changes?.truncated) {
-      this.#enterDegraded('too_many_changes');
+      this.#watchState = { ...this.#watchState, degraded: true, reason: 'too_many_changes' };
     } else if (this.#watchState.reason === 'too_many_changes') {
-      this.#watchState = { active: false, degraded: false, reason: null };
-      this.#ensureWorktreeWatcher();
-      this.#recomputeActiveFlag();
-      this.#scheduleWorktreeResyncIfMounted();
+      this.#watchState = { ...this.#watchState, degraded: false, reason: null };
+    } else {
+      return this.getWatchState();
+    }
+    // 已排期的刷新按新节奏重排：进入变更过多时推迟到间隔满，恢复后不再等满间隔
+    if (this.#worktreeTimer) {
+      clearTimeout(this.#worktreeTimer);
+      this.#worktreeTimer = null;
+      this.#worktreePendingSince = null;
+      this.#scheduleWorktreeChange();
     }
     return this.getWatchState();
   }
@@ -515,7 +535,7 @@ export class RepositoryWatcher {
   #scheduleWorktreeRemount() {
     if (
       this.#disposed ||
-      this.#watchState.degraded ||
+      this.#watchFailed ||
       this.#worktreeRetryTimer ||
       !this.#target?.worktreePath ||
       !this.#existsFn(this.#target.worktreePath)
@@ -530,7 +550,7 @@ export class RepositoryWatcher {
     this.#worktreeRetryCount += 1;
     this.#worktreeRetryTimer = setTimeout(() => {
       this.#worktreeRetryTimer = null;
-      if (this.#disposed || this.#watchState.degraded || this.#targetKey !== expectedTargetKey) {
+      if (this.#disposed || this.#watchFailed || this.#targetKey !== expectedTargetKey) {
         return;
       }
       if (!this.#target?.worktreePath || !this.#existsFn(this.#target.worktreePath)) {
@@ -558,7 +578,7 @@ export class RepositoryWatcher {
   }
 
   #ensureWorktreeWatcher() {
-    if (!this.#target || !this.#target.worktreePath || this.#watchState.degraded) {
+    if (!this.#target || !this.#target.worktreePath || this.#watchFailed) {
       return;
     }
     if (this.#worktreeWatcher && !this.#worktreeWatcher.closed) {
@@ -601,7 +621,7 @@ export class RepositoryWatcher {
   }
 
   #recordWorktreeEvent() {
-    if (this.#watchState.degraded || this.#disposed) {
+    if (this.#watchFailed || this.#disposed) {
       return;
     }
     this.#stats.effectiveEventCount += 1;
@@ -636,22 +656,34 @@ export class RepositoryWatcher {
   }
 
   #scheduleWorktreeChange() {
-    if (this.#disposed || this.#watchState.degraded) {
+    if (this.#disposed || this.#watchFailed) {
       return;
     }
     const now = this.#nowFn();
-    if (this.#worktreePendingSince === null) {
-      this.#worktreePendingSince = now;
-    }
-    const remainingMaxWait = Math.max(0, (this.#worktreePendingSince + this.#worktreeMaxWaitMs) - now);
-    const delayMs = Math.min(this.#worktreeDebounceMs, remainingMaxWait);
-    if (this.#worktreeTimer) {
-      clearTimeout(this.#worktreeTimer);
+    let delayMs;
+    if (this.#watchState.reason === 'too_many_changes') {
+      // 每次 status 都要扫完上限以上的变更，已排期就不再推迟；距上次 status 不满间隔时等到间隔满
+      if (this.#worktreeTimer) {
+        return;
+      }
+      const nextAllowedAt = (this.#lastStatusAt ?? now) + this.#tooManyChangesRefreshMs;
+      delayMs = Math.max(this.#worktreeDebounceMs, nextAllowedAt - now);
+    } else {
+      if (this.#worktreePendingSince === null) {
+        this.#worktreePendingSince = now;
+      }
+      const remainingMaxWait = Math.max(0, (this.#worktreePendingSince + this.#worktreeMaxWaitMs) - now);
+      delayMs = Math.min(this.#worktreeDebounceMs, remainingMaxWait);
+      if (this.#worktreeTimer) {
+        clearTimeout(this.#worktreeTimer);
+      }
     }
     this.#worktreeTimer = setTimeout(() => {
       this.#worktreeTimer = null;
       this.#worktreePendingSince = null;
-      if (!this.#disposed && !this.#watchState.degraded) {
+      if (!this.#disposed && !this.#watchFailed) {
+        // 这次刷新会引发一次 status；先记下时间，status 跑完前到达的事件不会按旧时间再排一次
+        this.#lastStatusAt = this.#nowFn();
         this.#onChange({ channel: 'worktree' });
       }
     }, delayMs);
@@ -687,7 +719,7 @@ export class RepositoryWatcher {
   }
 
   #recomputeActiveFlag() {
-    if (this.#watchState.degraded) {
+    if (this.#watchFailed) {
       this.#watchState.active = false;
       return;
     }
