@@ -577,6 +577,11 @@ export const createChangesView = (elements, deps) => {
     return { start, end };
   };
 
+  const applySpacerHeights = (view) => {
+    view.topSpacerEl.style.height = `${view.start * FILE_ROW_HEIGHT_PX}px`;
+    view.bottomSpacerEl.style.height = `${(view.files.length - view.end) * FILE_ROW_HEIGHT_PX}px`;
+  };
+
   // 只增删窗口两端的行，留在窗口内的行原地不动，避免带焦点的行被移出 DOM 而失焦
   const syncRowWindow = (view, containerRect) => {
     const { start, end } = computeRowWindow(view, containerRect);
@@ -586,6 +591,8 @@ export const createChangesView = (elements, deps) => {
     const keptEnd = Math.min(end, view.end);
     for (const [index, rowEl] of view.rows) {
       if (index < keptStart || index >= keptEnd) {
+        // 带焦点的行滚出窗口时焦点交给列表本身（同 VS Code 列表），不掉到页面最外层
+        if (rowEl.contains(doc.activeElement)) view.listEl.focus({ preventScroll: true });
         rowEl.remove();
         view.rows.delete(index);
       }
@@ -610,8 +617,7 @@ export const createChangesView = (elements, deps) => {
 
     view.start = start;
     view.end = end;
-    view.topSpacerEl.style.height = `${start * FILE_ROW_HEIGHT_PX}px`;
-    view.bottomSpacerEl.style.height = `${(view.files.length - end) * FILE_ROW_HEIGHT_PX}px`;
+    applySpacerHeights(view);
   };
 
   const syncAllRowWindows = () => {
@@ -735,8 +741,20 @@ export const createChangesView = (elements, deps) => {
 
     if (!isCollapsed) {
       const listEl = doc.createElement('div');
-      listEl.className = 'gw-group-list';
+      listEl.className = 'gw-group-list gw-clip-focus';
       listEl.setAttribute('role', 'list');
+      // 不进 Tab 序列，只接住滚出窗口的行交出的焦点；重渲染后按 focusId 还原
+      listEl.tabIndex = -1;
+      listEl.dataset.focusId = `list:${groupKey}`;
+      // 焦点在列表本身时 Tab 进入可视区第一行；默认会进入窗口顶部预渲染、看不见的行，列表随之上跳
+      listEl.addEventListener('keydown', (event) => {
+        if (event.target !== listEl || event.key !== 'Tab' || event.shiftKey) return;
+        const viewTop = groupsEl.getBoundingClientRect().top;
+        const firstVisibleRow = [...listEl.querySelectorAll('.gw-file-row')].find((row) => row.getBoundingClientRect().top >= viewTop);
+        if (!firstVisibleRow) return;
+        event.preventDefault();
+        firstVisibleRow.focus({ preventScroll: true });
+      });
       const topSpacerEl = doc.createElement('div');
       topSpacerEl.className = 'gw-list-spacer';
       topSpacerEl.setAttribute('aria-hidden', 'true');
@@ -744,8 +762,9 @@ export const createChangesView = (elements, deps) => {
       listEl.append(topSpacerEl, bottomSpacerEl);
       groupEl.append(listEl);
 
-      // 行在分组挂进 DOM 后由 syncAllRowWindows 按可视区填充
-      groupViews.push({
+      // 行在分组挂进 DOM 后由 syncAllRowWindows 按可视区填充。占位先撑满整表高度：
+      // 填充前要读布局，此时内容若塌成 0 高，浏览器会把滚动位置截回顶部
+      const view = {
         files,
         listEl,
         topSpacerEl,
@@ -754,7 +773,9 @@ export const createChangesView = (elements, deps) => {
         rows: new Map(),
         start: 0,
         end: 0,
-      });
+      };
+      applySpacerHeights(view);
+      groupViews.push(view);
     }
 
     return groupEl;

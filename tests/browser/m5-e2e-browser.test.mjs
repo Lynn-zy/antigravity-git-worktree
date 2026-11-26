@@ -1636,6 +1636,92 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { description: 'scrolling to the bottom renders the last unstaged row' },
   );
 
+  // 长列表滚到中部后刷新：滚动位置与首个可见行不变
+  const nextFrames = 'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))';
+  const groupsScrollState = `(() => {
+    const el = document.querySelector('[data-testid="changes-groups"]');
+    const top = el.getBoundingClientRect().top;
+    const firstRow = [...el.querySelectorAll('[data-testid="change-file-unstaged"]')].find((row) => row.getBoundingClientRect().top >= top);
+    return { scrollTop: el.scrollTop, firstVisiblePath: firstRow?.dataset.filePath ?? null };
+  })()`;
+  await page.evaluate('(() => { document.querySelector("[data-testid=changes-groups]").scrollTop = 50000; })()');
+  await page.evaluate(nextFrames);
+  const scrollBeforeRefresh = await page.evaluate(groupsScrollState);
+  // 给当前列表元素打标记，标记消失说明列表已整体重建
+  await page.evaluate('(() => { document.querySelector(\'[data-focus-id="list:unstaged"]\').dataset.beforeRefresh = "1"; })()');
+  await page.clickSelector('[data-testid="graph-refresh-btn"]');
+  await page.waitFor(
+    '!document.querySelector(\'[data-focus-id="list:unstaged"]\')?.dataset.beforeRefresh',
+    { description: 'manual refresh rebuilds the long list' },
+  );
+  await page.evaluate(nextFrames);
+  assert.deepEqual(await page.evaluate(groupsScrollState), scrollBeforeRefresh, '重渲染后长列表的滚动位置不得跳回顶部');
+
+  // 键盘暂存可视区最后一行：焦点落到顶替该位置的下一行，仍是键盘焦点且完整可见，列表不跳回顶部
+  const stageTarget = await page.evaluate(`(() => {
+    const el = document.querySelector('[data-testid="changes-groups"]');
+    const box = el.getBoundingClientRect();
+    const row = [...el.querySelectorAll('[data-testid="change-file-unstaged"]')].filter((item) => item.getBoundingClientRect().bottom <= box.bottom).at(-1);
+    row.focus();
+    return { index: row.dataset.focusIndex, path: row.dataset.filePath };
+  })()`);
+  for (let step = 0; step < 5; step += 1) {
+    await page.pressKey('Tab', 'Tab', 9);
+    if (await page.evaluate(`document.activeElement?.dataset?.focusId === ${JSON.stringify(`file-act:unstaged:stage:${stageTarget.path}`)}`)) break;
+  }
+  assert.equal(
+    await page.evaluate('document.activeElement?.dataset?.focusId'),
+    `file-act:unstaged:stage:${stageTarget.path}`,
+    'Tab 应停在该行的暂存按钮上',
+  );
+  // 测试桩只发 rawKeyDown 不发字符事件，Enter 不会触发按钮；空格在 keyup 时触发
+  await page.pressKey(' ', 'Space', 32);
+  await page.waitFor(
+    `Boolean(document.querySelector('[data-testid="change-file-staged"][data-file-path=${JSON.stringify(stageTarget.path)}]'))`,
+    { description: 'keyboard stage moves the row into the staged group' },
+  );
+  await page.evaluate(nextFrames);
+  const focusAfterStage = await page.evaluate(`(() => {
+    const el = document.querySelector('[data-testid="changes-groups"]');
+    const active = document.activeElement;
+    const box = el.getBoundingClientRect();
+    const rect = active.getBoundingClientRect();
+    return {
+      group: active.dataset.focusGroup ?? null,
+      index: active.dataset.focusIndex ?? null,
+      focusVisible: active.matches(':focus-visible'),
+      // 滚动位置可能是小数像素，留 1px 容差
+      fullyVisible: rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1,
+      nearPreviousScroll: el.scrollTop > 40000,
+    };
+  })()`);
+  assert.deepEqual(focusAfterStage, {
+    group: 'unstaged',
+    index: stageTarget.index,
+    focusVisible: true,
+    fullyVisible: true,
+    nearPreviousScroll: true,
+  });
+
+  // 带焦点的行滚出渲染窗口后焦点留在列表上；下一次 Tab 进入可视区第一行，列表不跳动
+  await page.evaluate('(() => { document.querySelector("[data-testid=changes-groups]").scrollTop = 10000; })()');
+  await page.evaluate(nextFrames);
+  assert.equal(await page.evaluate('document.activeElement?.dataset?.focusId ?? document.activeElement?.tagName'), 'list:unstaged');
+  await page.pressKey('Tab', 'Tab', 9);
+  await page.evaluate(nextFrames);
+  const focusAfterListTab = await page.evaluate(`(() => {
+    const el = document.querySelector('[data-testid="changes-groups"]');
+    const box = el.getBoundingClientRect();
+    const rect = document.activeElement.getBoundingClientRect();
+    return {
+      group: document.activeElement.dataset.focusGroup ?? null,
+      fullyVisible: rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1,
+      scrollTop: el.scrollTop,
+    };
+  })()`);
+  assert.deepEqual(focusAfterListTab, { group: 'unstaged', fullyVisible: true, scrollTop: 10000 });
+  await execGit(['reset', '-q', '--', stageTarget.path], fixtures.repoA);
+
   for (const filePath of bulkFiles) {
     fs.rmSync(filePath, { force: true });
   }
