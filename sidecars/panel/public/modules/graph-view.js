@@ -154,9 +154,13 @@ export const createGraphView = (elements, deps) => {
   const doc = bodyEl.ownerDocument;
   const win = doc.defaultView ?? window;
 
-  const commitDetailCache = new Map();
-  const detailErrors = new Map();
-  const loadingDetailShas = new Set();
+  // 切换仓库、Worktree 或强制刷新时整体换新；请求发出时记下当时的对象，晚到的旧响应只会写进已丢弃的对象
+  const createDetailStore = () => ({
+    details: new Map(),
+    detailErrors: new Map(),
+    loadingDetails: new Set(),
+  });
+  let detailStore = createDetailStore();
   const expandedCommits = new Set();
 
   let searchVisible = false;
@@ -273,7 +277,7 @@ export const createGraphView = (elements, deps) => {
   // 卡片分区与 VS Code Git 扩展的提交悬浮卡一致：作者与提交说明、改动统计、引用、SHA 操作
   const buildPopoverSections = (viewModel, { t, locale }) => {
     const { commit } = viewModel;
-    const detail = commitDetailCache.get(commit.sha);
+    const detail = detailStore.details.get(commit.sha);
 
     // 不联网取头像，与 VS Code 取不到头像时一样显示账号图标
     const authorEl = createPopoverPerson(commit.authorName || '', commit.authorEmail);
@@ -287,7 +291,7 @@ export const createGraphView = (elements, deps) => {
     }
     const message = detail ? [detail.subject, detail.body].filter(Boolean).join('\n\n') : (commit.subject || '');
     contentChildren.push(renderCommitMarkdown(doc, message));
-    if (!detail && loadingDetailShas.has(commit.sha)) {
+    if (!detail && detailStore.loadingDetails.has(commit.sha)) {
       const loadingEl = doc.createElement('p');
       loadingEl.className = 'gw-popover-loading';
       loadingEl.textContent = t('popover.loading');
@@ -408,8 +412,8 @@ export const createGraphView = (elements, deps) => {
       viewModel.references,
       latestRenderState.locale,
       formatRelativeTime(viewModel.commit.timestamp, latestRenderState.locale),
-      commitDetailCache.has(sha),
-      loadingDetailShas.has(sha),
+      detailStore.details.has(sha),
+      detailStore.loadingDetails.has(sha),
     ]);
     if (contentKey !== renderedPopoverKey) {
       renderedPopoverKey = contentKey;
@@ -449,15 +453,13 @@ export const createGraphView = (elements, deps) => {
   };
 
   const ensureCommitDetail = async (sha) => {
+    const store = detailStore;
     const activeRepo = latestRenderState?.activeRepo;
-    if (!activeRepo || (!activeRepo.worktreePath && !activeRepo.id)) return null;
-    if (commitDetailCache.has(sha)) {
-      return commitDetailCache.get(sha);
-    }
-    if (loadingDetailShas.has(sha)) return null;
+    if (!activeRepo || (!activeRepo.worktreePath && !activeRepo.id)) return;
+    if (store.details.has(sha) || store.loadingDetails.has(sha)) return;
 
-    loadingDetailShas.add(sha);
-    detailErrors.delete(sha);
+    store.loadingDetails.add(sha);
+    store.detailErrors.delete(sha);
     if (expandedCommits.has(sha) && latestRenderState) {
       renderCommitList(latestRenderState);
     }
@@ -469,20 +471,17 @@ export const createGraphView = (elements, deps) => {
         activeRepo.id ?? null,
       );
       if (detail) {
-        commitDetailCache.set(sha, detail);
+        store.details.set(sha, detail);
       }
-      return detail;
     } catch (err) {
-      detailErrors.set(sha, err?.message || 'Error');
-      return null;
-    } finally {
-      loadingDetailShas.delete(sha);
-      if (expandedCommits.has(sha) && latestRenderState) {
-        renderCommitList(latestRenderState);
-      }
-      if (popoverSha === sha) {
-        renderPopover(sha);
-      }
+      store.detailErrors.set(sha, err?.message || 'Error');
+    }
+    store.loadingDetails.delete(sha);
+    if (expandedCommits.has(sha) && latestRenderState) {
+      renderCommitList(latestRenderState);
+    }
+    if (popoverSha === sha) {
+      renderPopover(sha);
     }
   };
 
@@ -493,10 +492,8 @@ export const createGraphView = (elements, deps) => {
     }
     popoverSha = sha;
     syncActiveCommitHighlight();
-    // 先触发详情加载使 loadingDetailShas 同步入集，首次渲染即显示加载提示
-    if (!commitDetailCache.has(sha)) {
-      void ensureCommitDetail(sha);
-    }
+    // 先触发详情加载使加载状态同步入集，首次渲染即显示加载提示
+    void ensureCommitDetail(sha);
     renderPopover(sha);
     popoverEl.scrollTop = 0;
   };
@@ -509,9 +506,7 @@ export const createGraphView = (elements, deps) => {
     }
     expandedCommits.add(sha);
     if (latestRenderState) renderCommitList(latestRenderState);
-    if (!commitDetailCache.has(sha)) {
-      await ensureCommitDetail(sha);
-    }
+    await ensureCommitDetail(sha);
   };
 
   const closeMoreMenu = () => {
@@ -817,10 +812,10 @@ export const createGraphView = (elements, deps) => {
     filesWrap.dataset.commitSha = commit.sha;
 
     const placeholder = computeCommitFilesPlaceholder(viewModel);
-    const detail = commitDetailCache.get(commit.sha);
-    const detailErr = detailErrors.get(commit.sha);
+    const detail = detailStore.details.get(commit.sha);
+    const detailErr = detailStore.detailErrors.get(commit.sha);
 
-    if (loadingDetailShas.has(commit.sha) && !detail) {
+    if (detailStore.loadingDetails.has(commit.sha) && !detail) {
       filesWrap.append(renderQuietRow(placeholder, t('graph.loadingDetail'), 'gw-commit-file-loading'));
       return filesWrap;
     }
@@ -1075,9 +1070,7 @@ export const createGraphView = (elements, deps) => {
   };
 
   const clearDetailCache = () => {
-    commitDetailCache.clear();
-    detailErrors.clear();
-    loadingDetailShas.clear();
+    detailStore = createDetailStore();
     expandedCommits.clear();
     closePopover();
   };

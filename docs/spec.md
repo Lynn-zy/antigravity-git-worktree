@@ -290,7 +290,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 #### 3. `POST /api/commit/detail`
 
-用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时按需调用（前端按 `sha` 做内存缓存，切换仓库或强制刷新时清空）。
+用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时按需调用。前端按 `sha` 做内存缓存，切换仓库或 Worktree、强制刷新时清空；切换前发出、切换后才返回的请求结果直接丢弃，不写进新缓存。
 
 - **Request**：`{ "worktreePath": "...", "sha": "2a76567..." }`（校验 `sha` 匹配 `/^[0-9a-f]{7,64}$/i`）
 - **Response `data`**：

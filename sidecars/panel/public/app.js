@@ -1125,9 +1125,11 @@ const bootstrapPanel = () => {
 
     if (reqSeq !== snapshotRequestSeq) return false;
 
-    const prevRepoId = state.snapshot?.activeRepo?.id ?? null;
-    const nextRepoId = nextSnapshot?.activeRepo?.id ?? null;
-    if (prevRepoId !== nextRepoId) {
+    const prevRepo = state.snapshot?.activeRepo;
+    const nextRepo = nextSnapshot?.activeRepo;
+    const nextRepoId = nextRepo?.id ?? null;
+    // 同一仓库的各个 Worktree 共用 id，但提交详情里的文件链接指向各自的目录
+    if (prevRepo?.id !== nextRepo?.id || prevRepo?.worktreePath !== nextRepo?.worktreePath) {
       graphView.clearDetailCache();
       state.graphLimit = INITIAL_GRAPH_LIMIT;
     }

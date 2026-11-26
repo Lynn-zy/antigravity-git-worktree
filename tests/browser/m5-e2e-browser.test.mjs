@@ -1864,6 +1864,38 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     { sessionId: iframeSessionId },
   );
 
+  // 同一仓库的各个 Worktree 共用仓库 id：切换 Worktree 后点击提交里的文件，必须打开当前 Worktree 下的文件，不能沿用切换前缓存的链接
+  const linkedWorktree = path.join(tempRoot, 'repoA-linked');
+  await execGit(['worktree', 'add', '--detach', linkedWorktree, 'HEAD'], fixtures.repoA);
+  const headSha = await execGit(['rev-parse', 'HEAD'], fixtures.repoA);
+  const changelogRowSelector = JSON.stringify(
+    `[data-testid="commit-files"][data-commit-sha="${headSha}"] [data-testid="commit-file-row"][data-file-path="CHANGELOG.md"]`,
+  );
+  const openChangelogFromHeadCommit = async (description) => {
+    await page.evaluate(`(() => {
+      const row = document.querySelector('[data-testid="commit-row"][data-commit-sha="${headSha}"]');
+      if (row.getAttribute('aria-expanded') !== 'true') row.click();
+    })()`, { sessionId: iframeSessionId });
+    await page.waitFor(`Boolean(document.querySelector(${changelogRowSelector}))`, { sessionId: iframeSessionId, description });
+    return page.evaluate(`(() => {
+      document.querySelector(${changelogRowSelector}).click();
+      return window.__mockSidecarCalls.at(-1).payload.uri;
+    })()`, { sessionId: iframeSessionId });
+  };
+  assert.match(await openChangelogFromHeadCommit('HEAD commit files in repoA'), /\/repoA\/CHANGELOG\.md$/);
+  await page.evaluate(`(() => {
+    const frame = document.getElementById('sidecar-frame');
+    frame.contentWindow.postMessage({
+      type: 'workspace-change',
+      payload: { workspaceUris: [${JSON.stringify(toFileUri(linkedWorktree))}] }
+    }, '*');
+  })()`);
+  await page.waitFor('Boolean(document.querySelector("[data-testid=banner-detached]"))', {
+    sessionId: iframeSessionId,
+    description: 'workspace-change to linked worktree of repoA',
+  });
+  assert.match(await openChangelogFromHeadCommit('HEAD commit files in linked worktree'), /\/repoA-linked\/CHANGELOG\.md$/);
+
   // 通过 postMessage 测试 workspace-change 动态切换：单仓 repoB -> 非 Git 空态 -> 双仓 (repoA + repoB)
   await page.evaluate(`(() => {
     const frame = document.getElementById('sidecar-frame');
