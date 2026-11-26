@@ -1535,6 +1535,38 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   assert.equal(focusAfterRerender.focusId, 'file:unstaged:README.md');
   assert.equal(focusAfterRerender.focusVisible, true);
 
+  // 行尾按钮与分组标题按钮只在获得焦点或悬停时显示：焦点停在这类按钮上时重渲染，焦点仍回到同一按钮
+  const tabUntilFocused = async (focusId, { shift = false } = {}) => {
+    for (let step = 0; step < 12; step += 1) {
+      if (await page.evaluate(`document.activeElement?.dataset?.focusId === ${JSON.stringify(focusId)}`)) break;
+      await page.pressKey('Tab', 'Tab', 9, shift ? 8 : 0);
+    }
+    assert.equal(await page.evaluate('document.activeElement?.dataset?.focusId'), focusId);
+  };
+  const assertFocusSurvivesRerender = async (focusId, probeName) => {
+    writeRepoFile(fixtures.repoA, probeName, 'probe\n');
+    await page.waitFor(
+      `Boolean(document.querySelector('[data-testid="change-file-unstaged"][data-file-path="${probeName}"]'))`,
+      { description: `re-render while ${focusId} has focus` },
+    );
+    assert.deepEqual(await page.evaluate(`(() => ({
+      focusId: document.activeElement?.dataset?.focusId ?? null,
+      focusVisible: Boolean(document.activeElement?.matches?.(':focus-visible')),
+    }))()`), { focusId, focusVisible: true });
+  };
+  await tabUntilFocused('file-act:unstaged:stage:README.md');
+  await assertFocusSurvivesRerender('file-act:unstaged:stage:README.md', 'focus-probe-row.txt');
+  await tabUntilFocused('group:unstaged', { shift: true });
+  await tabUntilFocused('group-act:unstaged:stageAll');
+  await assertFocusSurvivesRerender('group-act:unstaged:stageAll', 'focus-probe-header.txt');
+  for (const probeName of ['focus-probe-row.txt', 'focus-probe-header.txt']) {
+    fs.rmSync(path.join(fixtures.repoA, probeName), { force: true });
+  }
+  await page.waitFor(
+    '!document.querySelector(\'[data-testid="change-file-unstaged"][data-file-path^="focus-probe-"]\')',
+    { description: 'focus probe files removed' },
+  );
+
   // 分批快速写入 225 个文件（规避单次同步写入顶满 libuv 4KB 缓冲导致内核合并）：高频写入只推迟刷新，不再暂停监听
   const burstDir = path.join(fixtures.repoA, 'tmp-burst');
   fs.mkdirSync(burstDir, { recursive: true });

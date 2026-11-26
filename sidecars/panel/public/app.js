@@ -412,6 +412,7 @@ const bootstrapPanel = () => {
         }
       }
     }
+    const foundById = target !== null;
 
     if (!target && savedFocus.group && Number.isFinite(savedFocus.index)) {
       const groupRows = [...container.querySelectorAll(`.gw-file-row[data-focus-group="${savedFocus.group}"]`)];
@@ -425,7 +426,16 @@ const bootstrapPanel = () => {
     }
 
     if (target instanceof HTMLElement && !target.hasAttribute('disabled')) {
+      // 行尾按钮与分组标题上的按钮只在所在行、标题获得焦点或悬停时显示，隐藏时 focus() 无效：
+      // 先聚焦所在行（分组标题没有可聚焦的外层，改为聚焦标题里的折叠按钮）让按钮显示出来
+      if (target.getClientRects().length === 0) {
+        const revealer = target.parentElement?.closest('[data-focus-id]')
+          ?? target.closest('.gw-group-header')?.querySelector('[data-focus-id]');
+        revealer?.focus({ preventScroll: true });
+      }
       target.focus({ preventScroll: true });
+      // 原元素已不在（如暂存后该行移到别的分组），焦点落到同位置的行；上方分组增高时这一行可能被挤出可视区
+      if (!foundById) target.scrollIntoView({ block: 'nearest' });
     }
   };
 

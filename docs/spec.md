@@ -535,7 +535,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 3. **键盘与焦点**：
    - 全局快捷键（如在图表列表内用 `ArrowUp`/`ArrowDown`/`Enter` 浏览）显式跳过表单控件 `input, select, textarea, button, [contenteditable]`。
    - 隐藏鼠标焦点框，为键盘操作统一提供 `:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }`（贴边与溢出裁切容器内改用 `outline-offset: -2px`）。
-   - 列表局部重渲染前记录 `:focus-visible` 元素标识，重渲染后恢复焦点（`focus({ preventScroll: true })`）。
+   - 列表局部重渲染前记录 `:focus-visible` 元素标识，重渲染后恢复焦点（`focus({ preventScroll: true })`）。行尾按钮与分组标题按钮只在所在行、标题获得焦点或悬停时显示，恢复到这类按钮时先聚焦所在行或标题里的折叠按钮。原元素已不存在（如暂存后该行移到别的分组）时，焦点落到同一分组同一位置的行，并滚到最近的可见位置。
 4. **文件类型图标**：
    - 上区文件行与图表展开的文件行使用 vscode-icons 图标，以 `<img src="/file-icons/<名称>.svg">` 按需加载。
    - 匹配顺序与 VS Code 文件图标主题一致：带直接父文件夹的文件名规则（如 `.husky/pre-commit`、`.vscode/launch.json`）优先，其次完整文件名，再次从最长到最短的多段扩展名（如 `d.ts` 先于 `ts`），都不命中时用默认文件图标；不区分大小写。
