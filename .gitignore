@@ -5,3 +5,5 @@ desktop.ini
 tmp/
 .scratch/
 node_modules/
+# impeccable 的会话缓存（含本机绝对路径）；.impeccable/config.json 是项目规则，需要提交
+.impeccable/hook.cache.json

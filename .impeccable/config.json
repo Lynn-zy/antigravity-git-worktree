@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "sidecars/panel/public/styles.css"
+        ],
+        "createdAt": "2026-11-25T02:57:58.489Z",
+        "reason": "Claude judged: L1393 is the left rule of a Markdown blockquote in commit messages (.gw-markdown blockquote), the standard quote marker used by GitHub and VS Code, drawn in the neutral --gw-widget-border color, not a colored card accent"
+      }
+    ]
+  }
+}
