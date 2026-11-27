@@ -12,10 +12,10 @@
 
 ### 1.2 V1 核心能力
 
-1. **被动跟随宿主工作区**：监听宿主 `workspace-change` 事件与本地 `.git`、工作区文件变化，自动同步当前对话 `Workspace` 命中的 `Repository`、`Worktree` 与当前分支状态。单仓库场景下顶部不占额外高度；当单个 `Workspace` 同时命中 2 个及以上 `Repository` 时，顶部显示一行紧凑仓库切换栏。
+1. **被动跟随宿主工作区**：监听宿主 `workspace-change` 事件与本地 `.git`、工作区文件变化，自动同步当前对话 `Workspace` 命中的 `Repository`、`Worktree` 与当前分支状态。面板顶部常驻「存储库」列表（对齐 VS Code「存储库」视图），每行显示仓库名、当前分支与同步状态，点击行切换当前仓库；只有一个仓库时也显示。
 2. **VS Code 风格上下可拖拽双区（无 Tab）**：
-   - **上区（更改）**：原生提交说明输入框（支持 `Ctrl/Cmd + Enter`）、智能主按钮（工作区有改动时始终可点「提交」，未暂存时弹窗确认自动暂存全部并提交；工作区干净时随上游状态切换为「推送更改 N↑」「发布分支」或「拉取更改 N↓」）、可折叠的「暂存的更改」与「更改」文件列表（支持单文件与全部暂存、取消暂存，以及带确认护栏的放弃更改与未跟踪文件删除）。
-   - **下区（图表）**：单行紧凑顶栏（`自动 / 全部` 分支范围、转到当前提交、`Fetch`、`Pull`、`Push / Publish`、`Refresh`、`⋯` 更多菜单）、移植自 VS Code「图表」视图的 `22px` 内联 SVG 提交拓扑图、点击提交行原地展开改动文件列表、点击行尾「查看提交详情」按钮打开的最小图表遮挡提交详情卡。
+   - **上区（更改）**：原生提交说明输入框（支持 `Ctrl/Cmd + Enter`）、智能主按钮（工作区有改动时始终可点「提交」，未暂存时弹窗确认自动暂存全部并提交；工作区干净时按 VS Code 的顺序切换为「发布分支」或「同步更改 N↓ M↑」，同步先快进拉取、之后仍领先上游时再推送）、可折叠的「暂存的更改」与「更改」文件列表（支持单文件与全部暂存、取消暂存，以及带确认护栏的放弃更改与未跟踪文件删除）。
+   - **下区（图表）**：单行紧凑顶栏（`自动 / 全部` 分支范围、转到当前提交、`Fetch`、`Pull`、`Push / Publish`、`Refresh`、`⋯` 更多菜单）、移植自 VS Code「图表」视图的 `22px` 内联 SVG 提交拓扑图（领先或落后上游时含「传出的更改」「传入的更改」行）、点击提交行原地展开改动文件列表、点击行尾「查看提交详情」按钮打开的最小图表遮挡提交详情卡。
 3. **宿主原生文件打开**：点击上区更改文件或下区展开的历史提交文件，统一调用 `window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri })` 在宿主辅助栏打开文件，插件内不自建 Diff 查看器。
 4. **外观与双语适配**：通过语义 CSS 变量与 1×1 Canvas 亮度检测同步宿主明暗主题，支持窄幅视口（`320px–560px`）零横向溢出，支持中英双语切换。
 
@@ -50,7 +50,7 @@
 │       │   ├── discovery.mjs           # Workspace URI 规范化、Repository 去重与 Worktree 匹配
 │       │   ├── git-runner.mjs          # 安全 execFile/spawn、两级写锁队列、超时与非交互凭据
 │       │   ├── git-queries.mjs         # status/log/show/remote 只读查询与 -z 二进制解析
-│       │   ├── git-mutations.mjs       # stage/unstage/discard/commit/fetch/pull/push 写操作
+│       │   ├── git-mutations.mjs       # stage/unstage/discard/commit/fetch/pull/push/sync 写操作
 │       │   ├── watcher.mjs             # .git 与当前工作区 fs.watch、自毁守卫与变更过多降级
 │       │   ├── event-bus.mjs           # 内存 revision 版本号与挂起式长轮询管理
 │       │   ├── preferences.mjs         # 轻量偏好（locale/graphScope/splitRatio）持久化
@@ -69,8 +69,10 @@
 │               ├── file-icon-map.js    # 文件名、扩展名、文件夹名到 vscode-icons 图标的映射（由 scripts/gen-file-icons.mjs 生成）
 │               ├── file-icons.js       # 按 VS Code 图标主题顺序解析文件与文件夹图标 URL
 │               ├── toast.js            # 轻提示就近定位纯函数与提示栈控制
+│               ├── progress-bar.js     # 窗格标题栏底边的不定进度条（移植自 VS Code ProgressBar）
 │               ├── popover.js          # 提交详情卡最小遮挡定位纯函数
 │               ├── markdown.js         # 提交说明 Markdown 解析（纯函数）与 DOM 渲染
+│               ├── repos-view.js       # 顶部「存储库」列表与行内分支、同步状态
 │               ├── changes-view.js     # 上区「更改」渲染与确认弹窗交互
 │               └── graph-view.js       # 下区提交图表、原地文件展开与顶栏交互
 ├── scripts/
@@ -166,11 +168,10 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 | 状态 | 判定依据 | 后端与界面行为 |
 | --- | --- | --- |
 | 无仓库（`repositories.length === 0`） | 当前 `Workspace` 全部为非 Git 目录或为空 | 返回空仓库列表；前端显示单页空态提示（说明当前对话工作区未包含 Git 仓库） |
-| 单个 `Repository` | `repositories.length === 1` | 顶部不渲染仓库切换栏，垂直空间全部留给上下双区 |
-| 多个 `Repository` | `repositories.length >= 2` | 面板最顶部显示一行紧凑切换条：左侧是无边框的仓库目录名与下拉箭头，外观同图表顶栏按钮，点击弹出原生下拉列表（列表项为「仓库名 (当前分支)」，悬停提示为选中项全文）；右侧显示当前分支，裸仓库与游离 HEAD 时只显示状态文字、不带分支图标。默认按 `workspaceUris` 顺序选中第一个，切换后仅在当前会话内存中保持（当 `workspaceUris` 列表变化且旧 `selectedRepoId` 不再命中时自动切回第一个） |
+| 一个或多个 `Repository` | `repositories.length >= 1` | 面板顶部常驻可折叠的「存储库」区，每个仓库一行（见 7.1），当前仓库高亮。默认按 `workspaceUris` 顺序选中第一个，点击行切换，切换后仅在当前会话内存中保持（当 `workspaceUris` 列表变化且旧 `selectedRepoId` 不再命中时自动切回第一个） |
 | `bare` 仓库 | `isBareRepository === true` 且未命中非 bare 工作树 | 进入只读态：上区提示「裸仓库不支持工作区修改」并隐藏提交/暂存区，下区仍可正常浏览 `Commit Graph` 与执行 `Fetch` |
-| 0 提交（Unborn） | `status --porcelain=v2 --branch` 返回 `# branch.oid (initial)` | `Commit Graph` 返回空列表并显示空提交提示（不执行带 `HEAD` 的 `git log`）；上区支持正常暂存、取消暂存（走 `git rm --cached`）与首次提交；工作区干净且无提交时隐藏推送/发布主按钮 |
-| 游离 HEAD（`Detached HEAD`） | `# branch.head (detached)` | 上区顶部显示轻量提示条，允许知情提交；工作区干净时不展示推送/发布主按钮；下区顶栏 `Pull` 与 `Push` 禁用，`Fetch` 与 `Refresh` 保持可用 |
+| 0 提交（Unborn） | `status --porcelain=v2 --branch` 返回 `# branch.oid (initial)` | `Commit Graph` 返回空列表并显示空提交提示（不执行带 `HEAD` 的 `git log`）；上区支持正常暂存、取消暂存（走 `git rm --cached`）与首次提交；工作区干净且无提交时不显示同步/发布主按钮 |
+| 游离 HEAD（`Detached HEAD`） | `# branch.head (detached)` | 上区顶部显示轻量提示条，允许知情提交；工作区干净时不展示同步/发布主按钮；下区顶栏 `Pull` 与 `Push` 禁用，`Fetch` 与 `Refresh` 保持可用 |
 
 ## 5. 后端 API 契约
 
@@ -208,7 +209,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 - `GIT_LOCKED`：经过 3 次短退避重试后仍存在 `.lock` 冲突（`detail` 包含锁路径原文）。
 - `GIT_TIMEOUT`：超过只读 `10s` 或网络 `45s` 硬超时。
 - `AUTH_REQUIRED`：非交互模式下远端鉴权失败（退出码 `128` 且匹配凭据/交互禁用特征）。
-- `NON_FAST_FORWARD`：`git pull --ff-only` 或 `git push` 因远端分叉被拒。
+- `NON_FAST_FORWARD`：`git pull --ff-only`（含同步更改的拉取步骤）或 `git push` 因远端分叉被拒。
 - `NO_REMOTE`：仓库未配置任何远端，无法执行远程同步。
 - `GIT_ERROR`：其他 Git CLI 非零退出错误。
 
@@ -234,7 +235,10 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
     "workspaceKey": "<hash-of-active-repo-and-worktree>",
     "revision": 12,
     "repositories": [
-      { "id": "...", "name": "AGY-GitWorktree", "worktreePath": "D:/private/AGY-GitWorktree", "branch": "main", "isBare": false }
+      {
+        "id": "...", "name": "AGY-GitWorktree", "worktreePath": "D:/private/AGY-GitWorktree",
+        "isBare": false, "isDetached": false, "headOid": "2a76567...", "branch": "main"
+      }
     ],
     "activeRepo": {
       "id": "...",
@@ -274,13 +278,16 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
           "timestamp": 1795251200,
           "subject": "docs: align domain docs with dual-pane passive scope"
         }
-      ]
+      ],
+      "mergeBase": "5af2c1e..."
     },
     "watchState": { "active": true, "degraded": false, "reason": null },
     "preferences": { "locale": "auto", "graphScope": "auto", "splitRatio": 0.42 }
   }
   ```
 - 说明：`forceRefresh: true` 时若监听处于降级态（变更过多或监听出错），清除降级并重新挂载文件监听。`changes.truncated` 为 `true` 表示变更超过上限，列表只含前 `5000` 条。
+- `repositories` 每项供「存储库」行显示仓库名与分支：当前仓库取自 `activeRepo`，其余仓库取自 `git worktree list`，不额外执行 Git 命令。摘要不带上游与领先、落后数：后端只监听当前仓库，其余仓库的同步状态在终端或 Agent 提交、推送后会过时，所以不提供；当前仓库那一行的同步状态由前端取自 `activeRepo`。
+- `graph.mergeBase` 为当前分支与上游的合并基（`git merge-base HEAD <upstream>`），只在存在上游且领先或落后时查询，否则为 `null`。前端用它定位「传入的更改」「传出的更改」行（见 7.4）。
 
 #### 2. `POST /api/status`
 
@@ -292,9 +299,10 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 #### 3. `POST /api/commit/detail` 与 `POST /api/commit/stats`
 
-用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时调用 `detail`；`stats` 只在打开详情卡时调用，展开文件列表不等它。前端按 `sha` 做内存缓存，切换仓库或 Worktree、强制刷新时清空；切换前发出、切换后才返回的请求结果直接丢弃，不写进新缓存。
+用户展开某条提交的文件列表，或点击「查看提交详情」按钮打开提交详情卡时调用 `detail`；`stats` 只在打开详情卡时调用，展开文件列表不等它。前端按 `sha` 做内存缓存（「传入/传出的更改」行按比较两端缓存），切换仓库或 Worktree、强制刷新时清空；切换前发出、切换后才返回的请求结果直接丢弃，不写进新缓存。
 
 - **Request**（两者相同）：`{ "worktreePath": "...", "sha": "2a76567..." }`（校验 `sha` 匹配 `/^[0-9a-f]{7,64}$/i`）
+- `detail` 可另传 `parentSha`（同样校验），文件清单改为 `git diff --name-status -M -z --end-of-options <parentSha> <sha>` 的两点比较。展开「传出的更改」时传 `sha = HEAD`、`parentSha = mergeBase`，展开「传入的更改」时传上游提交与 `mergeBase`，同 VS Code 以合并基为比较基。
 - **`detail` 的 Response `data`**：
   ```json
   {
@@ -351,6 +359,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 - **`fetch`**：请求体传入 `{ "worktreePath": "..." }`，执行 `git fetch --all --prune`。
 - **`pull`**：请求体传入 `{ "worktreePath": "..." }`，校验非 unborn、非 detached 且存在上游后执行 `git pull --ff-only`。
 - **`push`**：请求体传入 `{ "worktreePath": "...", "remote": "origin" }`（`remote` 仅在无上游 Publish Branch 时必填；存在上游时忽略并执行 `git push`）。所有推送路径均禁止使用 `--force` 与 `--force-with-lease`。
+- **`sync`**：请求体传入 `{ "worktreePath": "..." }`，流程同 VS Code「同步更改」：校验条件与 `pull` 相同，先执行 `git pull --ff-only`，再重新读取领先数，仍领先上游时执行 `git push`。与 VS Code 的差异是拉取用 `--ff-only` 而不是普通 `git pull`：分叉时拉取失败返回 `NON_FAST_FORWARD`，本地不合并、不变基，也不推送。插件没有合并编辑器，宿主 `fileView` 只读，面板也没有中止合并的入口，留在合并或变基的中间状态无法在面板里收尾。不弹确认框，同 VS Code Agents 窗口的 `git.confirmSync` 默认值。
 
 #### 9. `POST /api/preferences`
 
@@ -385,13 +394,13 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 | 取消暂存 | 有提交：`git restore --staged -- <paths>`（全部不传路径或传 `.`）；**unborn 仓库**：`git rm --cached -r -- <paths>` | 实测 unborn 仓库执行 `git restore --staged` 会报 `fatal: could not resolve 'HEAD'`，必须走 `git rm --cached`。 |
 | 放弃更改 | 已跟踪：`git restore --worktree -- <paths>`（批量 `git restore --worktree -- .`）；单文件未跟踪：`git clean -f -- <path>` | 仅还原工作区，保留已暂存改动（`MM` 态不伤暂存区）；批量绝不执行 `git clean`。 |
 | 提交 | `git commit -F -`（`stdin` 写入 UTF-8 正文） | 规避 Windows 命令行长度与引号转义问题。 |
-| 远程同步 | `git fetch --all --prune` / `git pull --ff-only` / `git push` 或 `git push -u --end-of-options <remote> <branch>` | 全部走 Repository 级写队列与非交互凭据环境。 |
+| 远程同步 | `git fetch --all --prune` / `git pull --ff-only` / `git push` 或 `git push -u --end-of-options <remote> <branch>`；同步更改为 `git pull --ff-only` 后按需 `git push` | 全部走 Repository 级写队列与非交互凭据环境；同步更改的拉取与推送在同一次队列任务里完成。 |
 
 ### 6.3 并发队列、超时与非交互凭据
 
 1. **两级写队列与只读并发池**：
    - **Worktree 级串行队列**（键：规范化 `worktreePath`）：`stage`、`unstage`、`discard`。
-   - **Repository 级串行队列**（键：规范化 `gitCommonDir`）：`commit`、`fetch`、`pull`、`push`（`commit` 若带 `autoStageAll` 需同时串行化对应 Worktree 队列，防止边暂存边提交）。
+   - **Repository 级串行队列**（键：规范化 `gitCommonDir`）：`commit`、`fetch`、`pull`、`push`、`sync`（`commit` 若带 `autoStageAll` 需同时串行化对应 Worktree 队列，防止边暂存边提交）。
    - **只读并发池**：无写锁，全局并发上限 `4`。
 2. **瞬时锁冲突重试**：写命令遇到 stderr 匹配 `/Unable to create '.*\.lock': File exists\./i` 时，按 `80ms`、`200ms`、`400ms` 退避重试最多 3 次；仍失败时返回 `GIT_LOCKED` 及原始锁路径，**绝不自动删除用户的 `.lock` 文件**。
 3. **超时阈值**：只读命令硬超时 `10s`，网络命令（`fetch`、`pull`、`push`）硬超时 `45s`，超时后终止子进程、释放队列并返回 `GIT_TIMEOUT`。
@@ -434,16 +443,15 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 ### 7.1 布局骨架与窄幅响应式（`320px–560px`）
 
 - **根结构**：全高 Flex 纵向布局（`100vh`，零页面级横向溢出），外层容器声明 `container: ag-git-pane / inline-size`。
-- **多仓顶部栏**：仅 `repositories.length >= 2` 时渲染一行 `30px` 紧凑仓库下拉条；单仓时不渲染。
+- **存储库区**：面板顶部常驻 `∨ 存储库` 窗格（有仓库时始终显示，可折叠），每个仓库一行 `22px`，超过 `10` 行（VS Code `scm.repositories.visible` 默认值）后在区内滚动。行内依次为仓库图标（多个仓库时当前仓库换成带勾的 `repo-selected`）、仓库名，行尾为分支项与同步项，规则同 VS Code Git 扩展状态栏：分支项为 `git-branch` 图标加分支名，游离 HEAD 为 `git-commit` 图标加 8 位短 SHA，裸仓库只显示「裸仓库」；同步项在没有远端时不显示，有上游时为 `sync` 图标，领先或落后时再加 `落后↓ 领先↑`，没有上游时为 `cloud-upload` 图标，unborn 与游离 HEAD 只显示 `sync` 图标；同步、拉取、推送或发布期间 `sync` 图标旋转。同步项只在当前仓库那一行显示：后端只监听当前仓库，其他仓库的领先、落后数会过时，所以不显示。悬停提示同 VS Code 的 `syncTooltip`。同步项同 VS Code 状态栏可以点击：有上游时执行同步更改（`POST /api/remote/sync`），没有上游时发布分支；unborn、游离 HEAD 与同步进行中时不可点，其他写操作进行中时禁用。同步与推送不改动工作区里未提交的文件，工作区有改动、主按钮显示「提交」时也能用它推送。点同步项不切换当前仓库。分支项只用于显示，不提供 VS Code 的切换分支与 `⋯` 菜单（分支 Checkout 不在 V1 范围）。点击行或按 `Enter`/`Space` 切换仓库，`↑`/`↓`/`Home`/`End` 在行间移动焦点。当前仓库这一行用 `activeRepo`，只刷新 `git status` 时也会更新；其余仓库的分支要等下一次完整快照。窄栏下先截断仓库名，再截断分支名，同步数字不截断。
 - **双区与中缝拖拽**：
-  - 上区 `∨ 更改` 与下区 `∨ 图表` 为 `28px` 窗格标题栏，各自独立支持点击折叠/展开；下区标题栏上边框即两区分界线。标题文字为 `13px` 粗体，比 VS Code 的 `11px` 大，因为中文标题在 `11px` 下偏小。`13px` 标题放在 VS Code 的 `22px` 栏高里上下拥挤，所以栏高改为 `28px`。
+  - `∨ 存储库`、上区 `∨ 更改` 与下区 `∨ 图表` 为 `28px` 窗格标题栏，各自独立支持点击折叠/展开；更改与图表的标题栏上边框即各区分界线。标题文字为 `13px` 粗体，比 VS Code 的 `11px` 大，因为中文标题在 `11px` 下偏小。`13px` 标题放在 VS Code 的 `22px` 栏高里上下拥挤，所以栏高改为 `28px`。
   - 双区均展开时两区交界处有一条不占高度的 `4px` 拖拽条，悬停 `300ms` 后显示强调色（指针拖动实时更新上区占比 `splitRatio`，范围 `0.15–0.85`，松手后写入 `/api/preferences`）。
   - 上区只滚动文件列表，横幅与提交输入区固定在列表上方。上区矮到放不下输入区加三行列表时，整个上区改为一起滚动。下区滚动整个提交列表。上区文件列表与下区提交列表均为 `overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain`；上区横幅与输入区留出等宽的滚动条沟槽，右缘与文件行对齐。
   - 任一区折叠时，另一展开区自动撑满剩余高度。
 - **窄屏防溢出约束**：
   - Flex/Grid 文本列强制 `min-width: 0`，单行标题与路径使用 `overflow: hidden; text-overflow: ellipsis; white-space: nowrap`。
   - 长目录路径按目录/文件名拆分展示（优先保留文件名完整可见）。
-  - `@container ag-git-pane (max-width: 340px)` 下隐藏多仓切换栏的分支元数据。
 
 ### 7.2 上区：更改（`Working Tree Changes`）
 
@@ -460,11 +468,11 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
      - 点击时若 `message.trim()` 为空：聚焦 `<textarea>` 并显示轻量校验提示，不发请求。
      - 若 `staged.length > 0`：直接调用 `POST /api/commit`（`autoStageAll: false`）。
      - 若 `staged.length === 0 && unstaged.length > 0`：弹出轻量确认框「没有要提交的暂存更改。是否自动暂存全部 N 个更改并直接提交？」，确认后调用 `POST /api/commit`（`autoStageAll: true`）。
-   - **同步态**（工作区干净且非 unborn、非 detached）：
+   - **同步态**（工作区干净且非 unborn、非 detached），顺序同 VS Code Git 扩展的 ActionButton：
      - 若 `upstream === null` 且 `remotes.length > 0`：显示「发布分支」（单远端直接 `push -u`，多远端弹窗选远端）。
-     - 若 `ahead > 0`：显示「推送更改 N↑」（若同时 `behind > 0` 则在点击失败或文案中提示先拉取）。
-     - 若 `ahead === 0 && behind > 0`：显示「拉取更改 N↓」（调用 `pull --ff-only`）。
-     - 工作区干净且与上游同步（或无远端）：显示禁用态「提交」（或保持无待同步状态）。
+     - 若存在上游且 `ahead > 0 || behind > 0`：显示 `sync` 图标与「同步更改」，后跟落后数加 `arrow-down` 图标、领先数加 `arrow-up` 图标（为 0 的一侧省略），如「同步更改 3↓ 21↑」。只领先或只落后时同样是「同步更改」，不再区分推送与拉取。悬停提示同 VS Code 的 `syncTooltip`（「将 21 个提交推送到 origin/main」「从 origin/main 拉取 3 个提交」「在 origin/main 之间拉取 3 个提交并推送 21 个提交」）。点击调用 `POST /api/remote/sync`。
+     - 工作区干净且与上游同步（或无远端）：显示禁用态「提交」。
+   - **操作进行中**（同 VS Code）：按钮保留原文案并禁用，进度由「更改」标题栏底边的进度条表示（见 7.6），不再换成「正在提交…」之类的文案。当前仓库同步、推送、拉取或发布期间，「同步更改」与「发布分支」的图标换成旋转的 `sync`，悬停提示分别为「正在同步更改...」与「正在发布分支…」；提交期间悬停提示为「正在提交更改...」。
 4. **可折叠文件分组与行操作**：
    - 分组行行尾显示文件数徽标；文件行依次为文件类型图标（与分组标题文字左对齐，距左缘 `30px`）、文件名、淡色目录，行尾为按 Git 装饰色着色的单字母状态（`M`/`A`/`D`/`R`/`U`/`!`），已删除文件加删除线。工作区干净时列表留空，不显示占位文案。
    - 整个未跟踪的目录在 `git status` 中只占一项，路径以 `/` 结尾（如 `docs/public/`）。这一行显示文件夹图标，文件名位置显示文件夹名 `public`，淡色目录显示上级目录 `docs`。
@@ -486,6 +494,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 行结构对齐 VS Code「图表」视图。每行固定 `22px`，左侧 SVG 图形列宽度按本行泳道数计算（`11px × (泳道数 + 1)`），标题紧随其后，作者以淡色小字附在标题后，`HEAD` 行加粗；行尾为引用徽标，悬停或聚焦时显示「查看提交详情」按钮。窄栏下泳道极多时，图形列在右侧裁切，至少给标题留出 `96px`。
    - 引用徽标按当前分支 > 上游 > 其他有色引用排序；首个有色引用显示图标与名称，其余按颜色、图标归组只显示图标（多于 1 个时带数量）。`自动` 范围只显示当前分支与上游；`全部` 范围的其余引用取所在泳道颜色。图标为当前分支 `target`、本地分支 `git-branch`、远程分支 `cloud`、标签 `tag`。
    - 点击提交行（或按 `Enter`/`Space`）调用 `/api/commit/detail` 并在该行下方原地展开文件列表（按 `A/M/D/R` 标记）。文件行左侧绘制所属提交的输出泳道竖线，并加粗该提交向下接续第一父提交的泳道（根提交没有接续泳道，不加粗），提交行自身的下行线同步加粗；文件图标位于泳道列之后 `8px`。
+   - 领先或落后上游时，同 VS Code `scm.graph.showOutgoingChanges` / `showIncomingChanges` 的默认行为插入两种虚拟行：「传出的更改」在 `HEAD` 行上方，作者位置显示当前分支名；「传入的更改」在合并基上方，作者位置显示上游名，上游泳道止于这一行。圆点为当前分支色或上游色的虚线圆，标题不加粗，没有「查看提交详情」按钮。点击原地展开相对合并基的改动文件（`/api/commit/detail` 带 `parentSha`）。`HEAD` 或合并基不在已加载的提交里时不插入；本地搜索期间父子关系已被截断，也不插入。
    - 列表底部在 `hasMore === true` 且未达软上限时显示「加载更多...」行（左侧泳道向下淡出）。这一行进入可视区下方一屏以内时自动加载下一页，用户滚到底之前新提交已经接上，对应 VS Code 的 `scm.graph.pageOnScroll`。自动加载失败时，列表停在同一状态期间不再自动重试，这一行显示「加载更多...」按钮，由用户点击重试。本地搜索期间结果很短，这一行一出现就在可视区内，为避免一页页拉到软上限，搜索时只能点击加载。达到 `2000` 条软上限时显示提示引导切换为 `自动` 范围。切换到另一个仓库或 Worktree 时图表回到顶部，图表里原有的键盘焦点随之释放（各 Worktree 的提交相同，不释放会按 sha 还原到原来那一行，下一次按键又滚回去）；同一 Worktree 刷新与加载更多时滚动位置不变。
 3. **文件打开契约（上区与下区统一）**：
    - Sidecar 模式下点击有效文件调用 `window.sidecar.ui.toggleAuxPane({ tabType: 'fileView', uri: file.fileUri })`。
@@ -500,7 +509,8 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 2. **颜色**：当前分支引用所在泳道固定蓝色（`--gw-graph-ref`），上游引用所在泳道固定紫色（`--gw-graph-remote-ref`），其余新泳道在 `--gw-graph-1..5` 五色间轮换。
 3. **图形**：泳道间距 `11px`、线宽 `1px`；泳道左移用两段半径 `5px` 的圆角，合并与收拢用半径 `11px` 的圆弧。普通提交为半径 `5px` 的实心圆，合并提交为同心圆，`HEAD` 为空心圆环；圆点用与行背景同色的 `2px` 描边切开穿过的连线。
 4. **列表边界**：父提交不在已加载列表内时，泳道一直延伸到列表末尾，由「加载更多」行的淡出竖线承接。本地搜索时只连接结果集内部的父子关系。
-5. **与 VS Code 原实现的差异**：根提交处保留其余泳道（原实现会丢弃，多根仓库会断线）；未实现 Incoming / Outgoing Changes 虚拟节点。
+5. **传入/传出的更改**：移植 `addIncomingOutgoingChangesHistoryItems`。算完全部行的泳道后，以 `graph.mergeBase` 定位：`HEAD` 不等于合并基时在 `HEAD` 行上方插入「传出的更改」，它的输出比输入多一条通往 `HEAD` 的当前分支色泳道，`HEAD` 行随之多一条输入泳道；上游提交不等于合并基时在合并基行上方插入「传入的更改」，并把上一行里通往合并基的上游色泳道改为通往这一行。传入的更改已被合并（上一行是以合并基为父提交之一的合并提交）时不插入。虚拟行的圆点依次是带色实心圆、背景色描边圆与 `4,2` 虚线圆。
+6. **与 VS Code 原实现的差异**：根提交处保留其余泳道（原实现会丢弃，多根仓库会断线）。
 
 ### 7.5 最小遮挡提交详情卡（`popover.js`、`markdown.js`）
 
@@ -544,12 +554,17 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
    - 映射表由 `scripts/gen-file-icons.mjs` 从固定提交的 vscode-icons 与 VS Code 内置语言声明生成，每条规则都能被某个文件路径命中。VS Code 按字面后缀匹配语言扩展名，日志语言声明的 `*.log.?` 在 VS Code 里匹配不到任何文件，生成时跳过。因此 `app.log.1` 与 VS Code 一样显示默认文件图标。
    - 以 `/` 结尾的未跟踪目录按文件夹名匹配 vscode-icons 的文件夹图标（如 `tests` 用测试文件夹图标、`public` 用 public 文件夹图标），不区分大小写；未命中时用默认文件夹图标。
    - 浅色主题下，有浅色变体的图标改用 `file_type_light_*.svg` 或 `folder_type_light_*.svg`；主题切换时就地替换已渲染图标的 `src`。
-5. **就近轻提示**：
+5. **进度条**（移植 VS Code `ProgressBar` 的 infinite 模式，`progress-bar.js`）：
+   - 贴在窗格标题栏底边的 `2px` 横条，宽 `2%` 的小段每 `4s` 从左走到右，中途拉长到 `3` 倍；超过 `10s` 改为 `steps(100)` 的步进动画以降低 GPU 占用。颜色取主题强调色。系统要求减少动态效果时改为铺满整条的静止横条。进度条本身对读屏隐藏，进行中时所在窗格带 `aria-busy="true"`。
+   - 只表示用户发起的操作。「更改」标题栏：任一写操作（提交、暂存、取消暂存、放弃、同步、发布、推送、拉取、提取）进行期间显示，全部结束后再留 `300ms`（同 VS Code 源代码管理范围），连续操作之间不闪烁。「图表」标题栏：从图表顶栏触发的写操作执行期间同时显示。点击刷新时两个标题栏都显示。
+   - 文件变化、`.git` 变化、切回窗口、切换范围、加载更多等触发的快照与 status 刷新不显示进度条。这与 VS Code 不同（VS Code 每次 `git status` 都显示进度），Agent 频繁写文件时标题栏不会反复闪烁。
+   - 操作成功时不弹提示（同 VS Code），提交、同步、推送、拉取、提取、刷新后面板本身的变化就是反馈；失败仍弹出错误提示。复制完整 SHA 没有可见变化，保留成功提示。
+6. **就近轻提示**：
    - 位置在提示出现时按触发控件计算。提示贴在控件下方。下方剩余空间不足 `96px` 时，放到上下两侧中空间较大的一侧。控件只露出一部分时，贴在露出部分的下方。控件不可见（折叠、滚出视口、被所在滚动区域裁掉或已移除）时，停靠面板底部。提示存续期间不随列表滚动移动。
    - 提示条除关闭按钮外点击穿透，压在列表行上时不妨碍继续操作这些行。
-   - 上区操作（提交、暂存、取消暂存、放弃、发布、推送、拉取）锚定提交按钮；图表顶栏操作（范围切换、提取、拉取、推送、刷新）锚定图表标题栏；打开文件、复制 SHA 等锚定被点击的行或按钮；后台同步失败等无明确来源的提示停靠底部。
-6. **禁用态**：所有禁用按钮悬停时显示 `not-allowed` 光标。
-7. **双语 i18n**：
+   - 上区操作（提交、暂存、取消暂存、放弃、发布、同步）的错误提示锚定提交按钮；存储库行同步、发布的错误提示锚定存储库列表（行在操作开始时就会重绘）；图表顶栏操作（范围切换、提取、拉取、推送、刷新）锚定图表标题栏；打开文件、复制 SHA 等锚定被点击的行或按钮；后台同步失败等无明确来源的提示停靠底部。
+7. **禁用态**：所有禁用按钮悬停时显示 `not-allowed` 光标。
+8. **双语 i18n**：
    - 内置 `zh-CN` 与 `en` 完整词典，默认 `locale: 'auto'` 按 `navigator.language` 匹配（`zh` 前缀用中文，其余用英文）；在 `⋯` 菜单中切换后持久化保存。
 
 ## 8. 插件清单、安装脚本与验证体系
@@ -608,15 +623,16 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 1. **后端单元与集成测试（`node --test tests/unit/*.test.mjs tests/integration/*.test.mjs`）**：
    - `discovery`：Windows 盘符大小写与 `%3A` URI、多 `Workspace` 指向同仓不同 `Worktree` 去重、非 Git 目录忽略、嵌套 Submodule 边界、`bare` 仓探测。
-   - `git-queries` & `git-mutations`：在 `os.tmpdir()` 构建真实临时仓库，覆盖中文路径、空格文件名、`-weird.txt`、0 提交 unborn 仓库暂存/取消暂存（`rm --cached`）/首次提交、`MM` 双态文件放弃更改不伤暂存区、单文件未跟踪删除、批量放弃不删未跟踪、外部合并冲突阻断提交、`Detached HEAD`、`git show --name-status -z` 重命名与 Merge Commit 解析、`autoStageAll` 自动暂存提交。
+   - `git-queries` & `git-mutations`：在 `os.tmpdir()` 构建真实临时仓库，覆盖中文路径、空格文件名、`-weird.txt`、0 提交 unborn 仓库暂存/取消暂存（`rm --cached`）/首次提交、`MM` 双态文件放弃更改不伤暂存区、单文件未跟踪删除、批量放弃不删未跟踪、外部合并冲突阻断提交、`Detached HEAD`、`git show --name-status -z` 重命名与 Merge Commit 解析、`autoStageAll` 自动暂存提交；同步更改只领先时只推送、只落后时只快进、分叉时返回 `NON_FAST_FORWARD` 且本地与远端都不变；非当前仓库的摘要只带分支信息，`graph.mergeBase` 与带 `parentSha` 的文件清单。
    - 锁与凭据：人为创建 `.git/index.lock` 验证 3 次退避后返回 `GIT_LOCKED` 且不删锁文件；起本地 `127.0.0.1` HTTP 401 服务验证 `fetch` 在 `GCM_INTERACTIVE=never` 下 2 秒内快速返回 `AUTH_REQUIRED` 而不卡死。
    - 监听与长轮询：触发 `.git` 与工作区写入验证 `POST /api/events/wait` 及时唤醒；删除被监听目录验证 Windows `\\?\` 自毁守卫生效且不发风暴；验证 Standalone 的 Host / Origin / Content-Type / 越界路径拦截。
 2. **前端纯逻辑与浏览器回归（`tests/browser/`）**：
-   - `graph-layout.js` 测试：单线、分支分叉、多父 Merge Commit 连续无断口、`自动` 模式无悬空线头、展开文件行穿行竖线连续。
+   - `graph-layout.js` 测试：单线、分支分叉、多父 Merge Commit 连续无断口、`自动` 模式无悬空线头、展开文件行穿行竖线连续；分叉、只领先、只落后时「传出/传入的更改」的插入位置、比较两端与泳道连续。
+   - `changes-view.js` 与 `repos-view.js` 测试：主按钮按发布分支 → 同步更改 → 禁用的提交排序、同步数落后在前领先在后；存储库行按 VS Code 状态栏规则显示分支项与同步项，同步项只在当前仓库那一行显示。
    - `popover.js` 测试：顶部第 1/2 项向上弹出、中部默认向下、底部空间不足翻转并钳制在视口内。
    - `markdown.js` 测试：逐行分块与段落间隔、列表续行与嵌套、行内格式、不安全链接与 HTML 按原文显示、代码块保留内部空行。
    - `file-icons.js` 测试：带父文件夹的文件名规则只在直接父文件夹同名时生效；映射表里每条文件名、扩展名规则都能被对应路径命中。
-   - 真实浏览器（Standalone + `<iframe sandbox="allow-scripts" srcdoc="...">` 注入 `theme-change` / `workspace-change`）：验证 `320px`、`360px`、`420px`、`560px` 零横向溢出（`scrollWidth <= clientWidth`）、0 控制台报错、深浅主题切换、未暂存时点击提交弹窗确认且提交完成后主按钮切换为推送更改、上区文件列表滚动时提交输入框不动、详情卡关闭按钮、提交行滚出可视区时关闭与后台刷新不重建详情卡、长历史滚动时不点击即预先加载下一页（切换范围回到首页后仍然有效，搜索期间不自动加载）、键盘焦点与重渲染保焦。
+   - 真实浏览器（Standalone + `<iframe sandbox="allow-scripts" srcdoc="...">` 注入 `theme-change` / `workspace-change`）：验证 `320px`、`360px`、`420px`、`560px` 零横向溢出（`scrollWidth <= clientWidth`）、0 控制台报错、深浅主题切换、未暂存时点击提交弹窗确认且提交完成后主按钮切换为「同步更改 1↑」且提交、同步进行中按钮保留原文案并禁用、「更改」标题栏底边显示进度条、刷新时两个标题栏底边都显示进度条、终端提交与文件写入触发的后台刷新不显示进度条、操作成功不弹提示、工作区有改动时点存储库行的同步状态只推送且不动改动、存储库行同步状态随之更新、「传出的更改」展开的文件与 `git diff @{upstream} HEAD` 一致、点击同步后推到远端且传出的更改消失、点击存储库行切换仓库、上区文件列表滚动时提交输入框不动、详情卡关闭按钮、提交行滚出可视区时关闭与后台刷新不重建详情卡、长历史滚动时不点击即预先加载下一页（切换范围回到首页后仍然有效，搜索期间不自动加载）、键盘焦点与重渲染保焦。
 
 ### 8.4 Windows Antigravity 2.0 桌面端真机验收清单
 
@@ -624,7 +640,7 @@ git -c core.quotepath=false --no-optional-locks rev-parse \
 
 - [ ] 运行 `scripts/install.ps1` 成功安装至 `~/.gemini/config/plugins/antigravity-git-worktree/`，在 Antigravity Customizations 启用后侧栏正常渲染 `Git Graph`，无控制台或 `sidecar.log` 报错。
 - [ ] 在 Antigravity 中切换不同仓库对话、新建/切换宿主 Worktree、在终端 `git checkout` / 编辑文件，辅助栏均在 1 秒内自动同步，无 `index.lock` 竞争报错。
-- [ ] 在仅存在未暂存更改时填好说明点击「提交」，确认弹窗后完成提交，工作区干净且领先上游时主按钮自动切换为「推送更改 N↑」；验证 `MM` 文件放弃未暂存不伤暂存区、未跟踪单文件红字二次确认删除。
+- [ ] 在仅存在未暂存更改时填好说明点击「提交」，确认弹窗后完成提交，工作区干净且领先上游时主按钮自动切换为「同步更改 N↑」，图表 `HEAD` 上方出现「传出的更改」；远端有新提交且本地已分叉时点击同步提示到终端合并，仓库不变；验证 `MM` 文件放弃未暂存不伤暂存区、未跟踪单文件红字二次确认删除。
 - [ ] 在图表中切换 `自动 / 全部`、测试含 Merge 分支仓库的连线完整性、展开提交文件列表、分别点击顶部/中部/底部提交行的「查看提交详情」按钮，验证详情卡最小遮挡与不裁切、提交说明按 Markdown 渲染、改动统计与 VS Code 一致。
 - [ ] 点击上区更改文件与下区展开文件，确认宿主原生 `fileView` 正确打开对应文件；历史已删文件不可点击并显示提示。
 - [ ] 切换 Antigravity 深色/浅色主题与调整辅助栏宽度（含 `320px` 极窄态），确认配色、对比度、字体与无横向溢出表现正常，输入框内 `Ctrl+C/V/Z/A`、`Ctrl+Enter` 与 `Ctrl+B` 表现符合预期。
