@@ -478,21 +478,33 @@ export async function discoverRepositories(workspaceUris, options = {}) {
   const timeoutMs = options.timeoutMs;
   const repoGroups = new Map();
 
-  for (const uri of workspaceUris) {
+  // 每次快照（包括切换仓库）都会重跑发现，单个 git 进程启动在 Windows 上约 60ms：
+  // 各工作区并行探测，worktree list 不依赖探测结果，与 rev-parse 同时启动
+  const probeResults = await Promise.all(workspaceUris.map(async (uri) => {
     const wsPath = normalizeWorkspaceUri(uri);
     if (!wsPath || !isExistingDirectory(wsPath)) {
+      return null;
+    }
+    const [probe, worktreeResult] = await Promise.all([
+      probeWorkspaceGitRoot(wsPath, { runGitRead: runReadFn, timeoutMs }),
+      runReadFn(['worktree', 'list', '--porcelain', '-z'], { cwd: wsPath, allowNonZero: true, timeoutMs }),
+    ]);
+    return probe ? { probe, worktreeResult } : null;
+  }));
+
+  for (const item of probeResults) {
+    if (!item) {
       continue;
     }
-    const probe = await probeWorkspaceGitRoot(wsPath, { runGitRead: runReadFn, timeoutMs });
-    if (!probe) {
-      continue;
-    }
+    const { probe, worktreeResult } = item;
     let group = repoGroups.get(probe.gitCommonDirKey);
     if (!group) {
+      // 同一 Repository 的各个命中列出的 worktree 相同，取第一个命中的结果
       group = {
         id: probe.gitCommonDirKey,
         gitCommonDir: probe.gitCommonDir,
         hits: [],
+        worktreeResult,
       };
       repoGroups.set(probe.gitCommonDirKey, group);
     }
@@ -501,12 +513,7 @@ export async function discoverRepositories(workspaceUris, options = {}) {
 
   const repositories = [];
   for (const group of repoGroups.values()) {
-    const firstHit = group.hits[0];
-    const worktreeResult = await runReadFn(['worktree', 'list', '--porcelain', '-z'], {
-      cwd: firstHit.wsPath,
-      allowNonZero: true,
-      timeoutMs,
-    });
+    const { worktreeResult } = group;
     const worktrees = worktreeResult.exitCode === 0
       ? parseWorktreeListPorcelainZ(worktreeResult.stdout)
       : [];
