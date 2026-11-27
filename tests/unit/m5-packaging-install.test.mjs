@@ -62,6 +62,7 @@ const createFixtureSourceRepo = (fixtureRoot) => {
   write('docs/spec.md', '# Spec\n');
   write('tests/unit/dummy.test.mjs', '// dummy test\n');
   write('README.md', '# Fixture README\n');
+  write('README.zh-CN.md', '# 夹具中文 README\n');
   write('src-sentinel.txt', 'KEEP_SOURCE_INTACT\n');
   write('sidecars/panel/debug.log', 'runtime noise\n');
   write('sidecars/panel/README.md', 'internal readme\n');
@@ -373,6 +374,7 @@ test(
         'tests',
         'scripts',
         'README.md',
+        'README.zh-CN.md',
         'src-sentinel.txt',
         'sidecars/panel/debug.log',
         'sidecars/panel/README.md',

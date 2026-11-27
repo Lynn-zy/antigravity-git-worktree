@@ -273,6 +273,7 @@ function Test-ExcludedEntryName {
         'tests',
         'scripts',
         'README.md',
+        'README.zh-CN.md',
         'tmp',
         '.scratch',
         'node_modules',

@@ -136,7 +136,7 @@ remove_target_safely() {
 is_excluded_name() {
   local name="$1"
   case "$name" in
-    .git|docs|tests|scripts|README.md|tmp|.scratch|node_modules|.sidecar.pid|.DS_Store|Thumbs.db|desktop.ini|*.log)
+    .git|docs|tests|scripts|README.md|README.zh-CN.md|tmp|.scratch|node_modules|.sidecar.pid|.DS_Store|Thumbs.db|desktop.ini|*.log)
       return 0
       ;;
     *)
