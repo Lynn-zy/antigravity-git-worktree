@@ -1,4 +1,21 @@
-﻿[CmdletBinding()]
+﻿<#
+.SYNOPSIS
+    安装、更新或卸载 Antigravity 2.0 "Git Graph" 插件。
+    Install, update, or uninstall the Antigravity 2.0 "Git Graph" plugin.
+.DESCRIPTION
+    默认仅将运行所需文件（plugin.json、assets/、sidecars/panel/）复制到目标插件目录，不修改 config.json。
+    Copies only runtime files (plugin.json, assets/, sidecars/panel/) into the target plugin directory without modifying config.json.
+.PARAMETER TargetDir
+    目标插件安装目录（默认：~/.gemini/config/plugins/antigravity-git-worktree）。
+    Target plugin installation directory (default: ~/.gemini/config/plugins/antigravity-git-worktree).
+.PARAMETER Link
+    创建指向源码仓库的目录联接（Junction），无需管理员权限。
+    Create a directory junction pointing to the source repository (no admin privileges required).
+.PARAMETER Uninstall
+    安全移除已安装的目录或目录联接，绝不删除源码仓库内容。
+    Safely remove the installed directory or junction without touching source repository files.
+#>
+[CmdletBinding()]
 param(
     [string]$TargetDir = (Join-Path $home '.gemini\config\plugins\antigravity-git-worktree'),
     [switch]$Link,
@@ -7,6 +24,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# 管道或进程捕获标准输出时显式使用无 BOM UTF-8，避免非 UTF-8 代码页的 Windows 上中文乱码
+if ([Console]::IsOutputRedirected) {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+}
 
 <#
 .SYNOPSIS
@@ -351,16 +373,38 @@ function Assert-SourceRuntimeFiles {
     }
 }
 
-function Write-EnablementHint {
+function Write-BilingualResult {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$ZhLines,
+        [Parameter(Mandatory = $true)]
+        [string[]]$EnLines
+    )
+
+    foreach ($line in $ZhLines) {
+        Write-Output $line
+    }
+    Write-Output ''
+    foreach ($line in $EnLines) {
+        Write-Output $line
+    }
+}
+
+function Get-EnablementHint {
     param(
         [switch]$IsUpdate
     )
 
     if ($IsUpdate) {
-        Write-Output 'Next step: In Antigravity Customizations, toggle "Git Graph" off and back on to reload the updated sidecar (config.json was not modified).'
+        return @{
+            Zh = '下一步：在 Antigravity Customizations 中先关闭再重新开启 "Git Graph"，以重新加载更新后的 Sidecar（未修改 config.json）。'
+            En = 'Next step: In Antigravity Customizations, toggle "Git Graph" off and back on to reload the updated sidecar (config.json was not modified).'
+        }
     }
-    else {
-        Write-Output 'Next step: Open Antigravity Customizations and enable "Git Graph" (config.json was not modified).'
+
+    return @{
+        Zh = '下一步：打开 Antigravity Customizations 并启用 "Git Graph"（未修改 config.json）。'
+        En = 'Next step: Open Antigravity Customizations and enable "Git Graph" (config.json was not modified).'
     }
 }
 
@@ -375,15 +419,27 @@ Assert-SafeTargetPath -NormalizedTarget $normalizedTarget -NormalizedRepoRoot $r
 if ($Uninstall) {
     if (Test-EntryExists -Path $normalizedTarget) {
         Remove-PathSafely -Path $normalizedTarget
-        Write-Output "Uninstalled 'Git Graph' (antigravity-git-worktree) from: $normalizedTarget"
+        Write-BilingualResult `
+            -ZhLines @("已卸载 `"Git Graph`" (antigravity-git-worktree)：$normalizedTarget") `
+            -EnLines @("Uninstalled 'Git Graph' (antigravity-git-worktree) from: $normalizedTarget")
     }
     else {
-        Write-Output "Plugin 'Git Graph' is not installed at: $normalizedTarget"
+        Write-BilingualResult `
+            -ZhLines @("未在以下路径检测到已安装的 `"Git Graph`"：$normalizedTarget") `
+            -EnLines @("Plugin 'Git Graph' is not installed at: $normalizedTarget")
     }
     exit 0
 }
 
 Assert-SourceRuntimeFiles -RepoRoot $repoRoot
+
+$wasAlreadyInstalled = $false
+if (Test-EntryExists -Path $normalizedTarget) {
+    $targetAttrs = [System.IO.File]::GetAttributes($normalizedTarget)
+    if (($targetAttrs -band [System.IO.FileAttributes]::Directory) -ne 0) {
+        $wasAlreadyInstalled = Test-EntryExists -Path (Join-Path $normalizedTarget 'plugin.json')
+    }
+}
 
 $parentDir = Split-Path -Parent $normalizedTarget
 if (-not [string]::IsNullOrWhiteSpace($parentDir)) {
@@ -395,17 +451,17 @@ if ($Link) {
         Remove-PathSafely -Path $normalizedTarget
     }
     New-Item -ItemType Junction -Path $normalizedTarget -Target $repoRoot | Out-Null
-    Write-Output "Linked 'Git Graph' (antigravity-git-worktree) junction: $normalizedTarget -> $repoRoot"
-    Write-EnablementHint
+    $hint = Get-EnablementHint -IsUpdate:$wasAlreadyInstalled
+    Write-BilingualResult `
+        -ZhLines @(
+            "已创建 `"Git Graph`" (antigravity-git-worktree) 目录联接（Junction）：$normalizedTarget -> $repoRoot",
+            $hint.Zh
+        ) `
+        -EnLines @(
+            "Linked 'Git Graph' (antigravity-git-worktree) junction: $normalizedTarget -> $repoRoot",
+            $hint.En
+        )
     exit 0
-}
-
-$wasAlreadyInstalled = $false
-if (Test-EntryExists -Path $normalizedTarget) {
-    $targetAttrs = [System.IO.File]::GetAttributes($normalizedTarget)
-    if (($targetAttrs -band [System.IO.FileAttributes]::Directory) -ne 0) {
-        $wasAlreadyInstalled = Test-EntryExists -Path (Join-Path $normalizedTarget 'plugin.json')
-    }
 }
 
 # 默认拷贝模式原地同步目录树：保留既有普通目录实体，避免运行中的 Sidecar 占用 sidecars\panel 为 CWD 导致覆盖安装报 IOException
@@ -424,6 +480,16 @@ Copy-FileSafely `
 Remove-UnexpectedChildren -Directory $destSidecarsDir -AllowedNames @('panel')
 Remove-UnexpectedChildren -Directory $normalizedTarget -AllowedNames @('plugin.json', 'assets', 'sidecars')
 
-Write-Output "Installed 'Git Graph' (antigravity-git-worktree) to: $normalizedTarget"
-Write-EnablementHint -IsUpdate:$wasAlreadyInstalled
+$hint = Get-EnablementHint -IsUpdate:$wasAlreadyInstalled
+if ($wasAlreadyInstalled) {
+    $zhStatus = "已更新 `"Git Graph`" (antigravity-git-worktree)：$normalizedTarget"
+    $enStatus = "Updated 'Git Graph' (antigravity-git-worktree) at: $normalizedTarget"
+}
+else {
+    $zhStatus = "已将 `"Git Graph`" (antigravity-git-worktree) 安装至：$normalizedTarget"
+    $enStatus = "Installed 'Git Graph' (antigravity-git-worktree) to: $normalizedTarget"
+}
+Write-BilingualResult `
+    -ZhLines @($zhStatus, $hint.Zh) `
+    -EnLines @($enStatus, $hint.En)
 exit 0

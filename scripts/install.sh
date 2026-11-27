@@ -11,6 +11,15 @@ MODE="copy"
 
 usage() {
   cat <<'EOF'
+用法: install.sh [--target-dir <目录>] [--link | --uninstall] [-h|--help]
+
+选项:
+  --target-dir <目录>  目标插件安装目录
+                       (默认: ~/.gemini/config/plugins/antigravity-git-worktree)
+  --link               创建指向源码仓库的符号链接
+  --uninstall          安全移除已安装的目录或符号链接
+  -h, --help           显示此帮助信息
+
 Usage: install.sh [--target-dir <dir>] [--link | --uninstall] [-h|--help]
 
 Options:
@@ -187,8 +196,21 @@ assert_source_runtime_files() {
   done
 }
 
-print_enablement_hint() {
-  echo 'Next step: Open Antigravity Customizations and enable "Git Graph" (config.json was not modified).'
+print_install_summary() {
+  local zh_status="$1"
+  local en_status="$2"
+  local is_update="$3"
+  local zh_hint en_hint
+
+  if [ "$is_update" -eq 1 ]; then
+    zh_hint='下一步：在 Antigravity Customizations 中先关闭再重新开启 "Git Graph"，以重新加载更新后的 Sidecar（未修改 config.json）。'
+    en_hint='Next step: In Antigravity Customizations, toggle "Git Graph" off and back on to reload the updated sidecar (config.json was not modified).'
+  else
+    zh_hint='下一步：打开 Antigravity Customizations 并启用 "Git Graph"（未修改 config.json）。'
+    en_hint='Next step: Open Antigravity Customizations and enable "Git Graph" (config.json was not modified).'
+  fi
+
+  printf '%s\n%s\n\n%s\n%s\n' "$zh_status" "$zh_hint" "$en_status" "$en_hint"
 }
 
 NORMALIZED_TARGET="$(normalize_target_path "$TARGET_DIR")"
@@ -197,22 +219,33 @@ assert_safe_target "$NORMALIZED_TARGET"
 if [ "$MODE" = "uninstall" ]; then
   if [ -L "$NORMALIZED_TARGET" ] || [ -e "$NORMALIZED_TARGET" ]; then
     remove_target_safely "$NORMALIZED_TARGET"
-    echo "Uninstalled 'Git Graph' (antigravity-git-worktree) from: $NORMALIZED_TARGET"
+    printf '%s\n\n%s\n' \
+      "已卸载 \"Git Graph\" (antigravity-git-worktree)：${NORMALIZED_TARGET}" \
+      "Uninstalled 'Git Graph' (antigravity-git-worktree) from: ${NORMALIZED_TARGET}"
   else
-    echo "Plugin 'Git Graph' is not installed at: $NORMALIZED_TARGET"
+    printf '%s\n\n%s\n' \
+      "未在以下路径检测到已安装的 \"Git Graph\"：${NORMALIZED_TARGET}" \
+      "Plugin 'Git Graph' is not installed at: ${NORMALIZED_TARGET}"
   fi
   exit 0
 fi
 
 assert_source_runtime_files
 
+WAS_ALREADY_INSTALLED=0
+if [ -f "${NORMALIZED_TARGET}/plugin.json" ]; then
+  WAS_ALREADY_INSTALLED=1
+fi
+
 mkdir -p "$(dirname "$NORMALIZED_TARGET")"
 remove_target_safely "$NORMALIZED_TARGET"
 
 if [ "$MODE" = "link" ]; then
   ln -s "$REPO_ROOT" "$NORMALIZED_TARGET"
-  echo "Linked 'Git Graph' (antigravity-git-worktree) symlink: $NORMALIZED_TARGET -> $REPO_ROOT"
-  print_enablement_hint
+  print_install_summary \
+    "已创建 \"Git Graph\" (antigravity-git-worktree) 符号链接：${NORMALIZED_TARGET} -> ${REPO_ROOT}" \
+    "Linked 'Git Graph' (antigravity-git-worktree) symlink: ${NORMALIZED_TARGET} -> ${REPO_ROOT}" \
+    "$WAS_ALREADY_INSTALLED"
   exit 0
 fi
 
@@ -221,5 +254,14 @@ cp -p "${REPO_ROOT}/plugin.json" "${NORMALIZED_TARGET}/plugin.json"
 copy_filtered_dir "${REPO_ROOT}/assets" "${NORMALIZED_TARGET}/assets"
 copy_filtered_dir "${REPO_ROOT}/sidecars/panel" "${NORMALIZED_TARGET}/sidecars/panel"
 
-echo "Installed 'Git Graph' (antigravity-git-worktree) to: $NORMALIZED_TARGET"
-print_enablement_hint
+if [ "$WAS_ALREADY_INSTALLED" -eq 1 ]; then
+  print_install_summary \
+    "已更新 \"Git Graph\" (antigravity-git-worktree)：${NORMALIZED_TARGET}" \
+    "Updated 'Git Graph' (antigravity-git-worktree) at: ${NORMALIZED_TARGET}" \
+    1
+else
+  print_install_summary \
+    "已将 \"Git Graph\" (antigravity-git-worktree) 安装至：${NORMALIZED_TARGET}" \
+    "Installed 'Git Graph' (antigravity-git-worktree) to: ${NORMALIZED_TARGET}" \
+    0
+fi

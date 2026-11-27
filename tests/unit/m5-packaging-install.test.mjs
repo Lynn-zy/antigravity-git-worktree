@@ -182,6 +182,29 @@ const hasPwsh = () => {
   }
 };
 
+/**
+ * 断言安装/卸载脚本的标准输出符合「先中文段、空行分隔、后英文段」的双语格式且无乱码。
+ * @param {string} output - 脚本标准输出文本。
+ * @param {RegExp[]} zhPatterns - 中文段须全部匹配的模式列表。
+ * @param {RegExp[]} enPatterns - 英文段须全部匹配的模式列表。
+ * @returns {void} 无返回值；不满足时抛出断言失败。
+ */
+const assertBilingualBlocks = (output, zhPatterns, enPatterns) => {
+  assert.equal(output.includes('\uFFFD'), false, 'output must not contain replacement char');
+  const blocks = output
+    .replace(/\r\n/g, '\n')
+    .trim()
+    .split(/\n\n+/);
+  assert.equal(blocks.length, 2, `expected 2 bilingual blocks (zh then en), got: ${JSON.stringify(output)}`);
+  const [zhBlock, enBlock] = blocks;
+  for (const pattern of zhPatterns) {
+    assert.match(zhBlock, pattern);
+  }
+  for (const pattern of enPatterns) {
+    assert.match(enBlock, pattern);
+  }
+};
+
 test('plugin.json matches spec 8.1 and has no UTF-8 BOM', () => {
   const manifestPath = path.join(REPO_ROOT, 'plugin.json');
   const rawBytes = fs.readFileSync(manifestPath);
@@ -286,15 +309,30 @@ test(
       assert.match(astCheck, /Link=/);
       assert.match(astCheck, /Uninstall=/);
 
+      const helpOut = execFileSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `if ([Console]::IsOutputRedirected) { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) }; Get-Help '${ps1Path.replace(/'/g, "''")}' -Detailed | Out-String`
+        ],
+        { encoding: 'utf8' }
+      );
+      assert.equal(helpOut.includes('\uFFFD'), false, 'help output must not contain replacement char');
+      assert.match(helpOut, /安装、更新或卸载 Antigravity 2\.0 "Git Graph" 插件/);
+      assert.match(helpOut, /Install, update, or uninstall the Antigravity 2\.0 "Git Graph" plugin/);
+
       // 1. 直接针对真实仓库执行默认拷贝安装
       const realInstall = runPowershellInstaller('powershell.exe', ps1Path, [
         '-TargetDir',
         realTargetDir
       ]);
       assert.equal(realInstall.status, 0, realInstall.stderr);
-      assert.match(realInstall.stdout, /Git Graph/);
-      assert.match(realInstall.stdout, /Antigravity Customizations/);
-      assert.equal(realInstall.stdout.includes('\uFFFD'), false, 'output must not contain replacement char');
+      assertBilingualBlocks(
+        realInstall.stdout,
+        [/已将 "Git Graph" \(antigravity-git-worktree\) 安装至/, /下一步：打开 Antigravity Customizations 并启用 "Git Graph"/],
+        [/Installed 'Git Graph' \(antigravity-git-worktree\) to:/, /Next step: Open Antigravity Customizations and enable "Git Graph"/]
+      );
 
       assert.ok(fs.existsSync(path.join(realTargetDir, 'plugin.json')));
       assert.ok(fs.existsSync(path.join(realTargetDir, 'assets', 'logo.svg')));
@@ -352,6 +390,11 @@ test(
         fixtureTargetDir
       ]);
       assert.equal(overwriteInstall.status, 0, overwriteInstall.stderr);
+      assertBilingualBlocks(
+        overwriteInstall.stdout,
+        [/已更新 "Git Graph" \(antigravity-git-worktree\)/, /先关闭再重新开启 "Git Graph"/],
+        [/Updated 'Git Graph' \(antigravity-git-worktree\) at:/, /toggle "Git Graph" off and back on/]
+      );
       assert.equal(fs.existsSync(path.join(fixtureTargetDir, 'stale.txt')), false);
       assert.ok(fs.existsSync(path.join(fixtureTargetDir, 'sidecars', 'panel', 'main.mjs')));
 
@@ -362,6 +405,11 @@ test(
         '-Link'
       ]);
       assert.equal(linkInstall.status, 0, linkInstall.stderr);
+      assertBilingualBlocks(
+        linkInstall.stdout,
+        [/已创建 "Git Graph" \(antigravity-git-worktree\) 目录联接（Junction）/, /先关闭再重新开启 "Git Graph"/],
+        [/Linked 'Git Graph' \(antigravity-git-worktree\) junction:/, /toggle "Git Graph" off and back on/]
+      );
       const linkStat = fs.lstatSync(fixtureTargetDir);
       assert.equal(linkStat.isSymbolicLink(), true, '-Link target must be a Junction/ReparsePoint');
       assert.equal(
@@ -395,6 +443,11 @@ test(
         '-Uninstall'
       ]);
       assert.equal(uninstallLink.status, 0, uninstallLink.stderr);
+      assertBilingualBlocks(
+        uninstallLink.stdout,
+        [/已卸载 "Git Graph" \(antigravity-git-worktree\)/],
+        [/Uninstalled 'Git Graph' \(antigravity-git-worktree\) from:/]
+      );
       assert.equal(fs.existsSync(fixtureTargetDir), false, 'Junction target must be removed');
       assertFixtureSourceIntact(fixtureSrcDir);
 
@@ -405,6 +458,11 @@ test(
         '-Uninstall'
       ]);
       assert.equal(uninstallMissing.status, 0, uninstallMissing.stderr);
+      assertBilingualBlocks(
+        uninstallMissing.stdout,
+        [/未在以下路径检测到已安装的 "Git Graph"/],
+        [/Plugin 'Git Graph' is not installed at:/]
+      );
 
       // 8. 参数互斥与源码防误删守卫
       const conflictFlags = runPowershellInstaller('powershell.exe', fixturePs1, [
@@ -649,6 +707,17 @@ test('scripts/install.sh adheres to bash/LF/shebang/whitelist/symlink-safety rul
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
+  const shHelpOut = execFileSync(bashExe, [shPath.replace(/\\/g, '/'), '--help'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  assert.equal(shHelpOut.includes('\uFFFD'), false, '--help output must not contain replacement char');
+  assert.match(shHelpOut, /用法: install\.sh/);
+  assert.match(shHelpOut, /显示此帮助信息/);
+  assert.match(shHelpOut, /Usage: install\.sh/);
+  assert.match(shHelpOut, /Show this help message/);
+  assert.ok(shHelpOut.indexOf('用法: install.sh') < shHelpOut.indexOf('Usage: install.sh'));
+
   // 使用可用 bash 实测含空格路径下的默认白名单拷贝与安全卸载
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag_gw_sh_'));
   const fixtureSrcDir = path.join(tempRoot, 'fixture src');
@@ -663,8 +732,11 @@ test('scripts/install.sh adheres to bash/LF/shebang/whitelist/symlink-safety rul
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe']
     });
-    assert.match(copyOut, /Git Graph/);
-    assert.match(copyOut, /Antigravity Customizations/);
+    assertBilingualBlocks(
+      copyOut,
+      [/已将 "Git Graph" \(antigravity-git-worktree\) 安装至/, /下一步：打开 Antigravity Customizations 并启用 "Git Graph"/],
+      [/Installed 'Git Graph' \(antigravity-git-worktree\) to:/, /Next step: Open Antigravity Customizations and enable "Git Graph"/]
+    );
     assert.ok(fs.existsSync(path.join(targetDir, 'plugin.json')));
     assert.ok(fs.existsSync(path.join(targetDir, 'assets', 'logo.svg')));
     assert.ok(fs.existsSync(path.join(targetDir, 'sidecars', 'panel', 'main.mjs')));
@@ -672,11 +744,36 @@ test('scripts/install.sh adheres to bash/LF/shebang/whitelist/symlink-safety rul
     assert.equal(fs.existsSync(path.join(targetDir, 'sidecars', 'panel', 'node_modules')), false);
     assert.equal(fs.existsSync(path.join(targetDir, 'sidecars', 'panel', 'debug.log')), false);
 
-    execFileSync(bashExe, [fixtureSh, '--target-dir', targetArg, '--uninstall'], {
+    const updateOut = execFileSync(bashExe, [fixtureSh, '--target-dir', targetArg], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe']
     });
+    assertBilingualBlocks(
+      updateOut,
+      [/已更新 "Git Graph" \(antigravity-git-worktree\)/, /先关闭再重新开启 "Git Graph"/],
+      [/Updated 'Git Graph' \(antigravity-git-worktree\) at:/, /toggle "Git Graph" off and back on/]
+    );
+
+    const uninstallOut = execFileSync(bashExe, [fixtureSh, '--target-dir', targetArg, '--uninstall'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    assertBilingualBlocks(
+      uninstallOut,
+      [/已卸载 "Git Graph" \(antigravity-git-worktree\)/],
+      [/Uninstalled 'Git Graph' \(antigravity-git-worktree\) from:/]
+    );
     assert.equal(fs.existsSync(targetDir), false);
+
+    const uninstallMissingOut = execFileSync(bashExe, [fixtureSh, '--target-dir', targetArg, '--uninstall'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    assertBilingualBlocks(
+      uninstallMissingOut,
+      [/未在以下路径检测到已安装的 "Git Graph"/],
+      [/Plugin 'Git Graph' is not installed at:/]
+    );
     assertFixtureSourceIntact(fixtureSrcDir);
   } finally {
     cleanupTempDir(tempRoot);
