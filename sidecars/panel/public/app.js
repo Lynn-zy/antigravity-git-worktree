@@ -1,6 +1,6 @@
 /**
  * Antigravity Git Graph 面板前端主协调入口。
- * 负责宿主主题同步、Workspace 被动跟随、挂起式长轮询、多仓库顶部切换、
+ * 负责宿主主题同步、Workspace 被动跟随、挂起式长轮询、存储库列表切换、
  * 上下双区折叠与中缝拖拽、模态弹窗与轻提示系统，以及偏好防抖持久化。
  */
 
@@ -13,6 +13,8 @@ import {
 import { createApiClient, ApiClientError } from './modules/api-client.js';
 import { createChangesView } from './modules/changes-view.js';
 import { createGraphView } from './modules/graph-view.js';
+import { createReposView } from './modules/repos-view.js';
+import { createProgressBar } from './modules/progress-bar.js';
 import { CODICON_PATHS } from './modules/codicons.js';
 import { resolveFileIconUrl } from './modules/file-icons.js';
 import { createToastController } from './modules/toast.js';
@@ -170,14 +172,7 @@ const bootstrapPanel = () => {
     },
   });
 
-  const repoBarEl = document.getElementById('repo-bar');
-  const repoBarIconEl = document.getElementById('repo-bar-icon');
-  const repoNameEl = document.getElementById('repo-name');
-  const repoChevronEl = document.getElementById('repo-chevron');
-  const repoSelectEl = document.getElementById('repo-select');
-  const repoBranchMetaEl = document.getElementById('repo-branch-meta');
-  const repoBranchIconEl = document.getElementById('repo-branch-icon');
-  const repoBranchTextEl = document.getElementById('repo-branch-text');
+  const reposSectionEl = document.getElementById('section-repos');
   const globalBannersEl = document.getElementById('global-banners');
   const loadingStateEl = document.getElementById('loading-state');
   const loadingStateTextEl = document.getElementById('loading-state-text');
@@ -209,11 +204,14 @@ const bootstrapPanel = () => {
   const modalOverlayEl = document.getElementById('modal-overlay');
   const modalDialogEl = document.getElementById('modal-dialog');
   const toastContainerEl = document.getElementById('toast-container');
+  const reposBodyEl = document.getElementById('section-repos-body');
 
-  repoBarIconEl.replaceChildren(createIcon('repo'));
-  repoChevronEl.replaceChildren(createIcon('chevronDown'));
-  repoBranchIconEl.replaceChildren(createIcon('gitBranch'));
   emptyStateIconEl.replaceChildren(createIcon('gitBranch'));
+
+  // 进度条只表示用户发起的操作：写操作显示在「更改」标题栏底边（同 VS Code 源代码管理范围，结束后再留 300ms），
+  // 从图表顶栏触发的同时显示在「图表」标题栏底边。文件变化等触发的后台刷新不显示，Agent 频繁写文件时标题栏不闪
+  const changesProgress = createProgressBar(changesSectionEl.querySelector('.gw-section-header'), { hideDelayMs: 300 });
+  const graphProgress = createProgressBar(graphHeaderEl);
 
   const localPrefs = safeReadLocalPrefs();
   const state = {
@@ -513,7 +511,8 @@ const bootstrapPanel = () => {
   };
 
   /**
-   * 串行执行一次写操作并刷新快照；失败提示显示在 `anchor` 控件旁。
+   * 串行执行一次写操作并刷新快照。成功时不提示（同 VS Code，面板本身的变化就是反馈），失败提示显示在 `anchor` 控件旁。
+   * 执行期间「更改」标题栏底边显示进度条；从图表顶栏触发的操作同时在「图表」标题栏底边显示。
    *
    * @param {string} opName 写操作名（同时作为 `pendingOp` 驱动按钮忙碌态）
    * @param {() => Promise<void>} fn 实际请求
@@ -523,6 +522,7 @@ const bootstrapPanel = () => {
   const runMutation = async (opName, fn, anchor) => {
     if (state.pendingOp) return false;
     state.pendingOp = opName;
+    const endProgress = [changesProgress.begin(), ...(graphSectionEl.contains(anchor) ? [graphProgress.begin()] : [])];
     abortEventsWait();
     renderAll();
     let ranSnapshot = false;
@@ -538,6 +538,7 @@ const bootstrapPanel = () => {
       }
       return false;
     } finally {
+      for (const end of endProgress) end();
       state.pendingOp = null;
       renderAll();
     }
@@ -574,13 +575,10 @@ const bootstrapPanel = () => {
         ? { worktreePath: repo.worktreePath, remote: targetRemote }
         : { worktreePath: repo.worktreePath };
       await apiClient.pushBranch(payload);
-      if (isPublish) {
-        showToast(t('remote.publishSuccess', { branch: repo.branch || '', remote: targetRemote }), 'success', { anchor });
-      } else {
-        showToast(t('remote.pushSuccess'), 'success', { anchor });
-      }
     }, anchor);
   };
+
+  const runSync = (repo, anchor) => runMutation('sync', () => apiClient.syncBranch({ worktreePath: repo.worktreePath }), anchor);
 
   const changesView = createChangesView(
     {
@@ -615,31 +613,12 @@ const bootstrapPanel = () => {
           await apiClient.discardChanges(payload);
         }, commitButtonEl);
       },
-      onCommit: async ({ worktreePath, message, autoStageAll }) => {
-        const t = getT();
-        let committedSha = '';
-        const ok = await runMutation('commit', async () => {
-          const res = await apiClient.commitChanges({ worktreePath, message, autoStageAll });
-          changesView.clearDraft();
-          committedSha = typeof res?.sha === 'string' ? res.sha : '';
-        }, commitButtonEl);
-        if (ok) {
-          const shortSha = (committedSha || state.snapshot?.activeRepo?.headOid || '').slice(0, 7);
-          if (shortSha) {
-            showToast(t('commit.successToast', { sha: shortSha }), 'success', { anchor: commitButtonEl });
-          }
-        }
-        return ok;
-      },
+      onCommit: ({ worktreePath, message, autoStageAll }) => runMutation('commit', async () => {
+        await apiClient.commitChanges({ worktreePath, message, autoStageAll });
+        changesView.clearDraft();
+      }, commitButtonEl),
       onPublish: (repo) => runPushOrPublish(repo, commitButtonEl),
-      onPush: async (repo) => runPushOrPublish(repo, commitButtonEl),
-      onPull: async (repo) => {
-        const t = getT();
-        await runMutation('pull', async () => {
-          await apiClient.pullBranch({ worktreePath: repo.worktreePath });
-          showToast(t('remote.pullSuccess'), 'success', { anchor: commitButtonEl });
-        }, commitButtonEl);
-      },
+      onSync: (repo) => runSync(repo, commitButtonEl),
     },
   );
   // 上区操作（提交、暂存、推送等）的提示统一显示在提交按钮下方
@@ -647,11 +626,13 @@ const bootstrapPanel = () => {
 
   const handleManualRefresh = async (anchor) => {
     if (state.pendingOp) return;
-    const t = getT();
     graphView.clearDetailCache();
-    const ok = await loadSnapshot({ forceRefresh: true, toastAnchor: anchor });
-    if (ok) {
-      showToast(t('remote.refreshed'), 'info', { anchor });
+    // 刷新同时重新读取更改列表与提交图表，两个标题栏都显示进度条
+    const endProgress = [changesProgress.begin(), graphProgress.begin()];
+    try {
+      await loadSnapshot({ forceRefresh: true, toastAnchor: anchor });
+    } finally {
+      for (const end of endProgress) end();
     }
   };
 
@@ -680,23 +661,11 @@ const bootstrapPanel = () => {
         scheduleSavePreferences({ graphScope: nextScope }, 80);
         void loadSnapshot({ forceRefresh: false, toastAnchor: graphHeaderEl });
       },
-      onFetch: async (repo) => {
-        const t = getT();
-        await runMutation('fetch', async () => {
-          await apiClient.fetchRemotes({
-            worktreePath: repo.worktreePath ?? null,
-            repoId: repo.id ?? null,
-          });
-          showToast(t('remote.fetchSuccess'), 'success', { anchor: graphHeaderEl });
-        }, graphHeaderEl);
-      },
-      onPull: async (repo) => {
-        const t = getT();
-        await runMutation('pull', async () => {
-          await apiClient.pullBranch({ worktreePath: repo.worktreePath });
-          showToast(t('remote.pullSuccess'), 'success', { anchor: graphHeaderEl });
-        }, graphHeaderEl);
-      },
+      onFetch: (repo) => runMutation('fetch', () => apiClient.fetchRemotes({
+        worktreePath: repo.worktreePath ?? null,
+        repoId: repo.id ?? null,
+      }), graphHeaderEl),
+      onPull: (repo) => runMutation('pull', () => apiClient.pullBranch({ worktreePath: repo.worktreePath }), graphHeaderEl),
       onPushOrPublish: (repo) => runPushOrPublish(repo, graphHeaderEl),
       onRefresh: () => handleManualRefresh(graphHeaderEl),
       onLoadMore: async () => {
@@ -828,59 +797,31 @@ const bootstrapPanel = () => {
     }
   });
 
-  // --- 顶部多仓库条与全局横幅渲染 ---
-  const formatRepoBranchSuffix = (repo, t) => {
-    if (repo.isBare) return t('repo.bareLabel');
-    if (repo.isDetached) return t('repo.detachedLabel');
-    if (repo.isUnborn) return repo.branch ? `${repo.branch} · ${t('repo.unbornLabel')}` : t('repo.unbornLabel');
-    return repo.branch || '';
-  };
-
-  const renderRepoBar = (snapshot, t) => {
-    const repositories = Array.isArray(snapshot?.repositories) ? snapshot.repositories : [];
-    if (repositories.length < 2) {
-      repoBarEl.classList.add('hidden');
-      repoSelectEl.replaceChildren();
-      return;
-    }
-
-    repoBarEl.classList.remove('hidden');
-    repoSelectEl.setAttribute('aria-label', t('repo.switcherAria'));
-
-    const activeId = snapshot.activeRepo?.id ?? state.selectedRepoId ?? repositories[0].id;
-    const fragment = document.createDocumentFragment();
-    for (const repo of repositories) {
-      const optionEl = document.createElement('option');
-      optionEl.value = repo.id;
-      const repoForSuffix = repo.id === activeId && snapshot.activeRepo ? snapshot.activeRepo : repo;
-      const suffix = formatRepoBranchSuffix(repoForSuffix, t);
-      optionEl.textContent = suffix ? `${repo.name} (${suffix})` : repo.name;
-      optionEl.selected = repo.id === activeId;
-      fragment.append(optionEl);
-    }
-    repoSelectEl.replaceChildren(fragment);
-    repoSelectEl.value = activeId;
-    // select 盖在可见仓库名上，悬停提示取选中项全文，仓库名被截断时也能看到全名
-    repoSelectEl.title = repoSelectEl.selectedOptions[0]?.textContent ?? '';
-    repoNameEl.textContent = repositories.find((repo) => repo.id === activeId)?.name ?? '';
-
-    const activeRepo = snapshot.activeRepo;
-    const activeMeta = activeRepo ? formatRepoBranchSuffix(activeRepo, t) : '';
-    repoBranchTextEl.textContent = activeMeta;
-    repoBranchMetaEl.title = activeMeta;
-    repoBranchMetaEl.classList.toggle('hidden', !activeMeta);
-    // 裸仓库与游离 HEAD 显示的是状态而不是分支名，不配分支图标
-    repoBranchIconEl.classList.toggle('hidden', Boolean(activeRepo?.isBare || activeRepo?.isDetached));
-  };
-
-  repoSelectEl.addEventListener('change', () => {
-    const nextId = repoSelectEl.value;
-    if (!nextId || nextId === state.selectedRepoId) return;
-    state.selectedRepoId = nextId;
-    state.graphLimit = INITIAL_GRAPH_LIMIT;
-    graphView.clearDetailCache();
-    void loadSnapshot({ forceRefresh: false });
-  });
+  // --- 存储库列表与全局横幅渲染 ---
+  const reposView = createReposView(
+    {
+      sectionEl: reposSectionEl,
+      collapseBtnEl: document.getElementById('repos-collapse-btn'),
+      chevronEl: document.getElementById('repos-collapse-chevron'),
+      titleEl: document.getElementById('repos-section-title'),
+      bodyEl: reposBodyEl,
+    },
+    {
+      createIcon,
+      captureFocus,
+      restoreFocus,
+      onSelect: (repoId) => {
+        if (!repoId || repoId === state.selectedRepoId) return;
+        state.selectedRepoId = repoId;
+        state.graphLimit = INITIAL_GRAPH_LIMIT;
+        graphView.clearDetailCache();
+        void loadSnapshot({ forceRefresh: false });
+      },
+      // 行在操作开始时就会重绘，失败提示锚定在不重建的列表容器上
+      onSync: (repo) => void runSync(repo, reposBodyEl),
+      onPublish: (repo) => runPushOrPublish(repo, reposBodyEl),
+    },
+  );
 
   const renderGlobalBanners = (snapshot, t) => {
     if (!snapshot?.watchState?.degraded) {
@@ -939,9 +880,9 @@ const bootstrapPanel = () => {
     const snapshot = state.snapshot;
     const repositories = Array.isArray(snapshot?.repositories) ? snapshot.repositories : [];
 
-    renderRepoBar(snapshot, t);
     renderGlobalBanners(snapshot, t);
     applyPaneLayout();
+    reposSectionEl.classList.toggle('hidden', !state.hasLoadedInitial || repositories.length === 0);
 
     if (!state.hasLoadedInitial) {
       if (loadingStateTextEl) {
@@ -965,6 +906,13 @@ const bootstrapPanel = () => {
 
     emptyStateEl.classList.add('hidden');
     dualPaneEl.classList.remove('hidden');
+
+    reposView.render({
+      repositories,
+      activeRepo: snapshot.activeRepo,
+      pendingOp: state.pendingOp,
+      t,
+    });
 
     changesView.render({
       activeRepo: snapshot.activeRepo,

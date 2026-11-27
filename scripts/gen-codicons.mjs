@@ -13,8 +13,8 @@ const CODICONS_SHA = '8d1826a9bce0a52283ecaeb63499c149e97a4f14';
 
 /** 输出顺序即列表顺序；键名为短横线转驼峰，如 git-branch → gitBranch */
 const ICON_NAMES = [
-  'chevron-down', 'chevron-right', 'repo', 'git-branch', 'git-commit', 'target', 'cloud', 'cloud-upload', 'tag',
-  'repo-fetch', 'repo-pull', 'repo-push', 'fold-down', 'refresh', 'ellipsis', 'check', 'discard', 'add', 'remove',
+  'chevron-down', 'chevron-right', 'repo', 'repo-selected', 'git-branch', 'git-commit', 'target', 'cloud', 'cloud-upload', 'tag',
+  'repo-fetch', 'repo-pull', 'repo-push', 'sync', 'arrow-up', 'arrow-down', 'fold-down', 'refresh', 'ellipsis', 'check', 'discard', 'add', 'remove',
   'go-to-file', 'copy', 'close', 'search', 'info', 'warning', 'error', 'account', 'history',
 ];
 

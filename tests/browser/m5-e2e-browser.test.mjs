@@ -835,7 +835,7 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     fs.rmSync(tempRoot, { recursive: true, force: true });
   });
 
-  // 1) 纯单仓夹具验证 [data-testid="repo-bar"] 隐藏
+  // 1) 纯单仓夹具：存储库区同样常驻显示，唯一的仓库处于选中态
   const singlePage = await browser.newPage({ width: 420, height: 680 });
   await singlePage.navigate(singleServer.url);
   const commitRowCount = 'document.querySelectorAll("[data-testid=commit-row]").length';
@@ -843,11 +843,15 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     `!document.getElementById("dual-pane")?.classList.contains("hidden") && ${commitRowCount} === ${GRAPH_FIRST_PAGE}`,
     { description: 'single-repo initial render' },
   );
-  const singleRepoBarHidden = await singlePage.evaluate(`(() => {
-    const bar = document.querySelector('[data-testid="repo-bar"]');
-    return Boolean(bar && bar.classList.contains('hidden') && bar.getBoundingClientRect().height === 0);
+  const singleRepoList = await singlePage.evaluate(`(() => {
+    const section = document.querySelector('[data-testid="section-repos"]');
+    return {
+      visible: Boolean(section && !section.classList.contains('hidden') && section.getBoundingClientRect().height > 0),
+      rows: [...document.querySelectorAll('[data-testid="repo-row"]')]
+        .map((row) => [row.querySelector('.gw-repo-row-name').textContent, row.getAttribute('aria-selected')]),
+    };
   })()`);
-  assert.equal(singleRepoBarHidden, true, '单仓场景下 repo-bar 必须隐藏且零高度占位');
+  assert.deepEqual(singleRepoList, { visible: true, rows: [['single-repo', 'true']] }, '单仓时存储库区常驻显示');
 
   // 滚动分页：停在列表顶部时不加载；「加载更多」行进入可视区下方一屏以内即预先加载下一页，无需点击，直到全部加载完
   const rowsWhileAtTop = await singlePage.evaluate(
@@ -927,47 +931,36 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     await page.waitFor('document.documentElement.lang === "zh-CN"', { description: 'switch to zh-CN' });
   }
 
-  // 验证多仓切换条可见，并在 repoA / repoB 间真实切换
-  const multiRepoState = await page.evaluate(`(() => {
-    const bar = document.querySelector('[data-testid="repo-bar"]');
-    const select = document.querySelector('[data-testid="repo-select"]');
-    const options = [...select.querySelectorAll('option')].map((o) => ({ value: o.value, text: o.textContent }));
-    return {
-      barVisible: Boolean(bar && !bar.classList.contains('hidden') && bar.getBoundingClientRect().height > 0),
-      options,
-      selected: select.value,
-    };
-  })()`);
-  assert.equal(multiRepoState.barVisible, true);
-  assert.equal(multiRepoState.options.length, 2);
-  assert.ok(multiRepoState.options[0].text.includes('repoA'));
-  assert.ok(multiRepoState.options[1].text.includes('repoB'));
+  // 存储库区列出 repoA / repoB：分支名与同步状态同 VS Code 状态栏；同步状态只在当前仓库 repoA 那一行显示（与上游一致只显示同步图标）
+  const repoRowsState = () => page.evaluate(`[...document.querySelectorAll('[data-testid="repo-row"]')].map((row) => ({
+    name: row.querySelector('.gw-repo-row-name').textContent,
+    selected: row.getAttribute('aria-selected') === 'true',
+    status: [...row.querySelectorAll('.gw-repo-status-item')].map((item) => item.textContent),
+  }))`);
+  assert.deepEqual(await repoRowsState(), [
+    { name: 'repoA', selected: true, status: ['main', ''] },
+    { name: 'repoB', selected: false, status: ['develop'] },
+  ]);
 
-  const repoBOptionValue = multiRepoState.options[1].value;
-  const repoAOptionValue = multiRepoState.options[0].value;
-  // 切换仓库时清空提交说明输入框，不保留草稿；切回原仓库也不恢复
+  // 点击仓库行在两者间真实切换；切换仓库时清空提交说明输入框，不保留草稿，切回原仓库也不恢复
   const commitInputValue = 'document.querySelector(\'[data-testid="commit-message-input"]\').value';
   await page.evaluate(`(() => {
     const input = document.querySelector('[data-testid="commit-message-input"]');
     input.value = 'wip: 只属于 repoA 的说明';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
-  await page.evaluate(`(() => {
-    const sel = document.querySelector('[data-testid="repo-select"]');
-    sel.value = ${JSON.stringify(repoBOptionValue)};
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`);
+  await page.clickSelector('[data-testid="repo-row"]', { index: 1 });
   await page.waitFor(
     'document.body.innerText.includes("第二个仓库初始提交")',
     { description: 'switch to repoB' },
   );
   assert.equal(await page.evaluate(commitInputValue), '', '切换到 repoB 后提交说明输入框应为空');
+  assert.deepEqual(await repoRowsState(), [
+    { name: 'repoA', selected: false, status: ['main'] },
+    { name: 'repoB', selected: true, status: ['develop'] },
+  ], '非当前仓库只显示分支，不显示同步状态');
 
-  await page.evaluate(`(() => {
-    const sel = document.querySelector('[data-testid="repo-select"]');
-    sel.value = ${JSON.stringify(repoAOptionValue)};
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-  })()`);
+  await page.clickSelector('[data-testid="repo-row"]', { index: 0 });
   await page.waitFor(
     'document.body.innerText.includes("tag multi-ref baseline")',
     { description: 'switch back to repoA' },
@@ -1146,43 +1139,171 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   })()`);
   assert.deepEqual(emptyValidation, { hasErrorClass: true, msgVisible: true, focused: true });
 
-  // 填写说明后点击提交 -> 弹「自动暂存全部」模态框 -> 确认写入 Git 提交 -> 主按钮切换为「推送更改 1↑」
+  // 让下一次指定接口的请求晚到，便于在操作进行中检查进度条与按钮状态
+  const delayNextApiCall = (apiPath, ms) => page.evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.fetch = (input, init) => {
+      if (new URL(String(input), location.href).pathname !== ${JSON.stringify(apiPath)}) return originalFetch.call(window, input, init);
+      window.fetch = originalFetch;
+      return new Promise((resolve) => setTimeout(resolve, ${ms})).then(() => originalFetch.call(window, input, init));
+    };
+  })()`);
+  const progressActive = (sectionTestId) =>
+    `Boolean(document.querySelector('[data-testid="${sectionTestId}"] [data-testid="progress-bar"].is-active'))`;
+  const successToastCount = 'document.querySelectorAll("[data-testid=toast-success]").length';
+
+  // 填写说明后点击提交 -> 弹「自动暂存全部」模态框 -> 确认写入 Git 提交 -> 主按钮切换为「同步更改 1↑」
   await page.insertText('feat: 浏览器端到端自动暂存提交');
   await page.clickSelector('[data-testid="commit-primary-btn"]');
   await page.waitFor(
     '!document.querySelector("[data-testid=modal-overlay]").classList.contains("hidden") && !document.querySelector("[data-testid=modal-dialog]").classList.contains("is-danger")',
     { description: 'autoStageAll confirm modal' },
   );
+  // 提交进行中同 VS Code：「更改」标题栏底边显示进度条，按钮保留「提交」文案并禁用，悬停提示为「正在提交更改...」
+  await delayNextApiCall('/api/commit', 800);
   await page.clickSelector('[data-testid="modal-confirm-btn"]');
+  await page.waitFor(
+    `${progressActive('section-changes')} && document.querySelector('[data-testid="commit-primary-btn"]').title === '正在提交更改...'`,
+    { description: 'commit in progress' },
+  );
+  const committingButton = await page.evaluate(`(() => {
+    const btn = document.querySelector('[data-testid="commit-primary-btn"]');
+    return [btn.querySelector('.gw-primary-btn-label').textContent, btn.disabled];
+  })()`);
+  assert.deepEqual(committingButton, ['提交', true]);
+  const changesBar = await page.evaluate(`(() => {
+    const header = document.querySelector('[data-testid="changes-section-header"]').getBoundingClientRect();
+    const bar = document.querySelector('[data-testid="changes-section-header"] [data-testid="progress-bar"]').getBoundingClientRect();
+    return { height: bar.height, atHeaderBottom: Math.round(bar.bottom) === Math.round(header.bottom), fullWidth: Math.round(bar.width) === Math.round(header.width) };
+  })()`);
+  assert.deepEqual(changesBar, { height: 2, atHeaderBottom: true, fullWidth: true }, '进度条是贴在标题栏底边的 2px 横条');
 
   await page.waitFor(
-    'document.querySelectorAll("[data-testid^=change-file-]").length === 0 && document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "push"',
-    { description: 'post-commit clean state and Push 1 button' },
+    'document.querySelectorAll("[data-testid^=change-file-]").length === 0 && document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "sync"',
+    { description: 'post-commit clean state and Sync Changes button' },
   );
-  const pushBtnText = await page.evaluate('document.querySelector("[data-testid=commit-primary-btn]").textContent');
-  assert.equal(pushBtnText, '推送更改 1↑');
-
-  // 提交成功提示就近显示：紧贴在提交按钮下方 4px，而不是停靠面板底部
-  await page.waitFor('Boolean(document.querySelector("[data-testid=toast-success]"))', {
-    description: 'commit success toast',
-  });
-  const commitToastGap = await page.evaluate(`(() => {
-    const toastTop = document.querySelector('[data-testid="toast-success"]').getBoundingClientRect().top;
-    const buttonBottom = document.querySelector('[data-testid="commit-primary-btn"]').getBoundingClientRect().bottom;
-    return Math.round(toastTop - buttonBottom);
+  const syncButton = await page.evaluate(`(() => {
+    const btn = document.querySelector('[data-testid="commit-primary-btn"]');
+    return { label: btn.querySelector('.gw-primary-btn-label').textContent, counts: [...btn.querySelectorAll('.gw-primary-btn-count')].map((el) => el.textContent), title: btn.title };
   })()`);
-  assert.equal(commitToastGap, 4, '提交成功提示应紧贴在提交按钮下方');
+  assert.deepEqual(syncButton, { label: '同步更改', counts: ['1'], title: '将 1 个提交推送到 origin/main' }, '只领先时同 VS Code 显示同步更改');
+  assert.deepEqual((await repoRowsState())[0].status, ['main', '0↓ 1↑'], '存储库行的同步状态随之更新');
+
+  // 图表 HEAD 上方出现「传出的更改」，展开后列出合并基到 HEAD 的改动文件
+  const outgoingRowSelector = '[data-testid="commit-row"][data-commit-sha="scm-graph-outgoing-changes"]';
+  const outgoingLabel = await page.evaluate(`(() => {
+    const row = document.querySelector('${outgoingRowSelector}');
+    return row ? [row.querySelector('.gw-commit-subject').textContent, row.querySelector('.gw-commit-author').textContent, row.nextElementSibling.classList.contains('is-current')] : null;
+  })()`);
+  assert.deepEqual(outgoingLabel, ['传出的更改', 'main', true]);
+  await page.clickSelector(outgoingRowSelector);
+  await page.waitFor(
+    `document.querySelectorAll('[data-testid="commit-files"][data-commit-sha="scm-graph-outgoing-changes"] [data-testid="commit-file-row"]').length > 0`,
+    { description: 'outgoing changes files expanded' },
+  );
+  const outgoingFiles = await page.evaluate(`[...document.querySelectorAll('[data-testid="commit-files"][data-commit-sha="scm-graph-outgoing-changes"] [data-testid="commit-file-row"]')].map((row) => row.dataset.filePath).sort()`);
+  const committedFiles = (await execGit(['-c', 'core.quotepath=false', 'diff', '--name-only', '@{upstream}', 'HEAD'], fixtures.repoA))
+    .split('\n').filter(Boolean).sort();
+  assert.deepEqual(outgoingFiles, committedFiles);
+  await page.clickSelector(outgoingRowSelector);
+
+  // 同 VS Code：操作成功不弹提示，面板本身的变化就是反馈
+  assert.equal(await page.evaluate(successToastCount), 0, '提交成功后不弹提示');
   assert.equal(await execGit(['log', '-1', '--pretty=%s'], fixtures.repoA), 'feat: 浏览器端到端自动暂存提交');
 
-  // 点击推送更改 1↑ -> 真实推到 Bare 远端并恢复干净禁用态
+  // 点击同步更改 1↑：进行中文案不变、同步图标旋转、按钮禁用，「更改」标题栏底边显示进度条；
+  // 完成后真实推到 Bare 远端，恢复干净禁用态，传出的更改随之消失，不弹提示
+  await delayNextApiCall('/api/remote/sync', 800);
   await page.clickSelector('[data-testid="commit-primary-btn"]');
   await page.waitFor(
-    'document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "clean-disabled"',
-    { description: 'post-push clean-disabled state' },
+    `document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "syncing" && ${progressActive('section-changes')}`,
+    { description: 'sync in progress' },
+  );
+  const syncingButton = await page.evaluate(`(() => {
+    const btn = document.querySelector('[data-testid="commit-primary-btn"]');
+    return [btn.querySelector('.gw-primary-btn-label').textContent, btn.disabled, getComputedStyle(btn.querySelector('.gw-icon')).animationName];
+  })()`);
+  assert.deepEqual(syncingButton, ['同步更改', true, 'gw-spin']);
+  await page.waitFor(
+    `document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState === "clean-disabled" && !document.querySelector('${outgoingRowSelector}')`,
+    { description: 'post-sync clean-disabled state' },
   );
   const localHead = await execGit(['rev-parse', 'HEAD'], fixtures.repoA);
   const remoteMain = await execGit(['rev-parse', 'refs/heads/main'], fixtures.remoteA);
-  assert.equal(localHead, remoteMain, '点击推送后 Bare 远端 refs/heads/main 必须同步到最新提交');
+  assert.equal(localHead, remoteMain, '点击同步后 Bare 远端 refs/heads/main 必须同步到最新提交');
+  assert.equal(await page.evaluate(successToastCount), 0, '同步成功后不弹提示');
+
+  // 点击图表顶栏刷新：请求进行中「更改」与「图表」标题栏底边都显示进度条，结束后隐藏
+  await delayNextApiCall('/api/snapshot', 800);
+  await page.clickSelector('[data-testid="graph-refresh-btn"]');
+  await page.waitFor(`${progressActive('section-graph')} && ${progressActive('section-changes')}`, {
+    description: 'refresh progress shown',
+  });
+  await page.waitFor(`!${progressActive('section-graph')} && !${progressActive('section-changes')}`, {
+    description: 'refresh progress hidden',
+  });
+  assert.equal(
+    await page.evaluate('document.querySelectorAll("[data-testid=toast-success], [data-testid=toast-info]").length'),
+    0,
+    '刷新成功后不弹提示',
+  );
+
+  // 终端提交与文件写入触发的后台刷新不显示进度条：记录两条进度条在此期间是否亮过
+  await page.evaluate(`(() => {
+    window.__gwProgressShownCount = 0;
+    window.__gwProgressObserver = new MutationObserver((records) => {
+      for (const record of records) {
+        if (record.target.classList.contains('is-active') && !record.oldValue.includes('is-active')) window.__gwProgressShownCount += 1;
+      }
+    });
+    for (const bar of document.querySelectorAll('[data-testid="progress-bar"]')) {
+      window.__gwProgressObserver.observe(bar, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+    }
+  })()`);
+
+  // 工作区有改动时点击存储库行的同步状态：只推送，不动工作区里的改动，也不切换仓库（同 VS Code 状态栏的同步按钮）
+  writeRepoFile(fixtures.repoA, 'external-sync.txt', 'external\n');
+  await execGit(['add', '--', 'external-sync.txt'], fixtures.repoA);
+  await execGit(['commit', '-m', 'chore: 终端里的提交'], fixtures.repoA);
+  const dirtyPath = writeRepoFile(fixtures.repoA, 'dirty-while-sync.txt', 'dirty\n');
+  const dirtyRowSelector = '[data-testid="change-file-unstaged"][data-file-path="dirty-while-sync.txt"]';
+  await page.waitFor(
+    `document.querySelector('[data-testid="repo-sync-btn"]')?.textContent === '0↓ 1↑' && Boolean(document.querySelector('${dirtyRowSelector}'))`,
+    { description: 'external commit and dirty file shown', timeoutMs: 10_000 },
+  );
+  assert.equal(await page.evaluate('document.querySelector("[data-testid=commit-primary-btn]").dataset.actionState'), 'commit');
+  assert.equal(
+    await page.evaluate('window.__gwProgressObserver.disconnect(), window.__gwProgressShownCount'),
+    0,
+    '后台刷新（终端提交后的完整快照、文件写入后的 status）不显示进度条',
+  );
+  await delayNextApiCall('/api/remote/sync', 800);
+  await page.clickSelector('[data-testid="repo-sync-btn"]');
+  await page.waitFor(
+    `${progressActive('section-changes')} && Boolean(document.querySelector('[data-testid="repo-row"] .gw-icon.is-spinning'))`,
+    { description: 'repo row sync in progress' },
+  );
+  await page.waitFor(
+    `(() => { const btn = document.querySelector('[data-testid="repo-sync-btn"]'); return btn?.textContent === '' && !btn.disabled; })()`,
+    { description: 'repo row sync finished' },
+  );
+  assert.equal(
+    await execGit(['rev-parse', 'refs/heads/main'], fixtures.remoteA),
+    await execGit(['rev-parse', 'HEAD'], fixtures.repoA),
+    '存储库行同步把终端里的提交推到远端',
+  );
+  assert.equal(fs.readFileSync(dirtyPath, 'utf8'), 'dirty\n', '同步不动工作区里的改动');
+  assert.equal(await page.evaluate(`Boolean(document.querySelector('${dirtyRowSelector}'))`), true);
+  assert.deepEqual((await repoRowsState()).map((row) => row.selected), [true, false], '点同步状态不切换仓库');
+  fs.rmSync(dirtyPath);
+  await page.waitFor('document.querySelectorAll("[data-testid^=change-file-]").length === 0', { description: 'dirty file removed' });
+  // 撤回终端里的提交，后续详情卡等步骤按行号依赖原来的提交历史
+  await execGit(['reset', '--hard', localHead], fixtures.repoA);
+  await execGit(['push', '--force', 'origin', 'main'], fixtures.repoA);
+  await page.waitFor(
+    `document.querySelector('[data-testid="commit-row"]')?.dataset.commitSha === '${localHead}' && document.querySelector('[data-testid="repo-sync-btn"]')?.textContent === ''`,
+    { description: 'commit history restored', timeoutMs: 10_000 },
+  );
 
   // 点击含 Merge 分支的提交行展开文件清单：真实显示文件、历史已删文件不可点击、SVG 穿行竖线连续
   await page.clickSelector(`[data-testid="commit-row"][data-commit-sha="${fixtures.mergeSha}"]`);
@@ -2163,7 +2284,7 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     }, '*');
   })()`);
   await page.waitFor(
-    'document.body.innerText.includes("第二个仓库初始提交") && document.querySelector("[data-testid=repo-bar]").classList.contains("hidden")',
+    'document.body.innerText.includes("第二个仓库初始提交") && document.querySelectorAll("[data-testid=repo-row]").length === 1',
     { sessionId: iframeSessionId, description: 'workspace-change to repoB' },
   );
 
@@ -2175,7 +2296,7 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     }, '*');
   })()`);
   await page.waitFor(
-    '!document.getElementById("empty-state").classList.contains("hidden") && document.getElementById("dual-pane").classList.contains("hidden")',
+    '!document.getElementById("empty-state").classList.contains("hidden") && document.getElementById("dual-pane").classList.contains("hidden") && document.querySelector("[data-testid=section-repos]").classList.contains("hidden")',
     { sessionId: iframeSessionId, description: 'workspace-change to non-git empty state' },
   );
 
@@ -2187,7 +2308,7 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
     }, '*');
   })()`);
   await page.waitFor(
-    '!document.querySelector("[data-testid=repo-bar]").classList.contains("hidden") && document.querySelectorAll("[data-testid=repo-select] option").length === 2',
+    '!document.querySelector("[data-testid=section-repos]").classList.contains("hidden") && document.querySelectorAll("[data-testid=repo-row]").length === 2',
     { sessionId: iframeSessionId, description: 'workspace-change to multi-repo' },
   );
 
@@ -2238,7 +2359,8 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
         const docEl = document.documentElement;
         const appPane = document.getElementById('app');
         const selectors = [
-          '[data-testid="repo-bar"]',
+          '[data-testid="repo-row"]',
+          '.gw-repo-status-item',
           '[data-testid="changes-section-header"]',
           '[data-testid="commit-message-input"]',
           '[data-testid="commit-primary-btn"]',
@@ -2257,7 +2379,6 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
             }
           }
         }
-        const branchMeta = document.getElementById('repo-branch-meta');
         return {
           docScrollWidth: docEl.scrollWidth,
           docClientWidth: docEl.clientWidth,
@@ -2266,7 +2387,6 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
           paneScrollWidth: appPane.scrollWidth,
           paneClientWidth: appPane.clientWidth,
           outOfBounds,
-          branchMetaDisplay: branchMeta ? getComputedStyle(branchMeta).display : null,
         };
       })()`,
       { sessionId: iframeSessionId },
@@ -2285,9 +2405,6 @@ test('M5 端到端浏览器回归（场景 B：Opaque srcdoc iframe + theme-chan
       `${width}px 宽度下 #app 横向溢出: ${layoutMetrics.paneScrollWidth} > ${layoutMetrics.paneClientWidth}`,
     );
     assert.deepEqual(layoutMetrics.outOfBounds, [], `${width}px 宽度下主要元素边界越界`);
-    if (width === 320) {
-      assert.equal(layoutMetrics.branchMetaDisplay, 'none', '320px 窄幅容器查询应隐藏次要分支元数据');
-    }
   }
 
   assert.equal(fs.existsSync(darkScreenshotPath), true);

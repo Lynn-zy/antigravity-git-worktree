@@ -10,24 +10,33 @@
 </head>
 <body>
   <main id="app" class="gw-pane" data-testid="app-pane">
-    <!-- 多仓库顶部切换条：仅在命中 2 个及以上仓库时显示 -->
-    <header id="repo-bar" class="gw-repo-bar hidden" data-testid="repo-bar">
-      <!-- 可见部分只显示仓库名；透明的原生 select 盖在上面负责点击、键盘与读屏 -->
-      <div class="gw-repo-picker">
-        <span id="repo-bar-icon" class="gw-repo-picker-icon" aria-hidden="true"></span>
-        <span id="repo-name" class="gw-repo-name" aria-hidden="true"></span>
-        <span id="repo-chevron" class="gw-repo-picker-icon" aria-hidden="true"></span>
-        <select
-          id="repo-select"
-          class="gw-repo-select"
-          data-testid="repo-select"
-        ></select>
+    <!-- 存储库：常驻列出当前 Workspace 命中的全部仓库，点击行切换（对齐 VS Code「存储库」视图） -->
+    <section
+      id="section-repos"
+      class="gw-section gw-section-repos hidden"
+      data-testid="section-repos"
+      aria-labelledby="repos-section-title"
+    >
+      <div class="gw-section-header" data-testid="repos-section-header">
+        <button
+          id="repos-collapse-btn"
+          type="button"
+          class="gw-section-toggle gw-clip-focus"
+          data-testid="repos-collapse-btn"
+          aria-expanded="true"
+          aria-controls="section-repos-body"
+        >
+          <span id="repos-collapse-chevron" class="gw-chevron" aria-hidden="true"></span>
+          <span id="repos-section-title" class="gw-section-title"></span>
+        </button>
       </div>
-      <span id="repo-branch-meta" class="gw-repo-branch-meta" data-testid="repo-branch-meta">
-        <span id="repo-branch-icon" class="gw-repo-picker-icon" aria-hidden="true"></span>
-        <span id="repo-branch-text" class="gw-repo-branch-text"></span>
-      </span>
-    </header>
+      <div
+        id="section-repos-body"
+        class="gw-section-body gw-repos-body"
+        data-testid="section-repos-body"
+        role="listbox"
+      ></div>
+    </section>
 
     <!-- 全局状态横幅（如文件监听风暴降级告警） -->
     <div id="global-banners" class="gw-banner-stack hidden" data-testid="global-banners"></div>

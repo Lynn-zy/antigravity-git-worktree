@@ -51,7 +51,10 @@ import {
   translateApiError,
   formatRelativeTime,
   formatAbsoluteTime,
+  formatSyncTitle,
 } from '../../sidecars/panel/public/modules/i18n.js';
+import { computePrimaryButtonState } from '../../sidecars/panel/public/modules/changes-view.js';
+import { describeRepoStatus } from '../../sidecars/panel/public/modules/repos-view.js';
 
 import { resolveFileIconUrl } from '../../sidecars/panel/public/modules/file-icons.js';
 import {
@@ -691,8 +694,13 @@ test('i18n: 中英词典键全对称、全错误码覆盖、时间与语言解�
   const tEn = createTranslator('en');
   assert.equal(tZh.locale, 'zh-CN');
   assert.equal(tEn.locale, 'en');
-  assert.equal(tZh('primary.pushChanges', { count: 3 }), '推送更改 3↑');
-  assert.equal(tEn('primary.pushChanges', { count: 3 }), 'Push Changes 3↑');
+  // 同步提示沿用 VS Code 语言包原文
+  const upstream = 'origin/main';
+  assert.equal(formatSyncTitle({ upstream, ahead: 21, behind: 0 }, tZh), '将 21 个提交推送到 origin/main');
+  assert.equal(formatSyncTitle({ upstream, ahead: 0, behind: 3 }, tZh), '从 origin/main 拉取 3 个提交');
+  assert.equal(formatSyncTitle({ upstream, ahead: 21, behind: 3 }, tZh), '在 origin/main 之间拉取 3 个提交并推送 21 个提交');
+  assert.equal(formatSyncTitle({ upstream, ahead: 0, behind: 0 }, tZh), '同步更改');
+  assert.equal(formatSyncTitle({ upstream, ahead: 21, behind: 3 }, tEn), 'Pull 3 and push 21 commits between origin/main');
   assert.equal(tZh('graph.deletedFileDisabled'), '该文件在当前工作区已不存在');
   assert.equal(tZh('graph.standaloneFilePreviewNotice'), '文件预览仅在 Antigravity 桌面端辅助栏内可用');
 
@@ -707,6 +715,98 @@ test('i18n: 中英词典键全对称、全错误码覆盖、时间与语言解�
   assert.equal(formatAbsoluteTime(oneDayAgoSec, 'en'), 'November 20, 2026 at 12:00 PM');
   assert.equal(formatRelativeTime(NaN, 'zh-CN', baseMs), '');
   assert.equal(formatAbsoluteTime(NaN, 'zh-CN'), '');
+});
+
+test('changes-view: 工作区干净时按 VS Code 顺序显示发布分支、同步更改或禁用的提交，同步数落后在前领先在后', () => {
+  const t = createTranslator('zh-CN');
+  const clean = { conflicted: [], staged: [], unstaged: [] };
+  const tracked = { branch: 'main', upstream: 'origin/main', remotes: ['origin'], isUnborn: false, isDetached: false };
+  const stateOf = (repo, { changes = clean, pendingOp = null } = {}) =>
+    computePrimaryButtonState({ activeRepo: { ...tracked, ...repo }, changes, pendingOp, t });
+
+  const aheadOnly = stateOf({ ahead: 21, behind: 0 });
+  assert.deepEqual(
+    [aheadOnly.action, aheadOnly.label, aheadOnly.disabled, aheadOnly.title],
+    ['sync', '同步更改', false, '将 21 个提交推送到 origin/main'],
+    '只领先时也是同步更改，不是推送更改',
+  );
+  assert.deepEqual(aheadOnly.counts, [{ value: 21, icon: 'arrowUp' }]);
+  assert.deepEqual(stateOf({ ahead: 0, behind: 3 }).counts, [{ value: 3, icon: 'arrowDown' }]);
+  assert.deepEqual(stateOf({ ahead: 21, behind: 3 }).counts, [{ value: 3, icon: 'arrowDown' }, { value: 21, icon: 'arrowUp' }]);
+
+  // 同 VS Code：操作进行中按钮保留原文案并禁用；同步、推送、拉取期间同步按钮的图标旋转
+  for (const pendingOp of ['sync', 'push', 'pull']) {
+    const syncing = stateOf({ ahead: 21, behind: 3 }, { pendingOp });
+    assert.deepEqual(
+      [syncing.action, syncing.label, syncing.disabled, syncing.title, syncing.counts.length],
+      ['syncing', '同步更改', true, '正在同步更改...', 2],
+      `${pendingOp} 期间同步按钮文案与数字不变、禁用`,
+    );
+  }
+  const dirty = { ...clean, unstaged: [{ path: 'a.txt' }] };
+  const committing = stateOf({ ahead: 0, behind: 0 }, { changes: dirty, pendingOp: 'commit' });
+  assert.deepEqual(
+    [committing.action, committing.label, committing.disabled, committing.title],
+    ['commit', '提交', true, '正在提交更改...'],
+    '提交期间不改文案，悬停提示为 VS Code 的「正在提交更改...」',
+  );
+  const publishing = stateOf({ upstream: null, ahead: 0, behind: 0 }, { pendingOp: 'publish' });
+  assert.deepEqual([publishing.action, publishing.label, publishing.disabled], ['publishing', '发布分支 (main)', true]);
+  assert.deepEqual(
+    [stateOf({ ahead: 1, behind: 0 }, { changes: dirty, pendingOp: 'sync' }).action, stateOf({ ahead: 1, behind: 0 }, { pendingOp: 'stage' }).disabled],
+    ['commit', true],
+    '从存储库行同步时有改动的提交按钮保持提交态，其他操作进行中按钮一律禁用',
+  );
+
+  assert.equal(stateOf({ ahead: 0, behind: 0 }).action, 'clean-disabled');
+  assert.equal(stateOf({ upstream: null, ahead: 0, behind: 0 }).action, 'publish');
+  assert.equal(stateOf({ upstream: null, remotes: [], ahead: 0, behind: 0 }).action, 'clean-disabled');
+  assert.equal(stateOf({ isDetached: true, branch: null, ahead: 2, behind: 0 }).action, 'clean-disabled');
+  assert.equal(
+    stateOf({ ahead: 21, behind: 0 }, { changes: { ...clean, unstaged: [{ path: 'a.txt' }] } }).action,
+    'commit',
+    '有改动时提交优先于同步',
+  );
+});
+
+test('repos-view: 存储库行按 VS Code 状态栏规则显示分支与同步状态，同步状态只在当前仓库那一行显示', () => {
+  const t = createTranslator('zh-CN');
+  const repo = {
+    isBare: false, isUnborn: false, isDetached: false, headOid: '0123456789abcdef',
+    branch: 'main', upstream: 'origin/main', ahead: 21, behind: 0, remotes: ['origin'],
+  };
+  const active = { t, isActive: true };
+
+  assert.deepEqual(describeRepoStatus(repo, active), {
+    branch: { icon: 'gitBranch', label: 'main' },
+    sync: { icon: 'sync', label: '0↓ 21↑', title: '将 21 个提交推送到 origin/main', spinning: false, command: 'sync' },
+  });
+  assert.deepEqual(
+    [describeRepoStatus({ ...repo, ahead: 0 }, active).sync.label, describeRepoStatus({ ...repo, ahead: 0 }, active).sync.command],
+    ['', 'sync'],
+    '与上游一致时只显示同步图标，仍可点击同步',
+  );
+  assert.deepEqual(
+    describeRepoStatus({ ...repo, upstream: null }, active).sync,
+    { icon: 'cloudUpload', label: '', title: '发布分支', spinning: false, command: 'publish' },
+  );
+  assert.equal(describeRepoStatus({ ...repo, remotes: [] }, active).sync, null, '没有远端时不显示同步项');
+
+  // 非当前仓库的摘要只有分支信息，不显示同步状态（后端不监听它，领先、落后数会过时）
+  const inactiveSummary = { isBare: false, isDetached: false, headOid: '0123456789abcdef', branch: 'develop' };
+  assert.deepEqual(describeRepoStatus(inactiveSummary, { t, isActive: false }), { branch: { icon: 'gitBranch', label: 'develop' }, sync: null });
+
+  const detached = describeRepoStatus({ ...repo, isDetached: true, branch: null }, active);
+  assert.deepEqual(detached.branch, { icon: 'gitCommit', label: '01234567' }, '游离 HEAD 显示 8 位短 SHA');
+  assert.deepEqual(detached.sync, { icon: 'sync', label: '', title: '', spinning: false, command: null }, '游离 HEAD 的同步项不可点');
+
+  assert.deepEqual(
+    describeRepoStatus({ ...repo, isBare: true, branch: null, upstream: null }, active),
+    { branch: { icon: null, label: '裸仓库' }, sync: null },
+  );
+
+  const syncing = describeRepoStatus(repo, { ...active, isSyncing: true }).sync;
+  assert.deepEqual([syncing.spinning, syncing.title, syncing.label, syncing.command], [true, '正在同步更改...', '0↓ 21↑', null]);
 });
 
 test('public-bundle: 零构建经典脚本可作为 classic JS 编译运行且 HTML 禁止 type="module"', () => {

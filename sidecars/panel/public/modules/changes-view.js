@@ -4,20 +4,27 @@
  * 智能主按钮状态机、可折叠变更分组及三档 Discard 安全确认护栏。
  */
 
+import { formatSyncTitle } from './i18n.js';
+
 // 与 styles.css 中 .gw-file-row 的固定行高一致，虚拟列表按它换算滚动位置
 const FILE_ROW_HEIGHT_PX = 22;
 // 单个分组不超过这么多行时整表渲染；超过后只渲染可视区附近的行
 const FULL_RENDER_ROW_LIMIT = 500;
 const OVERSCAN_ROWS = 10;
 
+// 同步、发布期间换成同步图标，由样式表让它旋转（同 VS Code `sync~spin`）
 const PRIMARY_ICON_BY_ACTION = Object.freeze({
   commit: 'check',
   'clean-disabled': 'check',
   'conflict-blocked': 'warning',
   publish: 'cloudUpload',
-  push: 'repoPush',
-  pull: 'repoPull',
+  publishing: 'sync',
+  sync: 'sync',
+  syncing: 'sync',
 });
+
+// 同 VS Code ActionButton 的 isSyncInProgress（同步、推送、拉取）；发布走的也是推送
+const SYNC_OPS = new Set(['sync', 'push', 'pull', 'publish']);
 
 const normalizeStatusMeta = (file, isConflicted, t) => {
   if (isConflicted) {
@@ -53,146 +60,91 @@ const normalizeStatusMeta = (file, isConflicted, t) => {
   };
 };
 
+// 同 VS Code「同步更改」按钮：落后数在前、领先数在后，为 0 的一侧省略
+const computeSyncCounts = ({ ahead, behind }) => [
+  ...(behind > 0 ? [{ value: behind, icon: 'arrowDown' }] : []),
+  ...(ahead > 0 ? [{ value: ahead, icon: 'arrowUp' }] : []),
+];
+
+const buttonState = (action, label, title, { disabled = false, conflictBlocked = false, counts = [] } = {}) => ({
+  action,
+  label,
+  title,
+  disabled,
+  conflictBlocked,
+  counts,
+});
+
+// 没有操作进行时的按钮状态；工作区干净时的顺序同 VS Code Git 扩展的 ActionButton：发布分支 → 同步更改 → 禁用的提交
+const computeIdleButtonState = ({ activeRepo, changes, t }) => {
+  if ((changes?.conflicted?.length ?? 0) > 0) {
+    return buttonState('conflict-blocked', t('primary.conflictBlocked'), t('primary.conflictBlockedTitle'), {
+      disabled: true,
+      conflictBlocked: true,
+    });
+  }
+
+  const stagedCount = changes?.staged?.length ?? 0;
+  const unstagedCount = changes?.unstaged?.length ?? 0;
+  if (stagedCount > 0 || unstagedCount > 0) {
+    return buttonState('commit', t('primary.commit'), stagedCount > 0 ? t('primary.commitTitle') : t('primary.commitUnstagedTitle'));
+  }
+
+  const remotes = Array.isArray(activeRepo?.remotes) ? activeRepo.remotes : [];
+  const ahead = Number(activeRepo?.ahead ?? 0);
+  const behind = Number(activeRepo?.behind ?? 0);
+
+  if (activeRepo && !activeRepo.isUnborn && !activeRepo.isDetached) {
+    if (!activeRepo.upstream && remotes.length > 0) {
+      const branchName = activeRepo.branch || '';
+      return buttonState(
+        'publish',
+        branchName ? t('primary.publishBranchWithName', { branch: branchName }) : t('primary.publishBranch'),
+        t('primary.publishBranchTitle', { branch: branchName }),
+      );
+    }
+    if (activeRepo.upstream && (ahead > 0 || behind > 0)) {
+      return buttonState('sync', t('primary.syncChanges'), formatSyncTitle(activeRepo, t), {
+        counts: computeSyncCounts({ ahead, behind }),
+      });
+    }
+  }
+
+  return buttonState('clean-disabled', t('primary.commit'), t('primary.commitCleanDisabledTitle'), { disabled: true });
+};
+
 /**
- * 按 specs 7.2.3 互斥优先级计算智能主按钮当前状态与交互语义。
+ * 按 docs/spec.md 7.2 的互斥优先级计算智能主按钮当前状态与交互语义。
+ * 同 VS Code：操作进行中按钮保留原文案并禁用，进度由窗格标题栏底边的进度条表示；同步、发布期间图标旋转。
  *
  * @param {{
  *   activeRepo: Record<string, any> | null,
  *   changes: { conflicted?: any[], staged?: any[], unstaged?: any[] } | null,
  *   pendingOp: string | null,
  *   t: (key: string, params?: Record<string, unknown>) => string
- * }} params 当前仓库、变更集合、异步状态与翻译器
+ * }} params 当前仓库、变更集合、进行中的写操作与翻译器
  * @returns {{
- *   action: 'busy' | 'conflict-blocked' | 'commit' | 'publish' | 'push' | 'pull' | 'clean-disabled',
+ *   action: 'conflict-blocked' | 'commit' | 'publish' | 'publishing' | 'sync' | 'syncing' | 'clean-disabled',
  *   label: string,
  *   title: string,
- *   hint: string,
  *   disabled: boolean,
- *   conflictBlocked: boolean
- * }} 主按钮渲染描述对象（无副作用）
+ *   conflictBlocked: boolean,
+ *   counts: Array<{ value: number, icon: 'arrowDown' | 'arrowUp' }>
+ * }} 主按钮渲染描述对象（无副作用）；`counts` 是同步按钮文案后的落后、领先数
  */
 export const computePrimaryButtonState = ({ activeRepo, changes, pendingOp, t }) => {
-  if (pendingOp === 'commit') {
-    return {
-      action: 'busy',
-      label: t('primary.committing'),
-      title: t('primary.committing'),
-      hint: '',
-      disabled: true,
-      conflictBlocked: false,
-    };
+  const idle = computeIdleButtonState({ activeRepo, changes, t });
+  if (!pendingOp) return idle;
+  if (SYNC_OPS.has(pendingOp) && idle.action === 'sync') {
+    return { ...idle, action: 'syncing', title: t('sync.syncing'), disabled: true };
   }
-  if (pendingOp === 'publish') {
-    return {
-      action: 'busy',
-      label: t('primary.publishing'),
-      title: t('primary.publishing'),
-      hint: '',
-      disabled: true,
-      conflictBlocked: false,
-    };
+  if (SYNC_OPS.has(pendingOp) && idle.action === 'publish') {
+    return { ...idle, action: 'publishing', title: t('primary.publishing'), disabled: true };
   }
-  if (pendingOp === 'push') {
-    return {
-      action: 'busy',
-      label: t('primary.pushing'),
-      title: t('primary.pushing'),
-      hint: '',
-      disabled: true,
-      conflictBlocked: false,
-    };
+  if (pendingOp === 'commit' && idle.action === 'commit') {
+    return { ...idle, title: t('primary.committing'), disabled: true };
   }
-  if (pendingOp === 'pull') {
-    return {
-      action: 'busy',
-      label: t('primary.pulling'),
-      title: t('primary.pulling'),
-      hint: '',
-      disabled: true,
-      conflictBlocked: false,
-    };
-  }
-
-  const conflictedCount = changes?.conflicted?.length ?? 0;
-  if (conflictedCount > 0) {
-    return {
-      action: 'conflict-blocked',
-      label: t('primary.conflictBlocked'),
-      title: t('primary.conflictBlockedTitle'),
-      hint: '',
-      disabled: true,
-      conflictBlocked: true,
-    };
-  }
-
-  const stagedCount = changes?.staged?.length ?? 0;
-  const unstagedCount = changes?.unstaged?.length ?? 0;
-  if (stagedCount > 0 || unstagedCount > 0) {
-    return {
-      action: 'commit',
-      label: t('primary.commit'),
-      title: stagedCount > 0 ? t('primary.commitTitle') : t('primary.commitUnstagedTitle'),
-      hint: '',
-      disabled: false,
-      conflictBlocked: false,
-    };
-  }
-
-  const isUnborn = Boolean(activeRepo?.isUnborn);
-  const isDetached = Boolean(activeRepo?.isDetached);
-  const remotes = Array.isArray(activeRepo?.remotes) ? activeRepo.remotes : [];
-  const ahead = Number(activeRepo?.ahead ?? 0);
-  const behind = Number(activeRepo?.behind ?? 0);
-
-  if (!isUnborn && !isDetached) {
-    if (!activeRepo?.upstream && remotes.length > 0) {
-      const branchName = activeRepo?.branch || '';
-      return {
-        action: 'publish',
-        label: branchName
-          ? t('primary.publishBranchWithName', { branch: branchName })
-          : t('primary.publishBranch'),
-        title: t('primary.publishBranchTitle', { branch: branchName }),
-        hint: '',
-        disabled: false,
-        conflictBlocked: false,
-      };
-    }
-
-    if (ahead > 0) {
-      const behindHint = behind > 0 ? t('primary.pushBehindHint', { behind }) : '';
-      return {
-        action: 'push',
-        label: t('primary.pushChanges', { count: ahead }),
-        title: behindHint
-          ? `${t('primary.pushChangesTitle', { count: ahead })} — ${behindHint}`
-          : t('primary.pushChangesTitle', { count: ahead }),
-        hint: behindHint,
-        disabled: false,
-        conflictBlocked: false,
-      };
-    }
-
-    if (ahead === 0 && behind > 0) {
-      return {
-        action: 'pull',
-        label: t('primary.pullChanges', { count: behind }),
-        title: t('primary.pullChangesTitle', { count: behind }),
-        hint: '',
-        disabled: false,
-        conflictBlocked: false,
-      };
-    }
-  }
-
-  return {
-    action: 'clean-disabled',
-    label: t('primary.commit'),
-    title: t('primary.commitCleanDisabledTitle'),
-    hint: '',
-    disabled: true,
-    conflictBlocked: false,
-  };
+  return { ...idle, disabled: true };
 };
 
 /**
@@ -215,8 +167,7 @@ export const computePrimaryButtonState = ({ activeRepo, changes, pendingOp, t })
  *   onDiscard: (payload: { worktreePath: string, allTracked: boolean, paths?: string[], untracked: boolean }) => Promise<void>,
  *   onCommit: (payload: { worktreePath: string, message: string, autoStageAll: boolean }) => Promise<boolean>,
  *   onPublish: (repo: Record<string, any>) => void,
- *   onPush: (repo: Record<string, any>) => Promise<void>,
- *   onPull: (repo: Record<string, any>) => Promise<void>
+ *   onSync: (repo: Record<string, any>) => Promise<void>
  * }} deps 外部服务与交互回调
  * @returns {{
  *   render: (state: { activeRepo: Record<string, any> | null, changes: Record<string, any> | null, pendingOp: string | null, t: (key: string, params?: Record<string, unknown>) => string }) => void,
@@ -269,11 +220,7 @@ export const createChangesView = (elements, deps) => {
   const primaryLabelEl = doc.createElement('span');
   primaryLabelEl.className = 'gw-primary-btn-label';
 
-  const primaryHintEl = doc.createElement('div');
-  primaryHintEl.className = 'gw-primary-hint hidden';
-  primaryHintEl.dataset.testid = 'commit-primary-hint';
-
-  composerEl.append(textareaEl, validationEl, primaryBtnEl, primaryHintEl);
+  composerEl.append(textareaEl, validationEl, primaryBtnEl);
 
   const groupsEl = doc.createElement('div');
   groupsEl.className = 'gw-changes-groups';
@@ -350,12 +297,8 @@ export const createChangesView = (elements, deps) => {
       deps.onPublish(activeRepo);
       return;
     }
-    if (btnState.action === 'push') {
-      void deps.onPush(activeRepo);
-      return;
-    }
-    if (btnState.action === 'pull') {
-      void deps.onPull(activeRepo);
+    if (btnState.action === 'sync') {
+      void deps.onSync(activeRepo);
     }
   };
 
@@ -813,14 +756,17 @@ export const createChangesView = (elements, deps) => {
     const btnState = computePrimaryButtonState({ activeRepo, changes, pendingOp, t });
     const primaryIcon = PRIMARY_ICON_BY_ACTION[btnState.action];
     primaryLabelEl.textContent = btnState.label;
-    primaryBtnEl.replaceChildren(...(primaryIcon ? [deps.createIcon(primaryIcon), primaryLabelEl] : [primaryLabelEl]));
+    const countEls = btnState.counts.map(({ value, icon }) => {
+      const countEl = doc.createElement('span');
+      countEl.className = 'gw-primary-btn-count';
+      countEl.append(String(value), deps.createIcon(icon));
+      return countEl;
+    });
+    primaryBtnEl.replaceChildren(...(primaryIcon ? [deps.createIcon(primaryIcon)] : []), primaryLabelEl, ...countEls);
     primaryBtnEl.title = btnState.title;
     primaryBtnEl.disabled = btnState.disabled;
     primaryBtnEl.dataset.actionState = btnState.action;
     primaryBtnEl.classList.toggle('is-conflict-blocked', btnState.conflictBlocked);
-
-    primaryHintEl.textContent = btnState.hint;
-    primaryHintEl.classList.toggle('hidden', !btnState.hint);
 
     const savedFocus = deps.captureFocus(groupsEl);
     const fragment = doc.createDocumentFragment();

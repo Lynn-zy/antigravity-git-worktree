@@ -9,15 +9,13 @@ export const SUPPORTED_LOCALES = Object.freeze(['zh-CN', 'en']);
 /** @type {Readonly<Record<'zh-CN' | 'en', Readonly<Record<string, string>>>>} 中英双语完整词典 */
 export const MESSAGES = Object.freeze({
   'zh-CN': Object.freeze({
-    // 面板空态与多仓库切换
+    // 面板空态与存储库列表
     'loading.repository': '正在加载 Git 仓库…',
     'error.bootFailed': '面板初始化失败',
     'empty.noRepo.title': '当前工作区未发现 Git 仓库',
     'empty.noRepo.description': '请在 Antigravity 中打开包含 Git 仓库的本地目录后自动同步。',
     'repo.switcherAria': '选择要查看的 Git 仓库',
     'repo.currentBranch': '当前分支：{branch}',
-    'repo.detachedLabel': '游离 HEAD',
-    'repo.unbornLabel': '无提交',
     'repo.bareLabel': '裸仓库',
 
     // 特殊仓库与监听状态横幅
@@ -28,7 +26,8 @@ export const MESSAGES = Object.freeze({
     'repo.unbornNotice': '当前分支尚无任何提交记录，完成首次提交后将生成提交图表。',
     'changes.conflictBanner': '存在 {count} 个未解决合并冲突，请先在编辑器中解决并暂存后再提交。',
 
-    // 双区标题与分隔条
+    // 区域标题与分隔条
+    'section.repositories': '存储库',
     'section.changes': '更改',
     'section.graph': '图表',
     'section.collapse': '折叠 {section}',
@@ -40,25 +39,25 @@ export const MESSAGES = Object.freeze({
     'commit.placeholderWithBranch': '消息({shortcut} 在“{branch}”提交)',
     'commit.inputAria': '提交说明输入框',
     'commit.emptyMessageError': '请先输入提交说明',
-    'commit.successToast': '已提交 {sha}',
     'primary.conflictBlocked': '存在冲突，请先解决',
     'primary.conflictBlockedTitle': '工作区存在未解决的合并冲突，解决前禁止提交',
     'primary.commit': '提交',
     'primary.commitTitle': '提交已暂存更改（Ctrl/Cmd+Enter）',
     'primary.commitUnstagedTitle': '当前无已暂存更改，点击可选择自动暂存全部并提交',
     'primary.commitCleanDisabledTitle': '工作区没有待提交或待同步的更改',
-    'primary.committing': '正在提交…',
+    'primary.committing': '正在提交更改...',
     'primary.publishBranch': '发布分支',
     'primary.publishBranchWithName': '发布分支 ({branch})',
     'primary.publishBranchTitle': '将本地分支 {branch} 发布并关联上游远端',
     'primary.publishing': '正在发布分支…',
-    'primary.pushChanges': '推送更改 {count}↑',
-    'primary.pushChangesTitle': '向远端推送 {count} 个本地领先提交',
-    'primary.pushBehindHint': '本地同时落后远端 {behind} 个提交，若推送被拒请先拉取',
-    'primary.pushing': '正在推送…',
-    'primary.pullChanges': '拉取更改 {count}↓',
-    'primary.pullChangesTitle': '从上游快进拉取 {count} 个提交（git pull --ff-only）',
-    'primary.pulling': '正在拉取…',
+    'primary.syncChanges': '同步更改',
+
+    // 同步状态悬停提示（文案沿用 VS Code 简体中文语言包）
+    'sync.title': '同步更改',
+    'sync.syncing': '正在同步更改...',
+    'sync.pullTitle': '从 {upstream} 拉取 {count} 个提交',
+    'sync.pushTitle': '将 {count} 个提交推送到 {upstream}',
+    'sync.pullPushTitle': '在 {upstream} 之间拉取 {behind} 个提交并推送 {ahead} 个提交',
 
     // 上区：变更文件分组与行操作
     'changes.conflictedGroup': '合并冲突',
@@ -148,13 +147,6 @@ export const MESSAGES = Object.freeze({
     'popover.copySha': '复制完整 SHA',
     'popover.copiedSha': '已复制完整 SHA：{sha}',
 
-    // 远端同步反馈
-    'remote.fetchSuccess': '已完成远端提取（Fetch）',
-    'remote.pullSuccess': '已快进拉取最新提交（Pull）',
-    'remote.pushSuccess': '已推送更改到远端',
-    'remote.publishSuccess': '已发布分支 {branch} 至 {remote}',
-    'remote.refreshed': '已刷新仓库状态与提交图表',
-
     // 后端标准错误码映射（docs/spec.md 5.1）
     'error.INVALID_REQUEST': '请求参数无效或包含非法字符，请刷新后重试。',
     'error.OUT_OF_WORKTREE': '文件路径试图越出当前工作树目录范围，操作已被安全拦截。',
@@ -170,15 +162,13 @@ export const MESSAGES = Object.freeze({
     'error.GIT_ERROR': 'Git 命令执行失败，请检查详细信息或在终端重试。',
   }),
   en: Object.freeze({
-    // Panel empty state & multi-repository switcher
+    // Panel empty state & repository list
     'loading.repository': 'Loading Git repository…',
     'error.bootFailed': 'Panel initialization failed',
     'empty.noRepo.title': 'No Git Repository Found',
     'empty.noRepo.description': 'Open a local folder containing a Git repository in Antigravity to sync automatically.',
     'repo.switcherAria': 'Select active Git repository',
     'repo.currentBranch': 'Current branch: {branch}',
-    'repo.detachedLabel': 'Detached HEAD',
-    'repo.unbornLabel': 'No commits',
     'repo.bareLabel': 'Bare repository',
 
     // Special repository & file-watch banners
@@ -190,6 +180,7 @@ export const MESSAGES = Object.freeze({
     'changes.conflictBanner': '{count} unresolved merge conflict(s). Resolve and stage them in the editor before committing.',
 
     // Section headers & resize sash
+    'section.repositories': 'Repositories',
     'section.changes': 'Changes',
     'section.graph': 'Graph',
     'section.collapse': 'Collapse {section}',
@@ -201,25 +192,25 @@ export const MESSAGES = Object.freeze({
     'commit.placeholderWithBranch': 'Message ({shortcut} to commit on "{branch}")',
     'commit.inputAria': 'Commit message input',
     'commit.emptyMessageError': 'Please enter a commit message',
-    'commit.successToast': 'Committed {sha}',
     'primary.conflictBlocked': 'Resolve conflicts first',
     'primary.conflictBlockedTitle': 'Unresolved merge conflicts must be resolved before committing',
     'primary.commit': 'Commit',
     'primary.commitTitle': 'Commit staged changes (Ctrl/Cmd+Enter)',
     'primary.commitUnstagedTitle': 'No staged changes; click to confirm staging all changes and committing',
     'primary.commitCleanDisabledTitle': 'No pending changes to commit or sync',
-    'primary.committing': 'Committing…',
+    'primary.committing': 'Committing Changes...',
     'primary.publishBranch': 'Publish Branch',
     'primary.publishBranchWithName': 'Publish Branch ({branch})',
     'primary.publishBranchTitle': 'Publish local branch {branch} and set upstream',
     'primary.publishing': 'Publishing Branch…',
-    'primary.pushChanges': 'Push Changes {count}↑',
-    'primary.pushChangesTitle': 'Push {count} local commit(s) to upstream',
-    'primary.pushBehindHint': 'Branch is also {behind} commit(s) behind upstream; pull first if push is rejected',
-    'primary.pushing': 'Pushing…',
-    'primary.pullChanges': 'Pull Changes {count}↓',
-    'primary.pullChangesTitle': 'Fast-forward pull {count} commit(s) from upstream (git pull --ff-only)',
-    'primary.pulling': 'Pulling…',
+    'primary.syncChanges': 'Sync Changes',
+
+    // Sync status tooltips (wording follows VS Code)
+    'sync.title': 'Synchronize Changes',
+    'sync.syncing': 'Synchronizing Changes...',
+    'sync.pullTitle': 'Pull {count} commits from {upstream}',
+    'sync.pushTitle': 'Push {count} commits to {upstream}',
+    'sync.pullPushTitle': 'Pull {behind} and push {ahead} commits between {upstream}',
 
     // Top section: change groups & file actions
     'changes.conflictedGroup': 'Merge Conflicts',
@@ -308,13 +299,6 @@ export const MESSAGES = Object.freeze({
     'popover.deletions': '{count} deletions(-)',
     'popover.copySha': 'Copy Full SHA',
     'popover.copiedSha': 'Copied SHA: {sha}',
-
-    // Remote operation feedback
-    'remote.fetchSuccess': 'Fetched all remotes',
-    'remote.pullSuccess': 'Fast-forward pull completed',
-    'remote.pushSuccess': 'Pushed changes to remote',
-    'remote.publishSuccess': 'Published {branch} to {remote}',
-    'remote.refreshed': 'Refreshed repository status and Commit Graph',
 
     // Backend canonical error code messages (docs/spec.md 5.1)
     'error.INVALID_REQUEST': 'Invalid request parameters or disallowed characters. Please refresh and try again.',
@@ -410,6 +394,20 @@ export const translateApiError = (error, locale = 'en') => {
     return error.message.trim();
   }
   return translate('error.GIT_ERROR');
+};
+
+/**
+ * 生成同步状态的悬停提示，规则同 VS Code Git 扩展的 `syncTooltip`：只落后时说拉取、只领先时说推送、分叉时两者都说。
+ *
+ * @param {{ upstream?: string | null, ahead?: number, behind?: number }} repo 仓库的上游与领先、落后提交数
+ * @param {(key: string, params?: Record<string, unknown>) => string} t 翻译函数
+ * @returns {string} 本地化的提示文案；没有上游或与上游一致时为「同步更改」（无副作用）
+ */
+export const formatSyncTitle = ({ upstream, ahead = 0, behind = 0 }, t) => {
+  if (!upstream || (!ahead && !behind)) return t('sync.title');
+  if (!ahead) return t('sync.pullTitle', { count: behind, upstream });
+  if (!behind) return t('sync.pushTitle', { count: ahead, upstream });
+  return t('sync.pullPushTitle', { behind, ahead, upstream });
 };
 
 /**

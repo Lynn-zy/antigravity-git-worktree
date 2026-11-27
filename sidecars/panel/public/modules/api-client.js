@@ -86,6 +86,7 @@ const safeParseJson = async (response) => {
  *   fetchRemotes: (params: { worktreePath?: string | null, repoId?: string | null, workspaceUris?: string[] }) => Promise<any>,
  *   pullBranch: (params: { worktreePath: string, workspaceUris?: string[] }) => Promise<any>,
  *   pushBranch: (params: { worktreePath: string, remote?: string, workspaceUris?: string[] }) => Promise<any>,
+ *   syncBranch: (params: { worktreePath: string, workspaceUris?: string[] }) => Promise<any>,
  *   savePreferences: (params: { locale?: string, graphScope?: string, splitRatio?: number }) => Promise<any>
  * }} API 客户端方法集合（发起网络请求存在 I/O 副作用）
  */
@@ -169,6 +170,7 @@ export const createApiClient = (options = {}) => {
     fetchRemotes: (params) => postRepoJson('/api/remote/fetch', params),
     pullBranch: (params) => postRepoJson('/api/remote/pull', params),
     pushBranch: (params) => postRepoJson('/api/remote/push', params),
+    syncBranch: (params) => postRepoJson('/api/remote/sync', params),
     savePreferences: (params) => postJson('/api/preferences', params),
   };
 };
