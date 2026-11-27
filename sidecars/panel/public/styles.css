@@ -561,18 +561,26 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+/* 选中行常驻高亮，左侧留出与右侧滚动条沟槽等宽的空白，高亮块左右对称 */
 .gw-repos-body {
   flex: 0 1 auto;
   max-height: calc(22px * 10);
+  scrollbar-gutter: stable both-edges;
 }
 
+/*
+ * 行首缩进扣掉左侧沟槽的宽度，图标仍与其他窗格的树缩进对齐。
+ * 同步图标旋转时外接框最大 22.6px，比行高多出的部分算进滚动区域，只有一行时列表会随旋转角度闪出滚动条，所以行内裁切
+ */
 .gw-repo-row {
   display: flex;
   align-items: center;
   gap: 6px;
   height: 22px;
   min-width: 0;
-  padding: 0 4px 0 30px;
+  padding: 0 4px 0 20px;
+  border-radius: 4px;
+  overflow: hidden;
   line-height: 22px;
   cursor: pointer;
   user-select: none;
