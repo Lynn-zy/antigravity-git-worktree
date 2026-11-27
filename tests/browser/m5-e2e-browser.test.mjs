@@ -942,6 +942,19 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { name: 'repoB', selected: false, status: ['develop'] },
   ]);
 
+  // 让下一次指定接口的请求晚到，便于在操作进行中检查进度条与按钮状态
+  const delayNextApiCall = (apiPath, ms) => page.evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.fetch = (input, init) => {
+      if (new URL(String(input), location.href).pathname !== ${JSON.stringify(apiPath)}) return originalFetch.call(window, input, init);
+      window.fetch = originalFetch;
+      return new Promise((resolve) => setTimeout(resolve, ${ms})).then(() => originalFetch.call(window, input, init));
+    };
+  })()`);
+  const progressActive = (sectionTestId) =>
+    `Boolean(document.querySelector('[data-testid="${sectionTestId}"] [data-testid="progress-bar"].is-active'))`;
+  const showsRepoB = 'document.body.innerText.includes("第二个仓库初始提交")';
+
   // 点击仓库行在两者间真实切换；切换仓库时清空提交说明输入框，不保留草稿，切回原仓库也不恢复
   const commitInputValue = 'document.querySelector(\'[data-testid="commit-message-input"]\').value';
   await page.evaluate(`(() => {
@@ -949,11 +962,15 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     input.value = 'wip: 只属于 repoA 的说明';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
+  // 高亮在点击时就移到 repoB，不等快照返回；快照到达前两个标题栏显示进度条，更改与图表仍是 repoA
+  await delayNextApiCall('/api/snapshot', 800);
   await page.clickSelector('[data-testid="repo-row"]', { index: 1 });
-  await page.waitFor(
-    'document.body.innerText.includes("第二个仓库初始提交")',
-    { description: 'switch to repoB' },
-  );
+  assert.deepEqual(await page.evaluate(`({
+    selected: [...document.querySelectorAll('[data-testid="repo-row"]')].map((row) => row.getAttribute('aria-selected') === 'true'),
+    progress: ${progressActive('section-changes')} && ${progressActive('section-graph')},
+    showsRepoB: ${showsRepoB},
+  })`), { selected: [false, true], progress: true, showsRepoB: false }, '点击仓库行立即高亮，快照加载期间显示进度条');
+  await page.waitFor(showsRepoB, { description: 'switch to repoB' });
   assert.equal(await page.evaluate(commitInputValue), '', '切换到 repoB 后提交说明输入框应为空');
   assert.deepEqual(await repoRowsState(), [
     { name: 'repoA', selected: false, status: ['main'] },
@@ -966,6 +983,25 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
     { description: 'switch back to repoA' },
   );
   assert.equal(await page.evaluate(commitInputValue), '', '切回 repoA 后不恢复原来的草稿');
+
+  // 切换请求失败时高亮回到仍在显示的 repoA，并提示错误。只拦截切到 repoB 的快照，后台刷新的快照照常放行
+  await page.evaluate(`(() => {
+    const repoBId = document.querySelectorAll('[data-testid="repo-row"]')[1].dataset.repoId;
+    const originalFetch = window.fetch;
+    window.fetch = (input, init) => {
+      const isSwitchToRepoB = new URL(String(input), location.href).pathname === '/api/snapshot'
+        && JSON.parse(init.body).selectedRepoId === repoBId;
+      if (!isSwitchToRepoB) return originalFetch.call(window, input, init);
+      window.fetch = originalFetch;
+      const body = JSON.stringify({ ok: false, error: { code: 'GIT_ERROR', message: 'snapshot failed' } });
+      return Promise.resolve(new Response(body, { status: 500, headers: { 'Content-Type': 'application/json' } }));
+    };
+  })()`);
+  await page.clickSelector('[data-testid="repo-row"]', { index: 1 });
+  await page.waitFor('Boolean(document.querySelector("[data-testid=toast-error]"))', { description: 'repo switch failure toast' });
+  assert.deepEqual((await repoRowsState()).map((row) => row.selected), [true, false], '切换失败后高亮回到 repoA');
+  assert.equal(await page.evaluate(showsRepoB), false, '切换失败后仍显示 repoA');
+  await page.clickSelector('[data-testid="toast-error"] .gw-icon-btn');
 
   // 验证 auto 范围引用徽标：当前分支带名称，上游只显示云图标，标签等无关引用不显示
   const autoBadges = await page.evaluate(`(() => {
@@ -1139,17 +1175,6 @@ test('M5 端到端浏览器回归（场景 A：真实多仓/Merge/Bare 推拉/�
   })()`);
   assert.deepEqual(emptyValidation, { hasErrorClass: true, msgVisible: true, focused: true });
 
-  // 让下一次指定接口的请求晚到，便于在操作进行中检查进度条与按钮状态
-  const delayNextApiCall = (apiPath, ms) => page.evaluate(`(() => {
-    const originalFetch = window.fetch;
-    window.fetch = (input, init) => {
-      if (new URL(String(input), location.href).pathname !== ${JSON.stringify(apiPath)}) return originalFetch.call(window, input, init);
-      window.fetch = originalFetch;
-      return new Promise((resolve) => setTimeout(resolve, ${ms})).then(() => originalFetch.call(window, input, init));
-    };
-  })()`);
-  const progressActive = (sectionTestId) =>
-    `Boolean(document.querySelector('[data-testid="${sectionTestId}"] [data-testid="progress-bar"].is-active'))`;
   const successToastCount = 'document.querySelectorAll("[data-testid=toast-success]").length';
 
   // 填写说明后点击提交 -> 弹「自动暂存全部」模态框 -> 确认写入 Git 提交 -> 主按钮切换为「同步更改 1↑」

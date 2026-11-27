@@ -798,6 +798,18 @@ const bootstrapPanel = () => {
   });
 
   // --- 存储库列表与全局横幅渲染 ---
+  // 点击存储库行后高亮先移到新仓库，新仓库的快照到达或切换失败之前与当前显示的仓库不同
+  const isSwitchPending = () => Boolean(state.snapshot?.activeRepo) && state.selectedRepoId !== state.snapshot.activeRepo.id;
+
+  // 图表分页与提交详情缓存等新仓库的快照到达后再重置（loadSnapshot 比较前后仓库），切换失败时原仓库保持原样
+  const switchRepo = (repoId) => {
+    if (!repoId || repoId === state.selectedRepoId) return;
+    state.selectedRepoId = repoId;
+    // 高亮立即移到点击的行，不等快照返回。只重绘存储库列表：更改列表上千条时整表重建要数百毫秒
+    renderRepos();
+    void loadSnapshot({ forceRefresh: false, toastAnchor: reposBodyEl });
+  };
+
   const reposView = createReposView(
     {
       sectionEl: reposSectionEl,
@@ -810,18 +822,22 @@ const bootstrapPanel = () => {
       createIcon,
       captureFocus,
       restoreFocus,
-      onSelect: (repoId) => {
-        if (!repoId || repoId === state.selectedRepoId) return;
-        state.selectedRepoId = repoId;
-        state.graphLimit = INITIAL_GRAPH_LIMIT;
-        graphView.clearDetailCache();
-        void loadSnapshot({ forceRefresh: false });
-      },
+      onSelect: switchRepo,
       // 行在操作开始时就会重绘，失败提示锚定在不重建的列表容器上
       onSync: (repo) => void runSync(repo, reposBodyEl),
       onPublish: (repo) => runPushOrPublish(repo, reposBodyEl),
     },
   );
+
+  const renderRepos = () => {
+    reposView.render({
+      repositories: state.snapshot.repositories,
+      activeRepo: state.snapshot.activeRepo,
+      selectedRepoId: state.selectedRepoId,
+      pendingOp: state.pendingOp,
+      t: getT(),
+    });
+  };
 
   const renderGlobalBanners = (snapshot, t) => {
     if (!snapshot?.watchState?.degraded) {
@@ -907,12 +923,7 @@ const bootstrapPanel = () => {
     emptyStateEl.classList.add('hidden');
     dualPaneEl.classList.remove('hidden');
 
-    reposView.render({
-      repositories,
-      activeRepo: snapshot.activeRepo,
-      pendingOp: state.pendingOp,
-      t,
-    });
+    renderRepos();
 
     changesView.render({
       activeRepo: snapshot.activeRepo,
@@ -1009,9 +1020,11 @@ const bootstrapPanel = () => {
    * 只重跑 git status，刷新上区变更列表、分支上下游与监听状态，保留提交图谱与远端列表。
    * 与 `loadSnapshot` 共用请求序号，任一方发起新请求都会让另一方的旧响应作废。
    *
-   * @returns {Promise<boolean>} 是否已应用新结果；失败、被取消或会话已切换时返回 false，由调用方决定是否回退到完整快照
+   * @returns {Promise<boolean>} 是否已应用新结果；失败、被取消、会话已切换或切换仓库尚未完成时返回 false，由调用方决定是否回退到完整快照
    */
   const refreshStatus = async () => {
+    // 切换中的快照不能被只刷新旧仓库的请求打断，交给调用方改发带着切换的完整快照
+    if (isSwitchPending()) return false;
     snapshotRequestSeq += 1;
     const reqSeq = snapshotRequestSeq;
     snapshotAbortController?.abort();
@@ -1061,9 +1074,13 @@ const bootstrapPanel = () => {
     const controller = new AbortController();
     snapshotAbortController = controller;
 
+    // 切换仓库的快照可能被后台刷新、切回窗口等新请求接替，接替的请求仍带着切换，所以每个这样的请求各自显示进度条
+    const switchPending = isSwitchPending();
+    const endSwitchProgress = switchPending ? [changesProgress.begin(), graphProgress.begin()] : [];
     const payload = {
       workspaceUris: state.workspaceUris,
-      graphLimit: state.graphLimit,
+      // 原仓库加载过的分页数不带到新仓库
+      graphLimit: switchPending ? INITIAL_GRAPH_LIMIT : state.graphLimit,
       forceRefresh,
     };
     if (state.selectedRepoId) {
@@ -1078,11 +1095,12 @@ const bootstrapPanel = () => {
       nextSnapshot = await apiClient.fetchSnapshot(payload, controller.signal);
     } catch (err) {
       if (reqSeq === snapshotRequestSeq) {
-        if (!controller.signal.aborted && err?.name !== 'AbortError') {
-          state.hasLoadedInitial = true;
-          renderAll();
-          handleApiError(err, toastAnchor);
-        }
+        // 切换仓库时高亮先于快照移走，请求失败要回到仍在显示的仓库
+        state.selectedRepoId = state.snapshot?.activeRepo?.id ?? null;
+        const failed = !controller.signal.aborted && err?.name !== 'AbortError';
+        if (failed) state.hasLoadedInitial = true;
+        renderAll();
+        if (failed) handleApiError(err, toastAnchor);
         // 快照失败后仍需退避恢复长轮询，防止页面回切或瞬时异常后自动同步永久停摆
         scheduleEventsWaitRestart();
       }
@@ -1091,6 +1109,7 @@ const bootstrapPanel = () => {
       if (snapshotAbortController === controller) {
         snapshotAbortController = null;
       }
+      for (const end of endSwitchProgress) end();
     }
 
     if (reqSeq !== snapshotRequestSeq) return false;

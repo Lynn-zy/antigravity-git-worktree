@@ -74,8 +74,9 @@ export const describeRepoStatus = (repo, { t, isActive, isSyncing = false }) => 
  *   onPublish: (repo: object) => void
  * }} deps 图标工厂、重渲染保焦、切换仓库回调，以及点击当前仓库同步项时执行同步、发布分支的回调
  * @returns {{
- *   render: (state: { repositories: object[], activeRepo: object | null, pendingOp: string | null, t: (key: string, params?: Record<string, unknown>) => string }) => void
- * }} 视图控制接口（有 DOM 读写与事件监听副作用）
+ *   render: (state: { repositories: object[], activeRepo: object | null, selectedRepoId: string | null, pendingOp: string | null, t: (key: string, params?: Record<string, unknown>) => string }) => void
+ * }} 视图控制接口（有 DOM 读写与事件监听副作用）。`selectedRepoId` 是高亮的仓库：点击后立即高亮，
+ *   快照返回前与 `activeRepo` 不同，这段时间两行都不显示同步状态
  */
 export const createReposView = (elements, deps) => {
   const { sectionEl, collapseBtnEl, chevronEl, titleEl, bodyEl } = elements;
@@ -112,13 +113,13 @@ export const createReposView = (elements, deps) => {
     return btnEl;
   };
 
-  const createRow = ({ repo, isActive, showSelectedIcon, pendingOp, index, total, t }) => {
+  const createRow = ({ repo, isSelected, isActive, showSelectedIcon, pendingOp, index, total, t }) => {
     const rowEl = doc.createElement('div');
     rowEl.className = 'gw-repo-row';
-    rowEl.classList.toggle('is-selected', isActive);
+    rowEl.classList.toggle('is-selected', isSelected);
     rowEl.tabIndex = 0;
     rowEl.setAttribute('role', 'option');
-    rowEl.setAttribute('aria-selected', String(isActive));
+    rowEl.setAttribute('aria-selected', String(isSelected));
     rowEl.setAttribute('aria-posinset', String(index + 1));
     rowEl.setAttribute('aria-setsize', String(total));
     rowEl.dataset.testid = 'repo-row';
@@ -146,7 +147,7 @@ export const createReposView = (elements, deps) => {
 
   const render = (state) => {
     latestState = state;
-    const { repositories, activeRepo, pendingOp, t } = state;
+    const { repositories, activeRepo, selectedRepoId, pendingOp, t } = state;
 
     titleEl.textContent = t('section.repositories');
     collapseBtnEl.setAttribute('aria-expanded', String(!collapsed));
@@ -157,13 +158,16 @@ export const createReposView = (elements, deps) => {
 
     const savedFocus = deps.captureFocus(bodyEl);
     const rows = repositories.map((summary, index) => {
-      const isActive = summary.id === activeRepo?.id;
+      const isSelected = summary.id === selectedRepoId;
+      // 切换进行中高亮已移到新行，旧仓库那一行不再显示同步项，避免同步到未高亮的仓库
+      const isActive = isSelected && summary.id === activeRepo?.id;
       return createRow({
         // 当前仓库用 activeRepo：带上游与领先、落后数，只刷新 git status 时也会更新
         repo: isActive ? activeRepo : summary,
+        isSelected,
         isActive,
         // 同 VS Code：多个仓库时当前仓库换成带勾的图标
-        showSelectedIcon: isActive && repositories.length > 1,
+        showSelectedIcon: isSelected && repositories.length > 1,
         pendingOp,
         index,
         total: repositories.length,
