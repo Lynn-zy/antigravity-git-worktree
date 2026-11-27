@@ -276,6 +276,7 @@ function Test-ExcludedEntryName {
         'tmp',
         '.scratch',
         'node_modules',
+        '.sidecar.pid',
         '.DS_Store',
         'Thumbs.db',
         'desktop.ini'
@@ -390,10 +391,107 @@ function Write-BilingualResult {
     }
 }
 
+function Read-SidecarPidRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PluginDir
+    )
+
+    $pidFile = Join-Path $PluginDir '.sidecar.pid'
+    if (-not (Test-EntryExists -Path $pidFile)) {
+        return $null
+    }
+
+    try {
+        $raw = [System.IO.File]::ReadAllText($pidFile, [System.Text.Encoding]::UTF8)
+        $parsed = $raw | ConvertFrom-Json
+        $sidecarPid = 0
+        $startedAtMs = $null
+        if ($parsed -and $parsed.PSObject.Properties['pid']) {
+            $sidecarPid = [int]$parsed.pid
+        }
+        if ($parsed -and $parsed.PSObject.Properties['startedAt']) {
+            $startedAtMs = [int64]$parsed.startedAt
+        }
+        if ($sidecarPid -le 0 -or $sidecarPid -eq $PID) {
+            return $null
+        }
+        return @{
+            Pid = $sidecarPid
+            StartedAtMs = $startedAtMs
+            PidFile = $pidFile
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Stop-SidecarFromRecord {
+    param(
+        [hashtable]$Record,
+        [switch]$WaitAfterStop
+    )
+
+    if ($null -eq $Record) {
+        return 0
+    }
+
+    $sidecarPid = [int]$Record.Pid
+    $startedAtMs = $Record.StartedAtMs
+    $pidFile = [string]$Record.PidFile
+
+    $proc = Get-Process -Id $sidecarPid -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        if (Test-EntryExists -Path $pidFile) {
+            Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
+        }
+        return 0
+    }
+
+    # 校验进程名与启动时间，避免系统 PID 复用导致误杀无关进程
+    $isMatchingNode = $proc.ProcessName -ieq 'node'
+    if ($isMatchingNode -and ($null -ne $startedAtMs)) {
+        try {
+            $recordedUtc = [DateTimeOffset]::FromUnixTimeMilliseconds([int64]$startedAtMs).UtcDateTime
+            if ($proc.StartTime.ToUniversalTime() -gt $recordedUtc.AddSeconds(60)) {
+                $isMatchingNode = $false
+            }
+        }
+        catch {
+            # 无法读取进程启动时间时保留进程名校验结果
+        }
+    }
+
+    if (-not $isMatchingNode) {
+        if (Test-EntryExists -Path $pidFile) {
+            Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
+        }
+        return 0
+    }
+
+    Stop-Process -Id $sidecarPid -Force -ErrorAction SilentlyContinue
+    if (Test-EntryExists -Path $pidFile) {
+        Remove-Item -Path $pidFile -Force -ErrorAction SilentlyContinue
+    }
+    if ($WaitAfterStop) {
+        Start-Sleep -Milliseconds 200
+    }
+    return $sidecarPid
+}
+
 function Get-EnablementHint {
     param(
-        [switch]$IsUpdate
+        [switch]$IsUpdate,
+        [int]$RestartedPid = 0
     )
+
+    if ($RestartedPid -gt 0) {
+        return @{
+            Zh = "已自动重启运行中的 `"Git Graph`" Sidecar（PID $RestartedPid），Antigravity 将自动加载新版本，无需手动开关插件（未修改 config.json）。"
+            En = "Automatically restarted the running `"Git Graph`" sidecar (PID $RestartedPid); Antigravity will reload the updated version without toggling the plugin (config.json was not modified)."
+        }
+    }
 
     if ($IsUpdate) {
         return @{
@@ -418,10 +516,18 @@ Assert-SafeTargetPath -NormalizedTarget $normalizedTarget -NormalizedRepoRoot $r
 
 if ($Uninstall) {
     if (Test-EntryExists -Path $normalizedTarget) {
+        $runningSidecar = Read-SidecarPidRecord -PluginDir $normalizedTarget
+        $stoppedPid = Stop-SidecarFromRecord -Record $runningSidecar -WaitAfterStop
         Remove-PathSafely -Path $normalizedTarget
-        Write-BilingualResult `
-            -ZhLines @("已卸载 `"Git Graph`" (antigravity-git-worktree)：$normalizedTarget") `
-            -EnLines @("Uninstalled 'Git Graph' (antigravity-git-worktree) from: $normalizedTarget")
+        $zhLines = @()
+        $enLines = @()
+        if ($stoppedPid -gt 0) {
+            $zhLines += "已停止运行中的 `"Git Graph`" Sidecar（PID $stoppedPid）"
+            $enLines += "Stopped running 'Git Graph' sidecar (PID $stoppedPid)"
+        }
+        $zhLines += "已卸载 `"Git Graph`" (antigravity-git-worktree)：$normalizedTarget"
+        $enLines += "Uninstalled 'Git Graph' (antigravity-git-worktree) from: $normalizedTarget"
+        Write-BilingualResult -ZhLines $zhLines -EnLines $enLines
     }
     else {
         Write-BilingualResult `
@@ -434,10 +540,12 @@ if ($Uninstall) {
 Assert-SourceRuntimeFiles -RepoRoot $repoRoot
 
 $wasAlreadyInstalled = $false
+$runningSidecar = $null
 if (Test-EntryExists -Path $normalizedTarget) {
     $targetAttrs = [System.IO.File]::GetAttributes($normalizedTarget)
     if (($targetAttrs -band [System.IO.FileAttributes]::Directory) -ne 0) {
         $wasAlreadyInstalled = Test-EntryExists -Path (Join-Path $normalizedTarget 'plugin.json')
+        $runningSidecar = Read-SidecarPidRecord -PluginDir $normalizedTarget
     }
 }
 
@@ -451,7 +559,8 @@ if ($Link) {
         Remove-PathSafely -Path $normalizedTarget
     }
     New-Item -ItemType Junction -Path $normalizedTarget -Target $repoRoot | Out-Null
-    $hint = Get-EnablementHint -IsUpdate:$wasAlreadyInstalled
+    $restartedPid = Stop-SidecarFromRecord -Record $runningSidecar
+    $hint = Get-EnablementHint -IsUpdate:$wasAlreadyInstalled -RestartedPid $restartedPid
     Write-BilingualResult `
         -ZhLines @(
             "已创建 `"Git Graph`" (antigravity-git-worktree) 目录联接（Junction）：$normalizedTarget -> $repoRoot",
@@ -480,7 +589,9 @@ Copy-FileSafely `
 Remove-UnexpectedChildren -Directory $destSidecarsDir -AllowedNames @('panel')
 Remove-UnexpectedChildren -Directory $normalizedTarget -AllowedNames @('plugin.json', 'assets', 'sidecars')
 
-$hint = Get-EnablementHint -IsUpdate:$wasAlreadyInstalled
+# 等所有新文件落盘完成后再重启旧 Sidecar，确保宿主自动拉起的新进程读到完整新版
+$restartedPid = Stop-SidecarFromRecord -Record $runningSidecar
+$hint = Get-EnablementHint -IsUpdate:$wasAlreadyInstalled -RestartedPid $restartedPid
 if ($wasAlreadyInstalled) {
     $zhStatus = "已更新 `"Git Graph`" (antigravity-git-worktree)：$normalizedTarget"
     $enStatus = "Updated 'Git Graph' (antigravity-git-worktree) at: $normalizedTarget"

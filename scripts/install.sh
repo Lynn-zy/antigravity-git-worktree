@@ -136,7 +136,7 @@ remove_target_safely() {
 is_excluded_name() {
   local name="$1"
   case "$name" in
-    .git|docs|tests|scripts|README.md|tmp|.scratch|node_modules|.DS_Store|Thumbs.db|desktop.ini|*.log)
+    .git|docs|tests|scripts|README.md|tmp|.scratch|node_modules|.sidecar.pid|.DS_Store|Thumbs.db|desktop.ini|*.log)
       return 0
       ;;
     *)
@@ -196,13 +196,57 @@ assert_source_runtime_files() {
   done
 }
 
+read_sidecar_pid() {
+  local plugin_dir="$1"
+  local pid_file="${plugin_dir}/.sidecar.pid"
+  if [ ! -f "$pid_file" ]; then
+    return 0
+  fi
+
+  local parsed_pid=""
+  parsed_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$pid_file" 2>/dev/null | head -n 1 || true)"
+  if [[ "$parsed_pid" =~ ^[0-9]+$ ]] && [ "$parsed_pid" -gt 1 ] && [ "$parsed_pid" -ne "$$" ]; then
+    printf '%s\n' "$parsed_pid"
+  fi
+}
+
+stop_sidecar_pid() {
+  local sidecar_pid="${1:-}"
+  local pid_file="${2:-}"
+
+  if [ -z "$sidecar_pid" ] || ! [[ "$sidecar_pid" =~ ^[0-9]+$ ]] || [ "$sidecar_pid" -le 1 ] || [ "$sidecar_pid" -eq "$$" ]; then
+    return 0
+  fi
+
+  if ! kill -0 "$sidecar_pid" 2>/dev/null; then
+    [ -n "$pid_file" ] && rm -f "$pid_file" 2>/dev/null || true
+    return 0
+  fi
+
+  local comm=""
+  comm="$(ps -p "$sidecar_pid" -o comm= 2>/dev/null | awk '{print $1}' || true)"
+  local base_comm="${comm##*/}"
+  if [ "$base_comm" != "node" ] && [ "$base_comm" != "nodejs" ]; then
+    [ -n "$pid_file" ] && rm -f "$pid_file" 2>/dev/null || true
+    return 0
+  fi
+
+  kill -TERM "$sidecar_pid" 2>/dev/null || true
+  [ -n "$pid_file" ] && rm -f "$pid_file" 2>/dev/null || true
+  printf '%s\n' "$sidecar_pid"
+}
+
 print_install_summary() {
   local zh_status="$1"
   local en_status="$2"
   local is_update="$3"
+  local restarted_pid="${4:-}"
   local zh_hint en_hint
 
-  if [ "$is_update" -eq 1 ]; then
+  if [ -n "$restarted_pid" ]; then
+    zh_hint="已自动重启运行中的 \"Git Graph\" Sidecar（PID ${restarted_pid}），Antigravity 将自动加载新版本，无需手动开关插件（未修改 config.json）。"
+    en_hint="Automatically restarted the running \"Git Graph\" sidecar (PID ${restarted_pid}); Antigravity will reload the updated version without toggling the plugin (config.json was not modified)."
+  elif [ "$is_update" -eq 1 ]; then
     zh_hint='下一步：在 Antigravity Customizations 中先关闭再重新开启 "Git Graph"，以重新加载更新后的 Sidecar（未修改 config.json）。'
     en_hint='Next step: In Antigravity Customizations, toggle "Git Graph" off and back on to reload the updated sidecar (config.json was not modified).'
   else
@@ -218,10 +262,20 @@ assert_safe_target "$NORMALIZED_TARGET"
 
 if [ "$MODE" = "uninstall" ]; then
   if [ -L "$NORMALIZED_TARGET" ] || [ -e "$NORMALIZED_TARGET" ]; then
+    RUNNING_PID="$(read_sidecar_pid "$NORMALIZED_TARGET")"
+    STOPPED_PID="$(stop_sidecar_pid "$RUNNING_PID" "${NORMALIZED_TARGET}/.sidecar.pid")"
     remove_target_safely "$NORMALIZED_TARGET"
-    printf '%s\n\n%s\n' \
-      "已卸载 \"Git Graph\" (antigravity-git-worktree)：${NORMALIZED_TARGET}" \
-      "Uninstalled 'Git Graph' (antigravity-git-worktree) from: ${NORMALIZED_TARGET}"
+    if [ -n "$STOPPED_PID" ]; then
+      printf '%s\n%s\n\n%s\n%s\n' \
+        "已停止运行中的 \"Git Graph\" Sidecar（PID ${STOPPED_PID}）" \
+        "已卸载 \"Git Graph\" (antigravity-git-worktree)：${NORMALIZED_TARGET}" \
+        "Stopped running 'Git Graph' sidecar (PID ${STOPPED_PID})" \
+        "Uninstalled 'Git Graph' (antigravity-git-worktree) from: ${NORMALIZED_TARGET}"
+    else
+      printf '%s\n\n%s\n' \
+        "已卸载 \"Git Graph\" (antigravity-git-worktree)：${NORMALIZED_TARGET}" \
+        "Uninstalled 'Git Graph' (antigravity-git-worktree) from: ${NORMALIZED_TARGET}"
+    fi
   else
     printf '%s\n\n%s\n' \
       "未在以下路径检测到已安装的 \"Git Graph\"：${NORMALIZED_TARGET}" \
@@ -233,8 +287,12 @@ fi
 assert_source_runtime_files
 
 WAS_ALREADY_INSTALLED=0
+RUNNING_PID=""
 if [ -f "${NORMALIZED_TARGET}/plugin.json" ]; then
   WAS_ALREADY_INSTALLED=1
+fi
+if [ -d "$NORMALIZED_TARGET" ]; then
+  RUNNING_PID="$(read_sidecar_pid "$NORMALIZED_TARGET")"
 fi
 
 mkdir -p "$(dirname "$NORMALIZED_TARGET")"
@@ -242,10 +300,12 @@ remove_target_safely "$NORMALIZED_TARGET"
 
 if [ "$MODE" = "link" ]; then
   ln -s "$REPO_ROOT" "$NORMALIZED_TARGET"
+  RESTARTED_PID="$(stop_sidecar_pid "$RUNNING_PID" "${NORMALIZED_TARGET}/.sidecar.pid")"
   print_install_summary \
     "已创建 \"Git Graph\" (antigravity-git-worktree) 符号链接：${NORMALIZED_TARGET} -> ${REPO_ROOT}" \
     "Linked 'Git Graph' (antigravity-git-worktree) symlink: ${NORMALIZED_TARGET} -> ${REPO_ROOT}" \
-    "$WAS_ALREADY_INSTALLED"
+    "$WAS_ALREADY_INSTALLED" \
+    "$RESTARTED_PID"
   exit 0
 fi
 
@@ -254,14 +314,17 @@ cp -p "${REPO_ROOT}/plugin.json" "${NORMALIZED_TARGET}/plugin.json"
 copy_filtered_dir "${REPO_ROOT}/assets" "${NORMALIZED_TARGET}/assets"
 copy_filtered_dir "${REPO_ROOT}/sidecars/panel" "${NORMALIZED_TARGET}/sidecars/panel"
 
+RESTARTED_PID="$(stop_sidecar_pid "$RUNNING_PID" "${NORMALIZED_TARGET}/.sidecar.pid")"
 if [ "$WAS_ALREADY_INSTALLED" -eq 1 ]; then
   print_install_summary \
     "已更新 \"Git Graph\" (antigravity-git-worktree)：${NORMALIZED_TARGET}" \
     "Updated 'Git Graph' (antigravity-git-worktree) at: ${NORMALIZED_TARGET}" \
-    1
+    1 \
+    "$RESTARTED_PID"
 else
   print_install_summary \
     "已将 \"Git Graph\" (antigravity-git-worktree) 安装至：${NORMALIZED_TARGET}" \
     "Installed 'Git Graph' (antigravity-git-worktree) to: ${NORMALIZED_TARGET}" \
-    0
+    0 \
+    "$RESTARTED_PID"
 fi

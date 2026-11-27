@@ -5,6 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import {
+  removeSidecarPidFile,
+  writeSidecarPidFile,
+} from '../../sidecars/panel/main.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -779,3 +783,135 @@ test('scripts/install.sh adheres to bash/LF/shebang/whitelist/symlink-safety rul
     cleanupTempDir(tempRoot);
   }
 });
+
+test('writeSidecarPidFile and removeSidecarPidFile write JSON and guard against deleting a newer process PID', () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag_gw_pid_'));
+  const pidPath = path.join(tempRoot, '.sidecar.pid');
+  try {
+    assert.equal(writeSidecarPidFile({ pidPath, pid: 0 }), false);
+    assert.equal(writeSidecarPidFile({ pidPath, pid: 24680, startedAt: 1700000000000 }), true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(pidPath, 'utf8')), {
+      pid: 24680,
+      startedAt: 1700000000000,
+    });
+
+    assert.equal(removeSidecarPidFile({ pidPath, pid: 11111 }), false);
+    assert.equal(fs.existsSync(pidPath), true);
+
+    assert.equal(removeSidecarPidFile({ pidPath, pid: 24680 }), true);
+    assert.equal(fs.existsSync(pidPath), false);
+    assert.equal(removeSidecarPidFile({ pidPath, pid: 24680 }), false);
+  } finally {
+    cleanupTempDir(tempRoot);
+  }
+});
+
+test(
+  'scripts/install.ps1 automatically restarts running sidecar via .sidecar.pid, guards reused PIDs, and stops sidecar on -Uninstall',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    const waitExit = (child, timeoutMs = 2000) =>
+      new Promise((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve(true);
+          return;
+        }
+        const timer = setTimeout(() => resolve(false), timeoutMs);
+        child.once('exit', () => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      });
+
+    const spawnDummyNode = () =>
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 10000);'], {
+        stdio: 'ignore',
+      });
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ag_gw_ps1_restart_'));
+    const fixtureSrcDir = path.join(tempRoot, 'fixture-src');
+    const targetDir = path.join(tempRoot, 'antigravity-git-worktree');
+    const children = [];
+
+    try {
+      createFixtureSourceRepo(fixtureSrcDir);
+      const fixturePs1 = path.join(fixtureSrcDir, 'scripts', 'install.ps1');
+
+      // 首次安装
+      const first = runPowershellInstaller('powershell.exe', fixturePs1, ['-TargetDir', targetDir]);
+      assert.equal(first.status, 0, first.stderr);
+
+      // 1. 模拟运行中的 Sidecar 写下 .sidecar.pid -> 覆盖更新后应自动终止该进程并输出双语自动重启提示
+      const proc1 = spawnDummyNode();
+      children.push(proc1);
+      writeSidecarPidFile({
+        pidPath: path.join(targetDir, '.sidecar.pid'),
+        pid: proc1.pid,
+        startedAt: Date.now(),
+      });
+
+      const updateRes = runPowershellInstaller('powershell.exe', fixturePs1, ['-TargetDir', targetDir]);
+      assert.equal(updateRes.status, 0, updateRes.stderr);
+      assert.equal(await waitExit(proc1), true, 'running sidecar process must be stopped for host auto-restart');
+      assert.equal(fs.existsSync(path.join(targetDir, '.sidecar.pid')), false);
+      assertBilingualBlocks(
+        updateRes.stdout,
+        [/已更新 "Git Graph"/, new RegExp(`已自动重启运行中的 "Git Graph" Sidecar（PID ${proc1.pid}）`)],
+        [/Updated 'Git Graph'/, new RegExp(`Automatically restarted the running "Git Graph" sidecar \\(PID ${proc1.pid}\\)`)]
+      );
+
+      // 2. 模拟 PID 复用（记录的 startedAt 远早于进程启动时间）-> 必须跳过，不能误杀
+      const proc2 = spawnDummyNode();
+      children.push(proc2);
+      writeSidecarPidFile({
+        pidPath: path.join(targetDir, '.sidecar.pid'),
+        pid: proc2.pid,
+        startedAt: 1000,
+      });
+
+      const reusedRes = runPowershellInstaller('powershell.exe', fixturePs1, ['-TargetDir', targetDir]);
+      assert.equal(reusedRes.status, 0, reusedRes.stderr);
+      assert.equal(proc2.exitCode, null, 'reused PID with mismatched start time must not be killed');
+      assertBilingualBlocks(
+        reusedRes.stdout,
+        [/已更新 "Git Graph"/, /先关闭再重新开启 "Git Graph"/],
+        [/Updated 'Git Graph'/, /toggle "Git Graph" off and back on/]
+      );
+      proc2.kill();
+
+      // 3. 卸载时应先停止运行中的 Sidecar，再安全删除目标目录
+      const proc3 = spawnDummyNode();
+      children.push(proc3);
+      writeSidecarPidFile({
+        pidPath: path.join(targetDir, '.sidecar.pid'),
+        pid: proc3.pid,
+        startedAt: Date.now(),
+      });
+
+      const uninstallRes = runPowershellInstaller('powershell.exe', fixturePs1, [
+        '-TargetDir',
+        targetDir,
+        '-Uninstall',
+      ]);
+      assert.equal(uninstallRes.status, 0, uninstallRes.stderr);
+      assert.equal(await waitExit(proc3), true, 'running sidecar must be stopped on -Uninstall');
+      assert.equal(fs.existsSync(targetDir), false);
+      assertBilingualBlocks(
+        uninstallRes.stdout,
+        [new RegExp(`已停止运行中的 "Git Graph" Sidecar（PID ${proc3.pid}）`), /已卸载 "Git Graph"/],
+        [new RegExp(`Stopped running 'Git Graph' sidecar \\(PID ${proc3.pid}\\)`), /Uninstalled 'Git Graph'/]
+      );
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null) {
+          try {
+            child.kill();
+          } catch {
+            // 忽略已退出进程
+          }
+        }
+      }
+      cleanupTempDir(tempRoot);
+    }
+  }
+);

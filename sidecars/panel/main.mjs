@@ -22,6 +22,51 @@ const INITIAL_CWD = process.cwd();
 const PANEL_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(PANEL_DIR, 'public');
 const REPO_ROOT_DIR = path.resolve(PANEL_DIR, '..', '..');
+export const DEFAULT_SIDECAR_PID_PATH = path.join(REPO_ROOT_DIR, '.sidecar.pid');
+
+/**
+ * 将当前运行中的 Sidecar 进程 PID 与启动时间戳写入 `.sidecar.pid`，供安装脚本精准重启。
+ *
+ * @param {{ pidPath?: string, pid?: number, startedAt?: number }} [options] 可选路径与进程信息覆盖
+ * @returns {boolean} 是否写入成功
+ */
+export function writeSidecarPidFile(options = {}) {
+  const pidPath = options.pidPath ?? DEFAULT_SIDECAR_PID_PATH;
+  const pid = Number(options.pid ?? process.pid);
+  const startedAt = Number(options.startedAt ?? Date.now());
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    fs.mkdirSync(path.dirname(pidPath), { recursive: true });
+    fs.writeFileSync(pidPath, `${JSON.stringify({ pid, startedAt })}\n`, 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 仅当 `.sidecar.pid` 记录的 PID 仍为当前进程时删除该文件，避免旧进程退出时误删新拉起进程的 PID。
+ *
+ * @param {{ pidPath?: string, pid?: number }} [options] 可选路径与目标 PID 覆盖
+ * @returns {boolean} 是否实际执行了删除
+ */
+export function removeSidecarPidFile(options = {}) {
+  const pidPath = options.pidPath ?? DEFAULT_SIDECAR_PID_PATH;
+  const expectedPid = Number(options.pid ?? process.pid);
+  try {
+    const raw = fs.readFileSync(pidPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Number(parsed?.pid) !== expectedPid) {
+      return false;
+    }
+    fs.rmSync(pidPath, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // 首步释放插件与仓库目录句柄，避免 Windows 下阻塞后续覆盖安装或工作树清理
 try {
@@ -721,7 +766,9 @@ export async function bootPanelServer(cliArgs = process.argv.slice(2)) {
         defaultWorkspaceUris: resolveStandaloneWorkspaceUris({ cliArgs }),
       });
 
-  if (!isSidecar) {
+  if (isSidecar) {
+    writeSidecarPidFile();
+  } else {
     console.log(`[antigravity-git-worktree] Standalone server listening at ${instance.url}`);
   }
 
@@ -731,6 +778,9 @@ export async function bootPanelServer(cliArgs = process.argv.slice(2)) {
       return;
     }
     shuttingDown = true;
+    if (isSidecar) {
+      removeSidecarPidFile();
+    }
     try {
       await instance.close();
     } finally {
@@ -740,6 +790,9 @@ export async function bootPanelServer(cliArgs = process.argv.slice(2)) {
 
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+  if (isSidecar) {
+    process.once('exit', () => removeSidecarPidFile());
+  }
 
   return instance;
 }

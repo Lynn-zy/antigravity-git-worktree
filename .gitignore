@@ -2,6 +2,7 @@
 Thumbs.db
 desktop.ini
 *.log
+.sidecar.pid
 tmp/
 .scratch/
 node_modules/
