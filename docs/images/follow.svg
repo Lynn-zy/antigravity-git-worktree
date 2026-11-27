@@ -1,60 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="372" viewBox="0 0 1200 372" role="img" aria-labelledby="title desc">
-  <title id="title">面板如何跟随对话</title>
-  <desc id="desc">对话 A 打开 ~/work/app，对话 B 打开 ~/work/app-feat。两个目录属于同一个 Repository 的两个 Worktree：main 与 feat/graph-view。对话 A 的面板显示 main 的更改与图表，对话 B 的面板显示 feat/graph-view 的更改与图表。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="follow-title follow-desc">
+  <title id="follow-title">How Git Graph automatically follows the active conversation Worktree</title>
+  <desc id="follow-desc">Conversation A opens ~/work/app and Conversation B opens ~/work/app-feat. Using workspace-change and git rev-parse --git-common-dir, Git Graph maps both Worktrees to one shared Repository and automatically updates the Auxiliary Pane.</desc>
 
-  <rect width="1200" height="372" rx="24" fill="#111111"/>
+  <rect width="1200" height="360" rx="20" fill="#0d1117"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="358.5" rx="19.25" fill="none" stroke="#262c36" stroke-width="1.5"/>
 
   <g font-family="'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif">
-    <g id="column-titles" font-size="18" fill="#8a8a8a">
-      <text x="56" y="60">Antigravity 对话</text>
-      <text x="450" y="60">同一个 Repository 的两个 Worktree</text>
-      <text x="844" y="60">Git Graph 面板</text>
+    <text x="52" y="50" font-size="13.5" font-weight="600" letter-spacing="1" fill="#8b949e">ANTIGRAVITY CONVERSATIONS</text>
+    <text x="444" y="50" font-size="13.5" font-weight="600" letter-spacing="1" fill="#8b949e">SHARED REPOSITORY WORKTREES</text>
+    <text x="852" y="50" font-size="13.5" font-weight="600" letter-spacing="1" fill="#8b949e">GIT GRAPH AUXILIARY PANE</text>
+
+    <!-- Left column -->
+    <rect x="52" y="76" width="292" height="96" rx="12" fill="#161b22" stroke="#30363d"/>
+    <circle cx="76" cy="110" r="5" fill="#3794ff"/>
+    <text x="92" y="116" font-size="19" font-weight="600" fill="#f0f6fc">Conversation A</text>
+    <text x="76" y="148" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="15.5" fill="#8b949e">~/work/app</text>
+
+    <rect x="52" y="216" width="292" height="96" rx="12" fill="#161b22" stroke="#30363d"/>
+    <circle cx="76" cy="250" r="5" fill="#dc267f"/>
+    <text x="92" y="256" font-size="19" font-weight="600" fill="#f0f6fc">Conversation B</text>
+    <text x="76" y="288" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="15.5" fill="#8b949e">~/work/app-feat</text>
+
+    <!-- Middle column -->
+    <rect x="444" y="76" width="312" height="236" rx="14" fill="#161b22" stroke="#30363d"/>
+    <g transform="translate(464 96) scale(1.15)" fill="#79c0ff"><path d="M12.5 12C12.776 12 13 11.776 13 11.5V3C13 1.895 12.105 1 11 1H5C3.895 1 3 1.895 3 3V13C3 14.105 3.895 15 5 15V15.5C5 15.702 5.122 15.885 5.309 15.962C5.495 16.039 5.711 15.997 5.854 15.854L6.5 15.208L7.146 15.854C7.242 15.95 7.37 16 7.5 16C7.564 16 7.63 15.987 7.691 15.962C7.878 15.885 8 15.702 8 15.5V15H12.5C12.776 15 13 14.776 13 14.5C13 14.224 12.776 14 12.5 14H8V13.5C8 13.224 7.776 13 7.5 13H5.5C5.224 13 5 13.224 5 13.5V14C4.448 14 4 13.552 4 13V12H12.5ZM4 3C4 2.448 4.448 2 5 2H11C11.552 2 12 2.448 12 3V11H4V3Z"/></g>
+    <text x="490" y="112" font-size="19" font-weight="700" fill="#f0f6fc">app</text>
+    <text x="534" y="112" font-size="14.5" fill="#8b949e">Shared .git object store</text>
+
+    <rect x="464" y="136" width="272" height="68" rx="9" fill="#0d1117" stroke="#3794ff" stroke-opacity="0.45"/>
+    <text x="506" y="164" font-size="17" font-weight="600" fill="#f0f6fc">main</text>
+    <text x="506" y="188" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b949e">~/work/app</text>
+
+    <rect x="464" y="224" width="272" height="68" rx="9" fill="#0d1117" stroke="#dc267f" stroke-opacity="0.45"/>
+    <text x="506" y="252" font-size="17" font-weight="600" fill="#f0f6fc">feat/graph-view</text>
+    <text x="506" y="276" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="13.5" fill="#8b949e">~/work/app-feat</text>
+
+    <!-- Right column -->
+    <rect x="852" y="76" width="296" height="96" rx="12" fill="#161b22" stroke="#30363d"/>
+    <g transform="translate(872 99) scale(1.15)" fill="#3794ff"><path d="M14 5.5C14 4.121 12.879 3 11.5 3C10.121 3 9 4.121 9 5.5C9 6.682 9.826 7.669 10.93 7.928C10.744 8.546 10.177 9 9.5 9H6.5C5.935 9 5.419 9.195 5 9.512V4.949C6.14 4.717 7 3.707 7 2.5C7 1.121 5.879 0 4.5 0C3.121 0 2 1.121 2 2.5C2 3.708 2.86 4.717 4 4.949V11.05C2.86 11.282 2 12.292 2 13.499C2 14.878 3.121 15.999 4.5 15.999C5.879 15.999 7 14.878 7 13.499C7 12.317 6.174 11.33 5.07 11.071C5.256 10.453 5.823 9.999 6.5 9.999H9.5C10.723 9.999 11.74 9.115 11.954 7.953C13.116 7.738 14 6.723 14 5.5ZM3 2.5C3 1.673 3.673 1 4.5 1C5.327 1 6 1.673 6 2.5C6 3.327 5.327 4 4.5 4C3.673 4 3 3.327 3 2.5ZM6 13.5C6 14.327 5.327 15 4.5 15C3.673 15 3 14.327 3 13.5C3 12.673 3.673 12 4.5 12C5.327 12 6 12.673 6 13.5ZM11.5 7C10.673 7 10 6.327 10 5.5C10 4.673 10.673 4 11.5 4C12.327 4 13 4.673 13 5.5C13 6.327 12.327 7 11.5 7Z"/></g>
+    <text x="898" y="116" font-size="19" font-weight="600" fill="#f0f6fc">Panel A</text>
+    <text x="872" y="148" font-size="15" fill="#8b949e">Changes &amp; Graph for main</text>
+
+    <rect x="852" y="216" width="296" height="96" rx="12" fill="#161b22" stroke="#30363d"/>
+    <g transform="translate(872 239) scale(1.15)" fill="#dc267f"><path d="M14 5.5C14 4.121 12.879 3 11.5 3C10.121 3 9 4.121 9 5.5C9 6.682 9.826 7.669 10.93 7.928C10.744 8.546 10.177 9 9.5 9H6.5C5.935 9 5.419 9.195 5 9.512V4.949C6.14 4.717 7 3.707 7 2.5C7 1.121 5.879 0 4.5 0C3.121 0 2 1.121 2 2.5C2 3.708 2.86 4.717 4 4.949V11.05C2.86 11.282 2 12.292 2 13.499C2 14.878 3.121 15.999 4.5 15.999C5.879 15.999 7 14.878 7 13.499C7 12.317 6.174 11.33 5.07 11.071C5.256 10.453 5.823 9.999 6.5 9.999H9.5C10.723 9.999 11.74 9.115 11.954 7.953C13.116 7.738 14 6.723 14 5.5ZM3 2.5C3 1.673 3.673 1 4.5 1C5.327 1 6 1.673 6 2.5C6 3.327 5.327 4 4.5 4C3.673 4 3 3.327 3 2.5ZM6 13.5C6 14.327 5.327 15 4.5 15C3.673 15 3 14.327 3 13.5C3 12.673 3.673 12 4.5 12C5.327 12 6 12.673 6 13.5ZM11.5 7C10.673 7 10 6.327 10 5.5C10 4.673 10.673 4 11.5 4C12.327 4 13 4.673 13 5.5C13 6.327 12.327 7 11.5 7Z"/></g>
+    <text x="898" y="256" font-size="19" font-weight="600" fill="#f0f6fc">Panel B</text>
+    <text x="872" y="288" font-size="15" fill="#8b949e">Changes &amp; Graph for feat/graph-view</text>
+
+    <!-- Lanes -->
+    <g fill="none" stroke-width="2.6" stroke-linecap="round">
+      <path d="M 344 124 H 378 A 14 14 0 0 1 392 138 V 156 A 14 14 0 0 0 406 170 H 484" stroke="#3794ff"/>
+      <path d="M 344 264 H 484" stroke="#dc267f"/>
+      <path d="M 736 170 H 790 A 14 14 0 0 0 804 156 V 138 A 14 14 0 0 1 818 124 H 852" stroke="#3794ff"/>
+      <path d="M 736 264 H 852" stroke="#dc267f"/>
     </g>
 
-    <g id="conversations">
-      <rect x="56" y="88" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
-      <text x="80" y="128" font-size="22" font-weight="600" fill="#e6e6e6">对话 A</text>
-      <text x="80" y="162" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#9d9d9d">~/work/app</text>
-
-      <rect x="56" y="236" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
-      <text x="80" y="276" font-size="22" font-weight="600" fill="#e6e6e6">对话 B</text>
-      <text x="80" y="310" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="18" fill="#9d9d9d">~/work/app-feat</text>
+    <!-- Nodes -->
+    <g stroke="#0d1117" stroke-width="3">
+      <circle cx="484" cy="170" r="7.5" fill="#3794ff"/>
+      <circle cx="484" cy="264" r="7.5" fill="#dc267f"/>
     </g>
 
-    <g id="repository">
-      <rect x="450" y="88" width="308" height="244" rx="12" fill="#181818" stroke="#2c2c2c"/>
-      <text x="474" y="128" font-size="22" font-weight="600" fill="#e6e6e6">app</text>
-      <text x="520" y="128" font-size="18" fill="#8f8f8f">共享一套 .git</text>
-
-      <rect x="470" y="160" width="268" height="64" rx="8" fill="#1f1f1f"/>
-      <text x="516" y="188" font-size="20" font-weight="600" fill="#e6e6e6">main</text>
-      <text x="516" y="212" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#8f8f8f">~/work/app</text>
-
-      <rect x="470" y="252" width="268" height="64" rx="8" fill="#1f1f1f"/>
-      <text x="516" y="280" font-size="20" font-weight="600" fill="#e6e6e6">feat/graph-view</text>
-      <text x="516" y="304" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#8f8f8f">~/work/app-feat</text>
-    </g>
-
-    <g id="panels">
-      <rect x="844" y="88" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
-      <text x="868" y="128" font-size="22" font-weight="600" fill="#e6e6e6">面板 A</text>
-      <text x="868" y="162" font-size="18" fill="#a3a3a3">main 的更改与图表</text>
-
-      <rect x="844" y="236" width="300" height="96" rx="12" fill="#181818" stroke="#2c2c2c"/>
-      <text x="868" y="276" font-size="22" font-weight="600" fill="#e6e6e6">面板 B</text>
-      <text x="868" y="310" font-size="18" fill="#a3a3a3">feat/graph-view 的更改与图表</text>
-    </g>
-
-    <g id="lanes" fill="none" stroke-width="3" stroke-linecap="round">
-      <path d="M 356 136 H 386 A 14 14 0 0 1 400 150 V 178 A 14 14 0 0 0 414 192 H 494" stroke="#3794ff"/>
-      <path d="M 356 284 H 494" stroke="#dc267f"/>
-      <path d="M 738 192 H 790 A 14 14 0 0 0 804 178 V 150 A 14 14 0 0 1 818 136 H 844" stroke="#3794ff"/>
-      <path d="M 738 284 H 844" stroke="#dc267f"/>
-    </g>
-
-    <g id="worktree-dots" stroke="#1f1f1f" stroke-width="3">
-      <circle cx="494" cy="192" r="8" fill="#3794ff"/>
-      <circle cx="494" cy="284" r="8" fill="#dc267f"/>
-    </g>
+    <!-- Subtle bottom protocol labels -->
+    <text x="394" y="336" text-anchor="middle" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#6e7681">workspace-change</text>
+    <text x="804" y="336" text-anchor="middle" font-family="ui-monospace, 'Cascadia Mono', SFMono-Regular, Menlo, Consolas, monospace" font-size="12.5" fill="#6e7681">fs.watch live sync</text>
   </g>
 </svg>
