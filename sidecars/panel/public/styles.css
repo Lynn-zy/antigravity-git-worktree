@@ -191,9 +191,14 @@ button:disabled {
   background: color-mix(in srgb, var(--gw-primary) 35%, transparent);
 }
 
-/* 滚动条：VS Code 10px 方形滑块 */
-* {
-  scrollbar-color: var(--gw-scrollbar) transparent;
+/*
+ * 滚动条：VS Code 10px 方形滑块。Chromium 121 起元素设了 scrollbar-color 就不再应用 ::-webkit-scrollbar，
+ * 会退回约 15px 带箭头的系统滚动条，所以 scrollbar-color 只给不支持 ::-webkit-scrollbar 的浏览器
+ */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-color: var(--gw-scrollbar) transparent;
+  }
 }
 
 ::-webkit-scrollbar {
