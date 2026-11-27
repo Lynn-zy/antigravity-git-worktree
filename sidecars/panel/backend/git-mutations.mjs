@@ -565,34 +565,11 @@ export async function pullBranch(params) {
   const gitCommonDir = resolveCommonDir(worktreePath, params?.gitCommonDir);
 
   const runNetworkFn = params?.runGitNetwork ?? runGitNetwork;
-  const queryStatusFn = params?.queryWorktreeStatus ?? queryWorktreeStatus;
-  const queryRemotesFn = params?.queryRemotes ?? queryRemotes;
   const writeOpts = extractWriteRunnerOptions(params ?? {});
 
   let upstream = '';
   await enqueueRepositoryWrite(gitCommonDir, async () => {
-    const [statusResult, remotes] = await Promise.all([
-      queryStatusFn(worktreePath, { timeoutMs: params?.timeoutMs }),
-      queryRemotesFn(worktreePath, { timeoutMs: params?.timeoutMs }),
-    ]);
-
-    if (remotes.length === 0) {
-      throw new AppError(ERROR_CODES.NO_REMOTE, '当前仓库未配置任何远端，无法执行拉取（Pull）。');
-    }
-    if ((statusResult.changes?.conflicted?.length ?? 0) > 0) {
-      throw new AppError(ERROR_CODES.CONFLICT_BLOCKED, '工作区存在未解决合并冲突，禁止执行拉取。');
-    }
-    if (statusResult.branchInfo.isUnborn) {
-      throw new AppError(ERROR_CODES.INVALID_REQUEST, '当前分支尚无提交记录，无法执行拉取。');
-    }
-    if (statusResult.branchInfo.isDetached) {
-      throw new AppError(ERROR_CODES.INVALID_REQUEST, '当前处于游离 HEAD 状态，无法直接拉取分支。');
-    }
-    if (!statusResult.branchInfo.upstream) {
-      throw new AppError(ERROR_CODES.INVALID_REQUEST, '当前分支尚未关联上游跟踪分支，无法快进拉取。');
-    }
-
-    upstream = statusResult.branchInfo.upstream;
+    upstream = await readPullableUpstream(worktreePath, params);
     await runNetworkFn(buildGitArgs('pull', { flags: ['--ff-only'] }), {
       cwd: worktreePath,
       lockMode: 'none',
@@ -601,6 +578,70 @@ export async function pullBranch(params) {
   });
 
   return { upstream };
+}
+
+/**
+ * 同步更改，流程同 VS Code「同步更改」按钮：先拉取上游，之后本地仍领先上游时再推送。
+ * 与 VS Code 的差异：拉取用 `--ff-only`。分叉时拉取失败（`NON_FAST_FORWARD`），仓库保持原样且不推送，
+ * 不会停在面板无法收尾的合并或变基中间状态。
+ *
+ * @param {{
+ *   worktreePath: string,
+ *   gitCommonDir?: string,
+ *   runGitNetwork?: typeof runGitNetwork,
+ *   queryWorktreeStatus?: typeof queryWorktreeStatus,
+ *   queryRemotes?: typeof queryRemotes,
+ *   timeoutMs?: number,
+ *   lockRetryDelaysMs?: number[],
+ *   sleepFn?: (ms: number) => Promise<void>
+ * }} params 同步操作参数
+ * @returns {Promise<void>}
+ */
+export async function syncBranch(params) {
+  const worktreePath = assertValidWorktreePath(params?.worktreePath);
+  const gitCommonDir = resolveCommonDir(worktreePath, params?.gitCommonDir);
+
+  const runNetworkFn = params?.runGitNetwork ?? runGitNetwork;
+  const queryStatusFn = params?.queryWorktreeStatus ?? queryWorktreeStatus;
+  const writeOpts = extractWriteRunnerOptions(params ?? {});
+  const networkOpts = { cwd: worktreePath, lockMode: 'none', ...writeOpts };
+
+  await enqueueRepositoryWrite(gitCommonDir, async () => {
+    await readPullableUpstream(worktreePath, params);
+    await runNetworkFn(buildGitArgs('pull', { flags: ['--ff-only'] }), networkOpts);
+    // 领先数要在拉取之后重新读取：拉取会更新远端跟踪分支，只落后时快进后不需要推送
+    const { branchInfo } = await queryStatusFn(worktreePath, { timeoutMs: params?.timeoutMs });
+    if (branchInfo.ahead > 0) {
+      await runNetworkFn(['push'], networkOpts);
+    }
+  });
+}
+
+// 拉取与同步共用的前置校验：存在远端、无冲突、非 unborn、非游离 HEAD 且已配置上游；返回上游引用名
+async function readPullableUpstream(worktreePath, params) {
+  const queryStatusFn = params?.queryWorktreeStatus ?? queryWorktreeStatus;
+  const queryRemotesFn = params?.queryRemotes ?? queryRemotes;
+  const [statusResult, remotes] = await Promise.all([
+    queryStatusFn(worktreePath, { timeoutMs: params?.timeoutMs }),
+    queryRemotesFn(worktreePath, { timeoutMs: params?.timeoutMs }),
+  ]);
+
+  if (remotes.length === 0) {
+    throw new AppError(ERROR_CODES.NO_REMOTE, '当前仓库未配置任何远端，无法执行拉取（Pull）。');
+  }
+  if ((statusResult.changes?.conflicted?.length ?? 0) > 0) {
+    throw new AppError(ERROR_CODES.CONFLICT_BLOCKED, '工作区存在未解决合并冲突，禁止执行拉取。');
+  }
+  if (statusResult.branchInfo.isUnborn) {
+    throw new AppError(ERROR_CODES.INVALID_REQUEST, '当前分支尚无提交记录，无法执行拉取。');
+  }
+  if (statusResult.branchInfo.isDetached) {
+    throw new AppError(ERROR_CODES.INVALID_REQUEST, '当前处于游离 HEAD 状态，无法直接拉取分支。');
+  }
+  if (!statusResult.branchInfo.upstream) {
+    throw new AppError(ERROR_CODES.INVALID_REQUEST, '当前分支尚未关联上游跟踪分支，无法快进拉取。');
+  }
+  return statusResult.branchInfo.upstream;
 }
 
 /**

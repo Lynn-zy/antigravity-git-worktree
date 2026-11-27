@@ -667,6 +667,84 @@ test('集成测试：fetch / pull / push 远程同步、禁 force、无远端 NO
   assert.equal(bareFetch.response.status, 200);
 });
 
+test('集成测试：同步更改先快进拉取再推送、分叉时不动仓库，存储库摘要带各仓库同步状态，合并基与按比较基列出改动文件', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm2-int-sync-'));
+  const remoteBare = path.join(root, 'remote.git');
+  const cloneA = path.join(root, 'clone-a');
+  const cloneB = path.join(root, 'clone-b');
+  const commitFile = async (repoDir, name, message) => {
+    fs.writeFileSync(path.join(repoDir, name), `${message}\n`);
+    await execGit(['add', '--', name], repoDir);
+    await execGit(['commit', '-m', message], repoDir);
+    return execGit(['rev-parse', 'HEAD'], repoDir);
+  };
+  const bothUris = [toFileUri(cloneA), toFileUri(cloneB)];
+  const summaryOf = (snapshot, repoDir) => snapshot.json.data.repositories.find((repo) => path.resolve(repo.worktreePath) === path.resolve(repoDir));
+
+  await execGit(['init', '--bare', '-b', 'main', remoteBare], root);
+  await initConfiguredRepo(cloneA, 'main');
+  await execGit(['remote', 'add', 'origin', remoteBare], cloneA);
+  const baseSha = await commitFile(cloneA, 'base.txt', 'base');
+  await execGit(['push', '-u', 'origin', 'main'], cloneA);
+  await execGit(['clone', '-b', 'main', remoteBare, cloneB], root);
+  await execGit(['config', 'user.name', 'User B'], cloneB);
+  await execGit(['config', 'user.email', 'b@example.com'], cloneB);
+
+  const server = await startStandaloneServer({
+    port: 0,
+    preferencesPath: path.join(root, 'prefs.json'),
+  });
+  t.after(async () => {
+    await server.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // 1) A 只领先：快照给出合并基，仓库摘要只带存储库行显示的分支信息；按合并基列出传出的改动；同步只推送
+  const aheadSha = await commitFile(cloneA, 'local.txt', 'A ahead');
+  const snapAhead = await postApi(server.url, '/api/snapshot', { workspaceUris: bothUris });
+  assert.equal(snapAhead.response.status, 200);
+  assert.deepEqual([snapAhead.json.data.activeRepo.ahead, snapAhead.json.data.activeRepo.behind], [1, 0]);
+  assert.equal(snapAhead.json.data.graph.mergeBase, baseSha);
+  const summaryB = summaryOf(snapAhead, cloneB);
+  assert.deepEqual([summaryB.name, summaryB.branch, summaryB.isDetached, summaryB.isBare], ['clone-b', 'main', false, false]);
+  assert.equal('ahead' in summaryB, false, '非当前仓库不监听，摘要不带会过时的同步状态');
+
+  const outgoing = await postApi(server.url, '/api/commit/detail', { worktreePath: cloneA, sha: aheadSha, parentSha: baseSha });
+  assert.equal(outgoing.response.status, 200);
+  assert.deepEqual(outgoing.json.data.files.map((file) => [file.status, file.path]), [['A', 'local.txt']]);
+
+  const syncAhead = await postApi(server.url, '/api/remote/sync', { worktreePath: cloneA });
+  assert.equal(syncAhead.response.status, 200);
+  assert.equal(await execGit(['rev-parse', 'main'], remoteBare), aheadSha, '只领先时同步把本地提交推到远端');
+
+  // 2) B 提取后只落后：合并基是 B 的 HEAD；同步只快进拉取
+  await execGit(['fetch'], cloneB);
+  const snapB = await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(cloneB)] });
+  assert.equal(snapB.json.data.graph.mergeBase, baseSha);
+  const syncBehind = await postApi(server.url, '/api/remote/sync', { worktreePath: cloneB });
+  assert.equal(syncBehind.response.status, 200);
+  assert.equal(await execGit(['rev-parse', 'HEAD'], cloneB), aheadSha);
+
+  // 3) 分叉：快进拉取失败返回 NON_FAST_FORWARD，本地既不合并也不推送；拉取前的提取仍更新了远端跟踪分支
+  const remoteSha = await commitFile(cloneB, 'remote.txt', 'B advance');
+  await execGit(['push'], cloneB);
+  const divergedSha = await commitFile(cloneA, 'diverge.txt', 'A diverge');
+  const syncDiverged = await postApi(server.url, '/api/remote/sync', { worktreePath: cloneA });
+  assert.equal(syncDiverged.response.status, 409);
+  assert.equal(syncDiverged.json.error.code, ERROR_CODES.NON_FAST_FORWARD);
+  assert.equal(await execGit(['rev-parse', 'HEAD'], cloneA), divergedSha, '分叉时本地不合并也不变基');
+  assert.equal(await execGit(['rev-parse', 'main'], remoteBare), remoteSha, '分叉时不推送');
+
+  const snapDiverged = await postApi(server.url, '/api/snapshot', { workspaceUris: [toFileUri(cloneA)] });
+  assert.deepEqual([snapDiverged.json.data.activeRepo.ahead, snapDiverged.json.data.activeRepo.behind], [1, 1]);
+  assert.equal(snapDiverged.json.data.graph.mergeBase, aheadSha);
+  const incoming = await postApi(server.url, '/api/commit/detail', { worktreePath: cloneA, sha: remoteSha, parentSha: aheadSha });
+  assert.deepEqual(incoming.json.data.files.map((file) => [file.status, file.path]), [['A', 'remote.txt']]);
+
+  const badParent = await postApi(server.url, '/api/commit/detail', { worktreePath: cloneA, sha: remoteSha, parentSha: '--output=x' });
+  assert.equal(badParent.response.status, 400, 'parentSha 必须是十六进制 SHA');
+});
+
 test('集成测试：文件修改返回 status 级刷新并由 /api/status 只刷新变更列表、外部提交返回 full、高频写入不降级、变更过多自动恢复、删除目录触发自毁守卫', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm2-int-watch-'));
   const repoDir = path.join(root, 'watch-repo');

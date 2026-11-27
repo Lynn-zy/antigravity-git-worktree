@@ -40,6 +40,43 @@ function validateMockRelativePath(relPath) {
   return clean.join('/');
 }
 
+const collectMockAncestors = (repo, sha) => {
+  const commitBySha = new Map(repo.commits.map((commit) => [commit.sha, commit]));
+  const ancestors = [];
+  const seen = new Set();
+  const queue = [sha];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (seen.has(current) || !commitBySha.has(current)) continue;
+    seen.add(current);
+    ancestors.push(commitBySha.get(current));
+    queue.push(...commitBySha.get(current).parents);
+  }
+  return ancestors;
+};
+
+// 与上游一致或没有上游时为 null，同 git-queries 只在领先或落后时查询合并基
+function findMockMergeBase(repo) {
+  if (!repo.upstream || (repo.ahead === 0 && repo.behind === 0)) return null;
+  const upstreamCommit = repo.commits.find((commit) => commit.refs.some((ref) => ref.type === 'remote' && ref.name === repo.upstream));
+  if (!upstreamCommit || !repo.headOid) return null;
+  const headAncestors = new Set(collectMockAncestors(repo, repo.headOid).map((commit) => commit.sha));
+  return collectMockAncestors(repo, upstreamCommit.sha).find((commit) => headAncestors.has(commit.sha))?.sha ?? null;
+}
+
+// 从 sha 可达、从 parentSha 不可达的提交改动的文件，同一路径只取最新一次
+function collectMockRangeFiles(repo, sha, parentSha) {
+  const excluded = new Set(collectMockAncestors(repo, parentSha).map((commit) => commit.sha));
+  const filesByPath = new Map();
+  for (const commit of collectMockAncestors(repo, sha)) {
+    if (excluded.has(commit.sha)) continue;
+    for (const file of commit.files) {
+      if (!filesByPath.has(file.path)) filesByPath.set(file.path, file);
+    }
+  }
+  return [...filesByPath.values()];
+}
+
 function createInitialMockRepositories() {
   const mainWorktree = 'D:/mock-workspace/antigravity-git-worktree';
   const mainCommonDir = `${mainWorktree}/.git`;
@@ -316,7 +353,8 @@ function createInitialMockRepositories() {
  *   commit: (params: object) => { revision: number, sha: string },
  *   fetch: (params: object) => { revision: number },
  *   pull: (params: object) => { revision: number },
- *   push: (params: object) => { revision: number }
+ *   push: (params: object) => { revision: number },
+ *   sync: (params: object) => { revision: number }
  * }} Mock 夹具控制器
  */
 export function createMockFixtureStore(options = {}) {
@@ -395,8 +433,10 @@ export function createMockFixtureStore(options = {}) {
         id: r.id,
         name: r.name,
         worktreePath: r.worktreePath,
-        branch: r.branch,
         isBare: r.isBare,
+        isDetached: r.isDetached,
+        headOid: r.headOid,
+        branch: r.branch,
       })),
       activeRepo: {
         id: active.id,
@@ -426,6 +466,7 @@ export function createMockFixtureStore(options = {}) {
         hasMore,
         reachedSoftLimit: limit >= MAX_GRAPH_LIMIT,
         commits: slicedCommits,
+        mergeBase: findMockMergeBase(active),
       },
       watchState: {
         active: true,
@@ -456,12 +497,13 @@ export function createMockFixtureStore(options = {}) {
 
   const getCommitDetail = (params = {}) => {
     const { repo, target } = findMockCommit(params);
+    const files = params.parentSha ? collectMockRangeFiles(repo, target.sha, params.parentSha) : target.files;
     return {
       sha: target.sha,
       subject: target.subject,
       body: target.body,
       coAuthors: target.coAuthors.map((item) => ({ ...item })),
-      files: target.files.map((item) => {
+      files: files.map((item) => {
         const canBuildFileUri = Boolean(repo.worktreePath) && !repo.isBare && item.existsInWorktree;
         return {
           status: item.status,
@@ -734,6 +776,14 @@ export function createMockFixtureStore(options = {}) {
     return { revision: bump() };
   };
 
+  const sync = (params = {}) => {
+    let { revision } = pull(params);
+    if (findRepoByWorktreeOrId(params.worktreePath).ahead > 0) {
+      ({ revision } = push(params));
+    }
+    return { revision };
+  };
+
   return {
     reset,
     getSnapshot,
@@ -746,5 +796,6 @@ export function createMockFixtureStore(options = {}) {
     fetch,
     pull,
     push,
+    sync,
   };
 }

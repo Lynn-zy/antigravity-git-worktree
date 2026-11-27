@@ -9,6 +9,7 @@ import {
   pullBranch,
   pushBranch,
   stageChanges,
+  syncBranch,
   unstageChanges,
 } from './git-mutations.mjs';
 import {
@@ -38,6 +39,7 @@ export const API_ROUTES = Object.freeze([
   '/api/remote/fetch',
   '/api/remote/pull',
   '/api/remote/push',
+  '/api/remote/sync',
   '/api/preferences',
 ]);
 
@@ -465,22 +467,24 @@ export function createApiRouter(deps) {
     const repoId = assertOptionalNonEmptyString(body.repoId, 'repoId');
     const workspaceUris = assertWorkspaceUris(body.workspaceUris);
     const sha = assertRequiredNonEmptyString(body.sha, 'sha');
+    const parentSha = assertOptionalNonEmptyString(body.parentSha, 'parentSha');
 
-    if (!SHA_PATTERN.test(sha)) {
-      throw new AppError(ERROR_CODES.INVALID_REQUEST, 'sha must be a 7-64 character hexadecimal string.');
+    if (!SHA_PATTERN.test(sha) || (parentSha && !SHA_PATTERN.test(parentSha))) {
+      throw new AppError(ERROR_CODES.INVALID_REQUEST, 'sha and parentSha must be 7-64 character hexadecimal strings.');
     }
-    return { worktreePath, repoId, workspaceUris, sha };
+    return { worktreePath, repoId, workspaceUris, sha, parentSha };
   };
 
   const handleCommitDetail = async (rawBody, context) => {
-    const { worktreePath, repoId, workspaceUris, sha } = parseCommitRequest(rawBody);
+    const { worktreePath, repoId, workspaceUris, sha, parentSha } = parseCommitRequest(rawBody);
     if (context?.fixture === 'mock') {
-      return mockFixture.getCommitDetail({ worktreePath, repoId, sha });
+      return mockFixture.getCommitDetail({ worktreePath, repoId, sha, parentSha });
     }
 
     const repo = await resolveAuthorizedRepo({ worktreePath, repoId, workspaceUris, allowBare: true });
     const repoCwd = repo.isBare ? repo.gitCommonDir : repo.worktreePath;
     return queryCommitDetail(repoCwd, sha, {
+      parentSha,
       worktreePath: repo.worktreePath,
       isBare: repo.isBare,
     });
@@ -698,6 +702,24 @@ export function createApiRouter(deps) {
     return { revision };
   };
 
+  const handleRemoteSync = async (rawBody, context) => {
+    const body = assertPlainObject(rawBody);
+    const worktreePath = assertRequiredNonEmptyString(body.worktreePath, 'worktreePath');
+    const workspaceUris = assertWorkspaceUris(body.workspaceUris);
+
+    if (context?.fixture === 'mock') {
+      return mockFixture.sync({ worktreePath });
+    }
+
+    const repo = await resolveAuthorizedRepo({ worktreePath, workspaceUris });
+    await syncBranch({
+      worktreePath: repo.worktreePath,
+      gitCommonDir: repo.gitCommonDir,
+    });
+    const { revision } = bumpRepoRevision(repo, { repositoryWide: true });
+    return { revision };
+  };
+
   const handlePreferences = async (rawBody) => {
     const body = assertPlainObject(rawBody);
     const allowedPatch = {};
@@ -726,6 +748,7 @@ export function createApiRouter(deps) {
     ['/api/remote/fetch', handleRemoteFetch],
     ['/api/remote/pull', handleRemotePull],
     ['/api/remote/push', handleRemotePush],
+    ['/api/remote/sync', handleRemoteSync],
     ['/api/preferences', handlePreferences],
   ]);
 

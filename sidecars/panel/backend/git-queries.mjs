@@ -613,11 +613,13 @@ export async function queryCommitGraph(repoPath, options = {}) {
  *
  * @param {string} repoPath Repository 或 Worktree 目录路径
  * @param {string} sha 提交 SHA（7-64 位十六进制）
- * @param {{ worktreePath?: string | null, isBare?: boolean, timeoutMs?: number, runGitRead?: typeof runGitRead }} [options] 查询选项
+ * @param {{ parentSha?: string | null, worktreePath?: string | null, isBare?: boolean, timeoutMs?: number, runGitRead?: typeof runGitRead }} [options]
+ *   查询选项；`parentSha` 指定比较基时文件清单为两者之间的改动（图表「传入/传出的更改」行用合并基），缺省为相对第一父提交
  * @returns {Promise<{ sha: string, subject: string, body: string, coAuthors: Array<{ name: string, email: string }>, files: Array<{ status: string, path: string, origPath: string | null, existsInWorktree: boolean, fileUri: string | null }> }>} 提交详情对象
  */
 export async function queryCommitDetail(repoPath, sha, options = {}) {
-  if (typeof sha !== 'string' || !SHA_PATTERN.test(sha)) {
+  const parentSha = options.parentSha ?? null;
+  if (typeof sha !== 'string' || !SHA_PATTERN.test(sha) || (parentSha !== null && !SHA_PATTERN.test(parentSha))) {
     throw new AppError(ERROR_CODES.INVALID_REQUEST, 'Invalid commit SHA.');
   }
 
@@ -628,10 +630,12 @@ export async function queryCommitDetail(repoPath, sha, options = {}) {
     flags: ['-s', '--format=%B'],
     refs: [sha],
   });
-  const nameStatusArgs = buildGitArgs('show', {
-    flags: ['--name-status', '-M', '-m', '--first-parent', '--format=', '-z'],
-    refs: [sha],
-  });
+  const nameStatusArgs = parentSha
+    ? buildGitArgs('diff', { flags: ['--name-status', '-M', '-z'], refs: [parentSha, sha] })
+    : buildGitArgs('show', {
+      flags: ['--name-status', '-M', '-m', '--first-parent', '--format=', '-z'],
+      refs: [sha],
+    });
 
   const [messageResult, filesResult] = await Promise.all([
     runReadFn(messageArgs, { cwd: repoPath, timeoutMs: options.timeoutMs }),
@@ -716,6 +720,35 @@ export async function queryRemotes(repoPath, options = {}) {
     .filter(Boolean);
 }
 
+/**
+ * 查询当前分支与上游的合并基，供图表定位「传入的更改」「传出的更改」行。
+ *
+ * @param {string} repoPath Worktree 目录路径
+ * @param {string} upstream 上游引用短名（如 `origin/main`）
+ * @param {{ timeoutMs?: number, runGitRead?: typeof runGitRead }} [options] 查询选项
+ * @returns {Promise<string | null>} 合并基完整 SHA；两者没有共同祖先时为 null
+ */
+export async function queryMergeBase(repoPath, upstream, options = {}) {
+  const runReadFn = options.runGitRead ?? runGitRead;
+  const result = await runReadFn(buildGitArgs('merge-base', { refs: ['HEAD', upstream] }), {
+    cwd: repoPath,
+    allowNonZero: true,
+    timeoutMs: options.timeoutMs,
+  });
+  return result.exitCode === 0 ? result.stdoutText.trim() || null : null;
+}
+
+// 存储库行只显示仓库名与分支；同步状态只在当前仓库那一行显示，取自 activeRepo（非当前仓库不监听，状态会过时）
+const toRepositorySummary = (repo) => ({
+  id: repo.id,
+  name: repo.name,
+  worktreePath: repo.worktreePath,
+  isBare: repo.isBare,
+  isDetached: repo.isDetached,
+  headOid: repo.headOid,
+  branch: repo.branch,
+});
+
 async function queryBareHeadMetadata(repoDir, runReadFn, timeoutMs) {
   const [symResult, revResult] = await Promise.all([
     runReadFn(['symbolic-ref', '--short', '-q', 'HEAD'], {
@@ -760,7 +793,7 @@ function buildWorkspaceKey(activeRepo) {
  * 根据宿主 `workspaceUris` 发现 Repository 集合，并为当前选中仓库构建完整基础快照（供 M2 `/api/snapshot` 组装）。
  *
  * @param {{ workspaceUris?: string[], selectedRepoId?: string | null, graphScope?: 'auto' | 'all', graphLimit?: number, maxStatusEntries?: number, timeoutMs?: number, runGitRead?: typeof runGitRead, onActiveRepoDiscovered?: (activeDiscovery: object | null, discoveredRepos: object[]) => void }} [params] 快照请求参数
- * @returns {Promise<{ workspaceKey: string | null, repositories: Array<{ id: string, name: string, worktreePath: string | null, branch: string | null, isBare: boolean }>, activeRepo: object | null, changes: object, graph: object }>} 基础快照数据
+ * @returns {Promise<{ workspaceKey: string | null, repositories: Array<{ id: string, name: string, worktreePath: string | null, isBare: boolean, isDetached: boolean, headOid: string | null, branch: string | null }>, activeRepo: object | null, changes: object, graph: object }>} 基础快照数据；`graph.mergeBase` 为当前分支与上游的合并基（与上游一致或无上游时为 null）
  */
 export async function discoverAndBuildSnapshotBase(params = {}) {
   const {
@@ -800,6 +833,7 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
         hasMore: false,
         reachedSoftLimit: false,
         commits: [],
+        mergeBase: null,
       },
     };
   }
@@ -856,16 +890,18 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
     graph = allGraph;
   }
 
-  if (!graph) {
-    graph = await queryCommitGraph(repoCwd, {
+  const differsFromUpstream = Boolean(branchMeta.upstream) && (branchMeta.ahead > 0 || branchMeta.behind > 0);
+  const [resolvedGraph, mergeBase] = await Promise.all([
+    graph ?? queryCommitGraph(repoCwd, {
       scope,
       limit,
       isUnborn: branchMeta.isUnborn,
       upstream: branchMeta.upstream,
       timeoutMs,
       runGitRead: runReadFn,
-    });
-  }
+    }),
+    differsFromUpstream ? queryMergeBase(repoCwd, branchMeta.upstream, { timeoutMs, runGitRead: runReadFn }) : null,
+  ]);
 
   const activeRepo = withHeadInfo({
     id: activeDiscovery.id,
@@ -877,19 +913,13 @@ export async function discoverAndBuildSnapshotBase(params = {}) {
     remotes,
   }, branchMeta);
 
-  const repositories = discovered.map((repo) => ({
-    id: repo.id,
-    name: repo.name,
-    worktreePath: repo.worktreePath,
-    branch: repo.id === activeRepo.id ? activeRepo.branch : repo.branch,
-    isBare: repo.isBare,
-  }));
+  const repositories = discovered.map((repo) => toRepositorySummary(repo === activeDiscovery ? activeRepo : repo));
 
   return {
     workspaceKey: buildWorkspaceKey(activeRepo),
     repositories,
     activeRepo,
     changes,
-    graph,
+    graph: { ...resolvedGraph, mergeBase },
   };
 }
