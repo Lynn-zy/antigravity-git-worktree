@@ -16,6 +16,8 @@ import {
 import {
   SWIMLANE_HEIGHT,
   SWIMLANE_WIDTH,
+  INCOMING_CHANGES_ID,
+  OUTGOING_CHANGES_ID,
   LANE_COLORS,
   HISTORY_ITEM_REF_COLOR,
   HISTORY_ITEM_REMOTE_REF_COLOR,
@@ -103,12 +105,13 @@ const collectBoundarySockets = (shapes) => {
 
 const laneX = (laneIndex) => SWIMLANE_WIDTH * (laneIndex + 1);
 
-const buildViewModels = (commits, { headSha = null, currentRefId = null, remoteRefId = null, scope = 'auto' } = {}) =>
+const buildViewModels = (commits, { headSha = null, currentRefId = null, remoteRefId = null, scope = 'auto', mergeBase = null } = {}) =>
   toHistoryItemViewModels(commits, {
     headSha,
     currentRefId,
     remoteRefId,
     colorMap: buildRefColorMap({ currentRefId, remoteRefId, scope, commits }),
+    mergeBase,
   });
 
 /**
@@ -352,6 +355,67 @@ test('graph-layout: 展开根提交时不加粗任何泳道（圆点列已被其
     [['M 11 0 V 22', 1]],
   );
   assert.equal(computeHistoryItemGraph(rootRow).shapes.some((shape) => shape.isOutgoing), false);
+});
+
+test('graph-layout: 领先时在 HEAD 上方插入「传出的更改」，落后时在合并基上方插入「传入的更改」，泳道连续', () => {
+  const mainRef = { type: 'head', name: 'main', fullRef: 'refs/heads/main' };
+  const originRef = { type: 'remote', name: 'origin/main', fullRef: 'refs/remotes/origin/main' };
+  const options = { headSha: 'h', currentRefId: mainRef.fullRef, remoteRefId: originRef.fullRef };
+  const rowIds = (viewModels) => viewModels.map((viewModel) => [viewModel.kind, viewModel.commit.sha]);
+
+  // 分叉：本地 l1、h 领先，上游 u 落后，合并基 b
+  const diverged = buildViewModels([
+    { sha: 'h', parents: ['l1'], refs: [mainRef] },
+    { sha: 'u', parents: ['b'], refs: [originRef] },
+    { sha: 'l1', parents: ['b'] },
+    { sha: 'b', parents: ['r'] },
+    { sha: 'r', parents: [] },
+  ], { ...options, mergeBase: 'b' });
+  assert.deepEqual(rowIds(diverged), [
+    ['outgoing-changes', OUTGOING_CHANGES_ID],
+    ['HEAD', 'h'],
+    ['node', 'u'],
+    ['node', 'l1'],
+    ['incoming-changes', INCOMING_CHANGES_ID],
+    ['node', 'b'],
+    ['node', 'r'],
+  ]);
+  assertGraphContinuity(diverged);
+  assert.deepEqual(diverged[0].compare, { sha: 'h', parentSha: 'b' }, '传出的更改展开的是合并基到 HEAD 的改动');
+  assert.deepEqual(diverged[4].compare, { sha: 'u', parentSha: 'b' }, '传入的更改展开的是合并基到上游的改动');
+  assert.equal(diverged[4].inputSwimlanes[getHistoryItemIndex(diverged[4])].color, HISTORY_ITEM_REMOTE_REF_COLOR, '上游泳道止于传入的更改');
+
+  const outgoingCircles = findCircles(diverged[0]);
+  assert.deepEqual(outgoingCircles.map((circle) => circle.r), [7, 5, 5]);
+  assert.deepEqual(
+    [outgoingCircles[2].stroke, outgoingCircles[2].dashArray],
+    [HISTORY_ITEM_REF_COLOR, '4,2'],
+    '虚拟行最后画当前分支颜色的虚线圆',
+  );
+
+  // 只领先：合并基就是上游提交，不显示传入的更改
+  const aheadOnly = buildViewModels([
+    { sha: 'h', parents: ['u'], refs: [mainRef] },
+    { sha: 'u', parents: [], refs: [originRef] },
+  ], { ...options, mergeBase: 'u' });
+  assert.deepEqual(rowIds(aheadOnly), [['outgoing-changes', OUTGOING_CHANGES_ID], ['HEAD', 'h'], ['node', 'u']]);
+  assertGraphContinuity(aheadOnly);
+
+  // 只落后：合并基就是 HEAD，不显示传出的更改
+  const behindOnly = buildViewModels([
+    { sha: 'u', parents: ['h'], refs: [originRef] },
+    { sha: 'h', parents: [], refs: [mainRef] },
+  ], { ...options, mergeBase: 'h' });
+  assert.deepEqual(rowIds(behindOnly), [['node', 'u'], ['incoming-changes', INCOMING_CHANGES_ID], ['HEAD', 'h']]);
+  assertGraphContinuity(behindOnly);
+
+  // 与上游一致（mergeBase 为 null）或合并基、HEAD 不在已加载的提交里时不插入
+  const commits = [{ sha: 'h', parents: ['u'], refs: [mainRef] }, { sha: 'u', parents: [], refs: [originRef] }];
+  assert.deepEqual(rowIds(buildViewModels(commits, options)), [['HEAD', 'h'], ['node', 'u']]);
+  assert.deepEqual(
+    rowIds(buildViewModels([{ sha: 'u', parents: ['next-page'], refs: [originRef] }], { ...options, mergeBase: 'next-page' })),
+    [['node', 'u']],
+  );
 });
 
 test('popover: 第 1、2 行借用上区向上弹出且遮挡图表像素最小', () => {

@@ -1057,7 +1057,8 @@ body.is-resizing-panes {
   stroke: var(--gw-row-bg);
 }
 
-.gw-commit-row.is-current .gw-graph > circle:last-child {
+.gw-commit-row.is-current .gw-graph > circle:last-child,
+.gw-commit-row.is-changes-node .gw-graph > circle:last-child {
   fill: var(--gw-row-bg);
 }
 

@@ -76,7 +76,7 @@ const safeParseJson = async (response) => {
  *   postJson: (pathname: string, body?: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
  *   fetchSnapshot: (params: Record<string, unknown>, signal?: AbortSignal) => Promise<any>,
  *   fetchStatus: (params: { workspaceKey: string, sinceRevision: number }, signal?: AbortSignal) => Promise<any>,
- *   fetchCommitDetail: (params: { worktreePath?: string | null, repoId?: string | null, sha: string, workspaceUris?: string[] }, signal?: AbortSignal) => Promise<any>,
+ *   fetchCommitDetail: (params: { worktreePath?: string | null, repoId?: string | null, sha: string, parentSha?: string, workspaceUris?: string[] }, signal?: AbortSignal) => Promise<any>,
  *   fetchCommitStats: (params: { worktreePath?: string | null, repoId?: string | null, sha: string, workspaceUris?: string[] }, signal?: AbortSignal) => Promise<{ files: number, insertions: number, deletions: number }>,
  *   waitEvents: (params: { workspaceKey: string, sinceRevision: number, timeoutMs?: number }, signal?: AbortSignal) => Promise<any>,
  *   stageChanges: (params: { worktreePath: string, all?: boolean, paths?: string[], workspaceUris?: string[] }) => Promise<any>,

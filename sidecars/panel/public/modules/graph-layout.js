@@ -28,7 +28,8 @@
 /**
  * 提交图谱（Commit Graph）泳道布局纯计算模块，逐段移植自 VS Code `scmHistory.ts`。
  * 与原实现的差异：直接创建 SVG DOM 改为输出图形描述（由 graph-view 落成节点，便于在 Node 中测试）；
- * 根提交处保留其余泳道（见 `toHistoryItemViewModels` 内注释）；未移植 Incoming / Outgoing Changes 虚拟节点。
+ * 根提交处保留其余泳道（见 `toHistoryItemViewModels` 内注释）；
+ * 「传入的更改」「传出的更改」虚拟行不带标题与作者，由 graph-view 按 `kind` 取本地化文案与分支名。
  * 徽标归组 `groupHistoryItemBadges` 移植自 `scmHistoryViewPane.ts` 的 `HistoryItemRenderer._renderBadges`。
  */
 
@@ -37,6 +38,12 @@ export const SWIMLANE_HEIGHT = 22;
 
 /** @type {number} 相邻泳道中心线的像素间距 */
 export const SWIMLANE_WIDTH = 11;
+
+/** @type {string} 「传入的更改」虚拟行的标识（对应 VS Code `SCMIncomingHistoryItemId`） */
+export const INCOMING_CHANGES_ID = 'scm-graph-incoming-changes';
+
+/** @type {string} 「传出的更改」虚拟行的标识（对应 VS Code `SCMOutgoingHistoryItemId`） */
+export const OUTGOING_CHANGES_ID = 'scm-graph-outgoing-changes';
 
 const SWIMLANE_CURVE_RADIUS = 5;
 const CIRCLE_RADIUS = 4;
@@ -122,18 +129,21 @@ export const buildRefColorMap = ({ currentRefId, remoteRefId, scope, commits }) 
 /**
  * 逐行推导每个提交的输入/输出泳道（`toISCMHistoryItemViewModelArray` 的移植）。
  * 每条泳道以它等待的提交 sha 标识；父提交不在列表内时泳道一直延伸到列表末尾（分页边界由「加载更多」行承接）。
+ * 传入 `mergeBase` 时按 VS Code 规则插入「传入的更改」「传出的更改」虚拟行。
  *
  * @param {Array<{ sha: string, parents: string[], refs?: Array<{ type: string, name: string, fullRef: string }> }>} commits 按拓扑顺序从新到旧排列的提交
- * @param {{ headSha: string | null, currentRefId: string | null, remoteRefId: string | null, colorMap: Map<string, string | undefined> }} options HEAD 提交、当前分支与上游的完整引用名及 `buildRefColorMap` 的结果
+ * @param {{ headSha: string | null, currentRefId: string | null, remoteRefId: string | null, colorMap: Map<string, string | undefined>, mergeBase?: string | null }} options
+ *   HEAD 提交、当前分支与上游的完整引用名、`buildRefColorMap` 的结果，以及当前分支与上游的合并基（与上游一致时为 null）
  * @returns {Array<{
- *   commit: object,
- *   kind: 'HEAD' | 'node',
+ *   commit: { sha: string, parents: string[] },
+ *   kind: 'HEAD' | 'node' | 'incoming-changes' | 'outgoing-changes',
  *   inputSwimlanes: Array<{ id: string, color: string }>,
  *   outputSwimlanes: Array<{ id: string, color: string }>,
- *   references: Array<{ id: string, name: string, icon: string, color: string | undefined }>
- * }>} 与输入一一对应的行视图模型（无副作用）
+ *   references: Array<{ id: string, name: string, icon: string, color: string | undefined }>,
+ *   compare?: { sha: string, parentSha: string }
+ * }>} 行视图模型（无副作用）；虚拟行的 `compare` 是展开文件列表时比较的两端
  */
-export const toHistoryItemViewModels = (commits, { headSha, currentRefId, remoteRefId, colorMap }) => {
+export const toHistoryItemViewModels = (commits, { headSha, currentRefId, remoteRefId, colorMap, mergeBase = null }) => {
   const commitBySha = new Map(commits.map((commit) => [commit.sha, commit]));
   const viewModels = [];
   let colorIndex = -1;
@@ -195,7 +205,69 @@ export const toHistoryItemViewModels = (commits, { headSha, currentRefId, remote
     });
   }
 
+  // 同原实现：先算完全部行的泳道，再借用泳道颜色把虚拟行插到正确的泳道上
+  const remoteSha = remoteRefId ? commits.find((commit) => commit.refs?.some((ref) => ref.fullRef === remoteRefId))?.sha : undefined;
+  addIncomingOutgoingChanges(viewModels, { headSha, remoteSha, mergeBase });
   return viewModels;
+};
+
+// `addIncomingOutgoingChangesHistoryItems` 的移植，原地修改 viewModels
+const addIncomingOutgoingChanges = (viewModels, { headSha, remoteSha, mergeBase }) => {
+  if (headSha === remoteSha || !mergeBase) return;
+
+  if (remoteSha && remoteSha !== mergeBase) {
+    // 合并基可能还没加载到，这时不显示
+    const beforeIndex = viewModels.reduce(
+      (lastIndex, viewModel, index) => (viewModel.outputSwimlanes.some((node) => node.id === mergeBase) ? index : lastIndex),
+      -1,
+    );
+    const afterIndex = viewModels.findIndex((viewModel) => viewModel.commit.sha === mergeBase);
+    const before = viewModels[beforeIndex];
+    // 传入的更改已被合并进当前分支时不显示（VS Code #276064）
+    const incomingMerged = before?.commit.parents.length === 2 && before.commit.parents.includes(mergeBase);
+
+    if (beforeIndex !== -1 && afterIndex !== -1 && !incomingMerged) {
+      // 上游泳道改为止于「传入的更改」，不再连到合并基
+      const redirect = (node) => (node.id === mergeBase && node.color === HISTORY_ITEM_REMOTE_REF_COLOR
+        ? { ...node, id: INCOMING_CHANGES_ID }
+        : node);
+      viewModels[beforeIndex] = {
+        ...before,
+        inputSwimlanes: before.inputSwimlanes.map(redirect),
+        outputSwimlanes: before.outputSwimlanes.map(redirect),
+      };
+      viewModels.splice(afterIndex, 0, {
+        commit: { sha: INCOMING_CHANGES_ID, parents: [mergeBase] },
+        kind: 'incoming-changes',
+        inputSwimlanes: viewModels[beforeIndex].outputSwimlanes.slice(),
+        outputSwimlanes: viewModels[afterIndex].inputSwimlanes.slice(),
+        references: [],
+        compare: { sha: remoteSha, parentSha: mergeBase },
+      });
+    }
+  }
+
+  if (headSha && headSha !== mergeBase) {
+    // HEAD 可能还没加载到，这时不显示
+    const headIndex = viewModels.findIndex((viewModel) => viewModel.kind === 'HEAD' && viewModel.commit.sha === headSha);
+    if (headIndex !== -1) {
+      const headLane = { id: headSha, color: HISTORY_ITEM_REF_COLOR };
+      const inputSwimlanes = viewModels[headIndex].inputSwimlanes.slice();
+      viewModels.splice(headIndex, 0, {
+        commit: { sha: OUTGOING_CHANGES_ID, parents: [headSha] },
+        kind: 'outgoing-changes',
+        inputSwimlanes,
+        outputSwimlanes: [...inputSwimlanes, headLane],
+        references: [],
+        compare: { sha: headSha, parentSha: mergeBase },
+      });
+      // HEAD 行多一条从「传出的更改」进入的泳道
+      viewModels[headIndex + 1] = {
+        ...viewModels[headIndex + 1],
+        inputSwimlanes: [...viewModels[headIndex + 1].inputSwimlanes, headLane],
+      };
+    }
+  }
 };
 
 /**
@@ -258,6 +330,12 @@ const circleShape = (index, r, strokeWidth, fill) => ({
   fill,
 });
 
+const dashedCircleShape = (index, strokeWidth, stroke) => ({
+  ...circleShape(index, CIRCLE_RADIUS + 1, strokeWidth, undefined),
+  stroke,
+  dashArray: '4,2',
+});
+
 /**
  * 生成单个提交行的 SVG 图形描述（`renderSCMHistoryItemGraph` 的移植）。
  * 形状顺序与原实现一致，样式表依赖「第一个/第二个/最后一个 circle」做悬停效果；
@@ -268,9 +346,9 @@ const circleShape = (index, r, strokeWidth, fill) => ({
  *   width: number,
  *   shapes: Array<
  *     { type: 'path', d: string, color: string, strokeWidth: number, isOutgoing?: true } |
- *     { type: 'circle', cx: number, cy: number, r: number, strokeWidth: number, fill: string | undefined }
+ *     { type: 'circle', cx: number, cy: number, r: number, strokeWidth: number, fill: string | undefined, stroke?: string, dashArray?: string }
  *   >
- * }} SVG 宽度与按绘制顺序排列的形状（无副作用）
+ * }} SVG 宽度与按绘制顺序排列的形状（无副作用）；只有虚拟行的虚线圆带 `stroke` 与 `dashArray`
  */
 export const computeHistoryItemGraph = (viewModel) => {
   const { commit, kind, inputSwimlanes, outputSwimlanes } = viewModel;
@@ -346,6 +424,10 @@ export const computeHistoryItemGraph = (viewModel) => {
   if (kind === 'HEAD') {
     shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 3, CIRCLE_STROKE_WIDTH, circleColor));
     shapes.push(circleShape(circleIndex, CIRCLE_STROKE_WIDTH, CIRCLE_RADIUS, undefined));
+  } else if (kind === 'incoming-changes' || kind === 'outgoing-changes') {
+    shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 3, CIRCLE_STROKE_WIDTH, circleColor));
+    shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 1, CIRCLE_STROKE_WIDTH + 1, undefined));
+    shapes.push(dashedCircleShape(circleIndex, CIRCLE_STROKE_WIDTH - 1, circleColor));
   } else if (parentIds.length > 1) {
     shapes.push(circleShape(circleIndex, CIRCLE_RADIUS + 2, CIRCLE_STROKE_WIDTH, circleColor));
     shapes.push(circleShape(circleIndex, CIRCLE_RADIUS - 1, CIRCLE_STROKE_WIDTH, circleColor));

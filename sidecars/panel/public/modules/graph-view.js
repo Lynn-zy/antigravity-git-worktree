@@ -48,10 +48,12 @@ const renderGraphSvg = ({ width, shapes }, className) => {
       svg.append(pathEl);
       continue;
     }
-    // 圆点描边颜色由样式表按行状态（常态/悬停/选中）设置，形成与背景同色的间隙
+    // 圆点描边颜色由样式表按行状态（常态/悬停/选中）设置，形成与背景同色的间隙；只有虚拟行的虚线圆自带描边色
     const circleEl = createSvgNode('circle', { cx: shape.cx, cy: shape.cy, r: shape.r });
     circleEl.style.strokeWidth = `${shape.strokeWidth}px`;
     if (shape.fill) circleEl.style.fill = shape.fill;
+    if (shape.stroke) circleEl.style.stroke = shape.stroke;
+    if (shape.dashArray) circleEl.style.strokeDasharray = shape.dashArray;
     svg.append(circleEl);
   }
   return svg;
@@ -95,6 +97,13 @@ const copyTextWithFallback = async (text) => {
   }
 };
 
+// 「传入/传出的更改」行的文件列表随 HEAD、上游与合并基变化，按比较两端缓存；普通提交按 sha 缓存
+const detailKeyOf = (viewModel) => (viewModel.compare
+  ? `${viewModel.compare.parentSha}..${viewModel.compare.sha}`
+  : viewModel.commit.sha);
+
+const isChangesNode = (viewModel) => viewModel.kind === 'incoming-changes' || viewModel.kind === 'outgoing-changes';
+
 const formatFileStatus = (status) => {
   const code = typeof status === 'string' && status.trim() ? status.trim()[0].toUpperCase() : 'M';
   const classNameByCode = {
@@ -133,7 +142,7 @@ const formatFileStatus = (status) => {
  *   onRefresh: () => Promise<void>,
  *   onLoadMore: () => Promise<boolean>,
  *   onSwitchLanguage: () => void,
- *   onLoadCommitDetail: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<any>,
+ *   onLoadCommitDetail: (params: { worktreePath: string | null, repoId: string | null, sha: string, parentSha?: string }) => Promise<any>,
  *   onLoadCommitStats: (worktreePath: string | null, sha: string, repoId?: string | null) => Promise<{ files: number, insertions: number, deletions: number }>
  * }} deps 外部服务与交互回调
  * @returns {{
@@ -156,7 +165,8 @@ export const createGraphView = (elements, deps) => {
   const doc = bodyEl.ownerDocument;
   const win = doc.defaultView ?? window;
 
-  // 切换仓库、Worktree 或强制刷新时整体换新；请求发出时记下当时的对象，晚到的旧响应只会写进已丢弃的对象
+  // 切换仓库、Worktree 或强制刷新时整体换新；请求发出时记下当时的对象，晚到的旧响应只会写进已丢弃的对象。
+  // 详情与错误按 detailKeyOf 取键，统计只有普通提交才有，按 sha 取键
   const createDetailStore = () => ({
     details: new Map(),
     detailErrors: new Map(),
@@ -166,6 +176,7 @@ export const createGraphView = (elements, deps) => {
     loadingStats: new Set(),
   });
   let detailStore = createDetailStore();
+  // 已展开的行（提交 sha 或虚拟行标识）
   const expandedCommits = new Set();
 
   let searchVisible = false;
@@ -459,36 +470,39 @@ export const createGraphView = (elements, deps) => {
     syncActiveCommitHighlight();
   };
 
-  const ensureCommitDetail = async (sha) => {
+  const ensureCommitDetail = async (rowId) => {
     const store = detailStore;
     const activeRepo = latestRenderState?.activeRepo;
-    if (!activeRepo || (!activeRepo.worktreePath && !activeRepo.id)) return;
-    if (store.details.has(sha) || store.loadingDetails.has(sha)) return;
+    const viewModel = latestViewModelBySha.get(rowId);
+    if (!activeRepo || !viewModel || (!activeRepo.worktreePath && !activeRepo.id)) return;
+    const key = detailKeyOf(viewModel);
+    if (store.details.has(key) || store.loadingDetails.has(key)) return;
 
-    store.loadingDetails.add(sha);
-    store.detailErrors.delete(sha);
-    if (expandedCommits.has(sha) && latestRenderState) {
+    store.loadingDetails.add(key);
+    store.detailErrors.delete(key);
+    if (expandedCommits.has(rowId) && latestRenderState) {
       renderCommitList(latestRenderState);
     }
 
     try {
-      const detail = await deps.onLoadCommitDetail(
-        activeRepo.worktreePath ?? null,
-        sha,
-        activeRepo.id ?? null,
-      );
+      const detail = await deps.onLoadCommitDetail({
+        worktreePath: activeRepo.worktreePath ?? null,
+        repoId: activeRepo.id ?? null,
+        sha: viewModel.compare?.sha ?? rowId,
+        parentSha: viewModel.compare?.parentSha,
+      });
       if (detail) {
-        store.details.set(sha, detail);
+        store.details.set(key, detail);
       }
     } catch (err) {
-      store.detailErrors.set(sha, err?.message || 'Error');
+      store.detailErrors.set(key, err?.message || 'Error');
     }
-    store.loadingDetails.delete(sha);
-    if (expandedCommits.has(sha) && latestRenderState) {
+    store.loadingDetails.delete(key);
+    if (expandedCommits.has(rowId) && latestRenderState) {
       renderCommitList(latestRenderState);
     }
-    if (popoverSha === sha) {
-      renderPopover(sha);
+    if (popoverSha === rowId) {
+      renderPopover(rowId);
     }
   };
 
@@ -839,10 +853,11 @@ export const createGraphView = (elements, deps) => {
     filesWrap.dataset.commitSha = commit.sha;
 
     const placeholder = computeCommitFilesPlaceholder(viewModel);
-    const detail = detailStore.details.get(commit.sha);
-    const detailErr = detailStore.detailErrors.get(commit.sha);
+    const detailKey = detailKeyOf(viewModel);
+    const detail = detailStore.details.get(detailKey);
+    const detailErr = detailStore.detailErrors.get(detailKey);
 
-    if (detailStore.loadingDetails.has(commit.sha) && !detail) {
+    if (detailStore.loadingDetails.has(detailKey) && !detail) {
       filesWrap.append(renderQuietRow(placeholder, t('graph.loadingDetail'), 'gw-commit-file-loading'));
       return filesWrap;
     }
@@ -893,15 +908,24 @@ export const createGraphView = (elements, deps) => {
     return filesWrap;
   };
 
-  const renderCommitRow = (viewModel, t) => {
+  // 虚拟行的标题与作者同 VS Code：标题是「传入/传出的更改」，作者位置显示上游或当前分支名
+  const resolveRowLabel = (viewModel, activeRepo, t) => {
+    if (viewModel.kind === 'outgoing-changes') return { subject: t('graph.outgoingChanges'), author: activeRepo.branch ?? '' };
+    if (viewModel.kind === 'incoming-changes') return { subject: t('graph.incomingChanges'), author: activeRepo.upstream ?? '' };
+    return { subject: viewModel.commit.subject || '', author: viewModel.commit.authorName || '' };
+  };
+
+  const renderCommitRow = (viewModel, activeRepo, t) => {
     const { commit } = viewModel;
     const isExpanded = expandedCommits.has(commit.sha);
     const isCurrent = viewModel.kind === 'HEAD';
+    const { subject, author } = resolveRowLabel(viewModel, activeRepo, t);
 
     const rowEl = doc.createElement('div');
     rowEl.className = 'gw-commit-row';
     rowEl.classList.toggle('is-expanded', isExpanded);
     rowEl.classList.toggle('is-current', isCurrent);
+    rowEl.classList.toggle('is-changes-node', isChangesNode(viewModel));
     rowEl.classList.toggle('is-popover-active', popoverSha === commit.sha);
     rowEl.tabIndex = 0;
     rowEl.setAttribute('role', 'listitem');
@@ -910,7 +934,9 @@ export const createGraphView = (elements, deps) => {
     rowEl.dataset.commitSha = commit.sha;
     rowEl.dataset.focusId = `commit:${commit.sha}`;
     // 只写 aria-label 不写 title：详情由行尾按钮打开，原生 tooltip 只会重复一遍标题
-    rowEl.setAttribute('aria-label', `${commit.shortSha || commit.sha.slice(0, 7)} ${commit.subject || ''}`.trim());
+    rowEl.setAttribute('aria-label', isChangesNode(viewModel)
+      ? `${subject} ${author}`.trim()
+      : `${commit.shortSha || commit.sha.slice(0, 7)} ${subject}`.trim());
 
     const graphContainerEl = doc.createElement('span');
     graphContainerEl.className = 'gw-graph-container';
@@ -920,10 +946,10 @@ export const createGraphView = (elements, deps) => {
     labelEl.className = 'gw-commit-label';
     const subjectEl = doc.createElement('span');
     subjectEl.className = 'gw-commit-subject';
-    subjectEl.textContent = commit.subject || '';
+    subjectEl.textContent = subject;
     const authorEl = doc.createElement('span');
     authorEl.className = 'gw-commit-author';
-    authorEl.textContent = commit.authorName || '';
+    authorEl.textContent = author;
     labelEl.append(subjectEl, authorEl);
 
     rowEl.append(graphContainerEl, labelEl);
@@ -937,6 +963,13 @@ export const createGraphView = (elements, deps) => {
       }
       rowEl.append(refsWrap);
     }
+
+    rowEl.addEventListener('click', () => {
+      void toggleCommitExpand(commit.sha);
+    });
+
+    // 虚拟行没有提交详情，同 VS Code 不提供悬浮卡
+    if (isChangesNode(viewModel)) return rowEl;
 
     const detailBtn = doc.createElement('button');
     detailBtn.type = 'button';
@@ -952,11 +985,6 @@ export const createGraphView = (elements, deps) => {
       togglePopover(commit.sha);
     });
     rowEl.append(detailBtn);
-
-    rowEl.addEventListener('click', () => {
-      void toggleCommitExpand(commit.sha);
-    });
-
     return rowEl;
   };
 
@@ -1050,6 +1078,8 @@ export const createGraphView = (elements, deps) => {
       currentRefId,
       remoteRefId,
       colorMap: buildRefColorMap({ currentRefId, remoteRefId, scope: graphScope, commits: visibleCommits }),
+      // 搜索结果的父子关系已被截断，合并基与 HEAD 之间的连线不成立，此时不显示虚拟行
+      mergeBase: normalizedQuery ? null : (graph?.mergeBase ?? null),
     });
     latestViewModelBySha = new Map(viewModels.map((viewModel) => [viewModel.commit.sha, viewModel]));
 
@@ -1059,7 +1089,7 @@ export const createGraphView = (elements, deps) => {
     listEl.setAttribute('role', 'list');
 
     for (const viewModel of viewModels) {
-      listEl.append(renderCommitRow(viewModel, t));
+      listEl.append(renderCommitRow(viewModel, activeRepo, t));
       if (expandedCommits.has(viewModel.commit.sha)) {
         listEl.append(renderCommitFiles(viewModel, t));
       }
